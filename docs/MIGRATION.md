@@ -67,3 +67,25 @@ Runtime: **Bun** (native TS, test runner, fetch). Source of truth for behavior: 
 - **GraphQL validation error wording.** graphql-js quotes identifiers with `"double quotes"` vs
   graphql-core's `'single quotes'`; the graphql_tool port normalizes the message line (only) so the
   toolset's substring-based hint/skeleton matching fires identically.
+
+## End-to-end verification (2026-07-03)
+
+Ran the ported TS pipeline (`bun run cli/run_address.ts`) against the live Python GraphQL server on
+`1104 SPRING RUN RD` (typed_tools, haiku, --disable-master-planning) and compared to the Python pipeline
+on the same address/server:
+
+- **Runs clean end-to-end**: 6 packets, 0 errors; both grouped conversations formed
+  (`property_tax+owner_identity`, `subject_occupancy+legal_address`); evidence manifest injected; scored
+  (final=15, band=review); adjudicated (calibrated=12, archetype `owner_present_with_rental_indicators`);
+  report generated; `metrics_events` correctly excluded from output JSON.
+- **Deterministic parity with Python is exact** (code-driven, not LLM): `address_id` 3342, all
+  `source_counts`, `ambiguous`, the gated packet set, and owner/people summary counts all match. Only
+  LLM-generated content differs (stochastic, expected).
+
+Conclusion: the agent logical flows — preflight, gating, grouped-subagent bucketing/dispatch, turn loop,
+evidence manifest, scoring, adjudication — are faithfully preserved.
+
+## Remaining (benchmark/tooling, not the agent pipeline)
+- `cli/run_investigation_batch.ts` (batch runner) + `observability/summaries` (batch CSV rollups) — the
+  single-address path is fully ported/verified; batch is a thin wrapper over it.
+- `judge/` package (offline benchmark judge).
