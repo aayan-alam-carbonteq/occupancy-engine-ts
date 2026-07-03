@@ -1,0 +1,98 @@
+// Port of occupancy_engine/agents/run_address.py — run the agent network for one address.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { parseArgs } from "node:util";
+import { loadDotenv } from "../src/env.ts";
+import { AgentInvestigationRequestSchema } from "../src/agents/models.ts";
+import { investigate_address } from "../src/agents/orchestrator.ts";
+import type { MetricEvent, RunMetricsSummary } from "../src/observability/models.ts";
+import { writeRunMetrics } from "../src/observability/writers.ts";
+
+async function main(argv: string[]): Promise<number> {
+  loadDotenv();
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      address: { type: "string" },
+      zip: { type: "string", default: "" },
+      "graphql-url": { type: "string" },
+      provider: { type: "string", default: "auto" },
+      model: { type: "string" },
+      "base-url": { type: "string" },
+      "allow-heuristic": { type: "string", multiple: true },
+      "block-heuristic": { type: "string", multiple: true, default: [] },
+      "max-concurrency": { type: "string", default: "8" },
+      "max-graphql-calls-per-agent": { type: "string", default: "8" },
+      "graphql-timeout-seconds": { type: "string", default: "30" },
+      "agent-timeout-seconds": { type: "string", default: "120" },
+      "max-output-retries": { type: "string", default: "2" },
+      "max-query-repair-attempts": { type: "string", default: "3" },
+      "schema-tool-budget": { type: "string", default: "8" },
+      "disable-master-planning": { type: "boolean", default: false },
+      "prompt-profile": { type: "string", default: "compact" },
+      "retrieval-mode": { type: "string", default: "tools" },
+      "include-shortcuts": { type: "boolean", default: false },
+      "metrics-debug-payloads": { type: "boolean", default: false },
+      "batch-id": { type: "string" },
+      "trace-id": { type: "string" },
+      out: { type: "string" },
+    },
+    allowPositionals: false,
+  });
+
+  if (!values.address || !values["graphql-url"]) {
+    process.stderr.write("--address and --graphql-url are required\n");
+    return 2;
+  }
+
+  const request = AgentInvestigationRequestSchema.parse({
+    address: values.address,
+    zip: values.zip,
+    graphql_url: values["graphql-url"],
+    provider: values.provider,
+    model: values.model ?? null,
+    base_url: values["base-url"] ?? null,
+    heuristic_allowlist: values["allow-heuristic"] ?? null,
+    heuristic_blocklist: values["block-heuristic"] ?? [],
+    max_concurrency: Number.parseInt(values["max-concurrency"]!, 10),
+    max_graphql_calls_per_agent: Number.parseInt(values["max-graphql-calls-per-agent"]!, 10),
+    graphql_timeout_seconds: Number.parseFloat(values["graphql-timeout-seconds"]!),
+    agent_timeout_seconds: Number.parseFloat(values["agent-timeout-seconds"]!),
+    max_output_retries: Number.parseInt(values["max-output-retries"]!, 10),
+    max_query_repair_attempts: Number.parseInt(values["max-query-repair-attempts"]!, 10),
+    schema_tool_budget: Number.parseInt(values["schema-tool-budget"]!, 10),
+    disable_master_planning: values["disable-master-planning"],
+    prompt_profile: values["prompt-profile"],
+    retrieval_mode: values["retrieval-mode"],
+    include_shortcuts: values["include-shortcuts"],
+    metrics_debug_payloads: values["metrics-debug-payloads"],
+    batch_id: values["batch-id"] ?? null,
+    trace_id: values["trace-id"] ?? null,
+  });
+
+  let assessment: any;
+  try {
+    assessment = await investigate_address(request);
+  } catch (exc) {
+    process.stderr.write(`agent investigation failed: ${(exc as Error).message ?? exc}\n`);
+    return 1;
+  }
+
+  // metrics_events is exclude=True in Python's model_dump_json — omit from the output JSON.
+  const { metrics_events, ...assessmentOut } = assessment;
+  const output = JSON.stringify(assessmentOut, null, 2);
+  const out = values.out;
+  if (out) {
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, output + "\n", { encoding: "utf-8" });
+    const events = (metrics_events ?? []) as MetricEvent[];
+    if (events.length > 0) {
+      writeRunMetrics(out, events, assessment.metrics as RunMetricsSummary);
+    }
+  } else {
+    process.stdout.write(output + "\n");
+  }
+  return 0;
+}
+
+main(process.argv.slice(2)).then((code) => process.exit(code));
