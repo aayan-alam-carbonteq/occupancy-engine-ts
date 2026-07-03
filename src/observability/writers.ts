@@ -1,14 +1,12 @@
-// Port of occupancy_engine/observability/writers.py (single-run functions).
-// PORT NOTE: write_batch_rollups + the observability/summaries aggregations are batch-CLI only and are
-// deferred to the batch-CLI porting wave. The single-address run path (write_run_metrics /
-// write_events_jsonl) is complete here.
+// Writers for single-run metrics output (write_run_metrics / write_events_jsonl).
+// Batch rollups and the observability/summaries aggregations are batch-CLI only and live elsewhere.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { MetricEvent, RunMetricsSummary } from "./models.ts";
 
-/** Base output path is the run JSON path; sidecars replace its extension (Python .with_suffix). */
+/** Base output path is the run JSON path; sidecars replace its extension. */
 function withSuffix(basePath: string, suffix: string): string {
-  // Python Path.with_suffix replaces the final ".ext" with the given suffix.
+  // Replace the final ".ext" with the given suffix.
   const idx = basePath.lastIndexOf(".");
   const stem = idx > basePath.lastIndexOf("/") ? basePath.slice(0, idx) : basePath;
   return stem + suffix;

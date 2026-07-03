@@ -1,33 +1,8 @@
-// Port of occupancy_engine/agents/subagents.py.
-//
-// The behavioral CORE of the agent pipeline: the single-subagent turn loop (`run`), the grouped
-// multi-submit collection (`run_group` + `_handle_group_tool_calls`), the prompt-caching /
-// forced-tool-choice env flags, and the compact-result validation + coercion helpers that control
-// coverage. Every logical flow is preserved 1:1 with the Python source.
-//
-// PORT NOTE (pydantic -> zod): `HeuristicAgentResult.model_validate(x)` -> `HeuristicAgentResultSchema
-//   .parse(x)`; catching pydantic `ValidationError` -> catching zod `ZodError`. `str(exc)` for a
-//   ValidationError -> `zodErrorText(exc)` (path + message per issue), which preserves the substrings
-//   `_corrective_instruction` matches on ("require evidence_for", "require evidence_against or
-//   missing_evidence"). `HeuristicAgentResult.model_fields` -> `HEURISTIC_RESULT_FIELDS` (the field
-//   name set read off the zod schema, unwrapping the .superRefine ZodEffects).
-//
-// PORT NOTE (LangChain.js): Python `llm.bind_tools(tools, tool_choice="any")` -> `llm.bindTools(tools,
-//   { tool_choice: "any" })`; `hasattr(llm, "bind_tools")` -> `typeof llm.bindTools === "function"`;
-//   `await model.ainvoke(messages, config=...)` -> `await model.invoke(messages, config)`. Messages use
-//   the object-form constructors; `_cache_content` returns an Anthropic ephemeral cache_control content
-//   block when OE_PROMPT_CACHE is on.
-//
-// PORT NOTE (recorder / usage / contextvar): the recorder methods keep their snake_case names but take a
-//   single options object instead of kwargs. `current_recorder()` -> `currentRecorder()` (an
-//   AsyncLocalStorage-backed contextvar equivalent). `extract_usage(response).model_dump()` ->
-//   `extractUsage(response)` (already a plain object).
-//
-// PORT NOTE (timing): Python `time.perf_counter_ns()` + `_elapsed_ms(ns)` -> `performance.now()` (ms)
-//   + `_elapsed_ms(ms)`, rounded to 3 decimals like the rest of the port.
-//
-// PORT NOTE (asyncio.gather -> Promise.all): the pure multi-fetch turn in `_handle_tool_calls` runs
-//   independent dispatches concurrently and returns them in input order so message order matches.
+// Heuristic subagent execution: the single-subagent turn loop (`run`), the grouped multi-submit
+// collection (`run_group` + `_handle_group_tool_calls`), the prompt-caching / forced-tool-choice env
+// flags, and the compact-result validation + coercion helpers that control coverage. The pure
+// multi-fetch turn in `_handle_tool_calls` runs independent dispatches concurrently and returns them
+// in input order so message order matches.
 import { performance } from "node:perf_hooks";
 import { HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { MessageContent } from "@langchain/core/messages";
@@ -97,8 +72,8 @@ function _harvest_evidence_rows(content: any): Record<string, any>[] {
     if (rowid === null || rowid === undefined) {
       return;
     }
-    const source = pyOr(node["source"], node["table"]);
-    if (!pyTruthy(source)) {
+    const source = node["source"] || node["table"];
+    if (!source) {
       // Not a source-record row (e.g. a raw-GraphQL association/edge node that has a rowid but no
       // source/table) — skip it; an empty source is an invalid EvidenceReference.
       return;
@@ -110,9 +85,9 @@ function _harvest_evidence_rows(content: any): Record<string, any>[] {
     seen.add(key);
     rows.push({
       source,
-      table: pyOr(node["table"], source),
+      table: node["table"] || source,
       rowid,
-      summary: sliceCodePoints(pyStr(pyOr(node["summary"], "")), 200),
+      summary: sliceCodePoints(String(node["summary"] || ""), 200),
     });
   }
 
@@ -139,8 +114,7 @@ function _harvest_evidence_rows(content: any): Record<string, any>[] {
   return rows;
 }
 
-// PORT NOTE (Protocol -> interface): Python's structural `Protocol HeuristicSubagent` becomes an
-// interface; RetrievalHeuristicSubagent conforms structurally.
+/** Structural contract for a heuristic subagent; RetrievalHeuristicSubagent conforms structurally. */
 export interface HeuristicSubagent {
   run(agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<HeuristicAgentResult>;
 }
@@ -254,7 +228,12 @@ export class RetrievalHeuristicSubagent {
     const base = agent_inputs[0]!;
     const union_scope: string[] = [];
     for (const ai of agent_inputs) {
-      const sources = pyOr(pyOr(ai.heuristic["context_scope"], ai.heuristic["input_sources"]), []);
+      // Prefer context_scope, but an empty scope list falls through to input_sources (then to []).
+      const contextScope = ai.heuristic["context_scope"];
+      const inputSources = ai.heuristic["input_sources"];
+      const scoped =
+        Array.isArray(contextScope) && contextScope.length > 0 ? contextScope : inputSources;
+      const sources = Array.isArray(scoped) && scoped.length > 0 ? scoped : [];
       for (const source of Array.isArray(sources) ? sources : []) {
         const name = String(source);
         if (!union_scope.includes(name)) {
@@ -377,10 +356,10 @@ export class RetrievalHeuristicSubagent {
     const recorder = currentRecorder();
     for (const call of tool_calls) {
       const start = performance.now();
-      const name = String(pyOr(call["name"], ""));
+      const name = String(call["name"] || "");
       const args = isRecord(call["args"]) ? call["args"] : {};
       if (name === "submit_heuristic_result") {
-        const submitted_id = String(pyOr(args["heuristic_id"], ""));
+        const submitted_id = String(args["heuristic_id"] || "");
         const agent_input = inputs_by_id.get(submitted_id);
         if (agent_input === undefined || !pending.has(submitted_id)) {
           const remaining = [...pending].sort().join(", ") || "(all already submitted)";
@@ -408,8 +387,8 @@ export class RetrievalHeuristicSubagent {
           });
           messages.push(
             new ToolMessage({
-              content: pyJsonDumps(content, false),
-              tool_call_id: String(pyOr(call["id"], `call_${messages.length}`)),
+              content: JSON.stringify(content),
+              tool_call_id: String(call["id"] || `call_${messages.length}`),
               name,
             }),
           );
@@ -434,13 +413,13 @@ export class RetrievalHeuristicSubagent {
   ): Promise<HeuristicAgentResult | null> {
     const recorder = currentRecorder();
     const hid = String(agent_input.heuristic["id"]);
-    const names = tool_calls.map((c) => String(pyOr(c["name"], "")));
+    const names = tool_calls.map((c) => String(c["name"] || ""));
     if (tool_calls.length <= 1 || names.includes("submit_heuristic_result")) {
       // Serial path: preserves terminal-submit semantics and the single-call case (where concurrency
       // provides no benefit).
       for (const call of tool_calls) {
         const start = performance.now();
-        const name = String(pyOr(call["name"], ""));
+        const name = String(call["name"] || "");
         const args = isRecord(call["args"]) ? call["args"] : {};
         let content: any;
         if (name === "submit_heuristic_result") {
@@ -474,7 +453,7 @@ export class RetrievalHeuristicSubagent {
     const coros: Promise<Record<string, any>>[] = [];
     for (const call of tool_calls) {
       starts.push(performance.now());
-      const name = String(pyOr(call["name"], ""));
+      const name = String(call["name"] || "");
       const args = isRecord(call["args"]) ? call["args"] : {};
       coros.push(this.toolset.dispatch(name, args, agent_input, graphql, diagnostics));
     }
@@ -498,16 +477,16 @@ export class RetrievalHeuristicSubagent {
     hid: string,
     agent_id?: string,
   ): void {
-    const name = String(pyOr(call["name"], ""));
+    const name = String(call["name"] || "");
     const args = isRecord(call["args"]) ? call["args"] : {};
-    const tool_call_id = String(pyOr(call["id"], `call_${messages.length}`));
+    const tool_call_id = String(call["id"] || `call_${messages.length}`);
     let status = "ok";
     let error = "";
     if (isRecord(content) && content["ok"] === false) {
       status = "error";
-      error = String(pyOr(pyOr(content["error"], content["stage"]), "tool returned ok=false"));
+      error = String(content["error"] || content["stage"] || "tool returned ok=false");
     }
-    const resolvedAgentId: string = pyOr(agent_id, `heuristic:${hid}`);
+    const resolvedAgentId: string = agent_id ?? `heuristic:${hid}`;
     const describe =
       name !== "submit_heuristic_result" ? this.toolset.describe_call(name, args, content) : {};
     recorder.record_tool_call({
@@ -525,7 +504,7 @@ export class RetrievalHeuristicSubagent {
       },
     });
     messages.push(
-      new ToolMessage({ content: sliceCodePoints(pyJsonDumps(content, false), 20000), tool_call_id, name }),
+      new ToolMessage({ content: sliceCodePoints(JSON.stringify(content), 20000), tool_call_id, name }),
     );
   }
 }
@@ -557,9 +536,8 @@ const SubmitHeuristicResultFields = z
   })
   .describe("Submit the final structured heuristic result without runtime telemetry.");
 
-// PORT NOTE (@tool -> tool()): Python `@tool("submit_heuristic_result", args_schema=...)` -> LangChain.js
-// `tool(func, { name, description, schema })`. The func body is a stub that returns {} (Python `del ...;
-// return {}`) — the subagent loop routes by tool name and never invokes the tool's own func.
+// The func body is a stub that returns {} — the subagent loop routes by tool name and reads the tool
+// call args directly, so the tool's own func is never invoked.
 export const submit_heuristic_result_compact = tool(async () => ({}), {
   name: "submit_heuristic_result",
   description: "Submit the final HeuristicAgentResult without runtime telemetry.",
@@ -599,15 +577,15 @@ function _corrective_instruction(error_text: string): string {
  * so the finding + any cited evidence survive instead of crashing into an error stub.
  */
 function _coerce_status_to_valid(result: Record<string, any>): void {
-  const status = String(pyOr(result["status"], ""));
+  const status = String(result["status"] || "");
   let demoted = false;
-  if (status === "triggered" && !pyTruthy(result["evidence_for"])) {
+  if (status === "triggered" && result["evidence_for"].length === 0) {
     result["status"] = "inconclusive";
     demoted = true;
   } else if (
     status === "not_triggered" &&
-    !pyTruthy(result["evidence_against"]) &&
-    !pyTruthy(result["missing_evidence"])
+    result["evidence_against"].length === 0 &&
+    result["missing_evidence"].length === 0
   ) {
     result["status"] = "inconclusive";
     demoted = true;
@@ -621,10 +599,10 @@ function _coerce_status_to_valid(result: Record<string, any>): void {
     // validation_errors / error to be non-empty; backfill missing_evidence so the demoted result is
     // genuinely valid rather than tripping a different validator.
     if (
-      !pyTruthy(result["missing_evidence"]) &&
-      !pyTruthy(result["validation_errors"]) &&
-      !pyTruthy(result["tool_errors"]) &&
-      !pyTruthy(result["error"])
+      result["missing_evidence"].length === 0 &&
+      result["validation_errors"].length === 0 &&
+      result["tool_errors"].length === 0 &&
+      !result["error"]
     ) {
       result["missing_evidence"] = [
         "Could not cite the evidence required for a defensible triggered/not_triggered verdict; " +
@@ -663,7 +641,7 @@ function _validate_compact_final_result(
       };
     }
     _coerce_status_to_valid(result);
-    // Python: `try: return ... except ValidationError: raise` — a still-invalid payload propagates.
+    // A still-invalid payload propagates as a ZodError.
     return HeuristicAgentResultSchema.parse(result);
   }
 }
@@ -677,8 +655,8 @@ function _coerce_result_payload(
   if (!("heuristic_id" in result)) {
     result["heuristic_id"] = String(agent_input.heuristic["id"]);
   }
-  const category = String(pyOr(agent_input.heuristic["category"], "risk"));
-  let direction = String(pyOr(result["direction"], category));
+  const category = String(agent_input.heuristic["category"] || "risk");
+  let direction = String(result["direction"] || category);
   if (!["risk", "mitigation", "context", "quality"].includes(direction)) {
     direction = ["neutral", "agent_only"].includes(direction) ? "context" : "quality";
   }
@@ -709,8 +687,8 @@ function _coerce_result_payload(
       "GraphQL query budget was exhausted; result is based on evidence collected before budget exhaustion.",
     ]);
   }
-  const status = String(pyOr(result["status"], ""));
-  const score = pyInt(pyOr(result["score"], 0));
+  const status = String(result["status"] || "");
+  const score = Math.trunc(Number(result["score"])) || 0;
   if (
     evidence_refs.length > 0 &&
     (result["evidence_for"] as any[]).length === 0 &&
@@ -723,7 +701,8 @@ function _coerce_result_payload(
     }
   }
   result["evidence_refs"] = _dedupe_evidence_dicts([...result["evidence_for"], ...result["evidence_against"]]);
-  const existing: Record<string, any>[] = pyTruthy(result["evidence_refs"]) ? result["evidence_refs"] : [];
+  const existing: Record<string, any>[] =
+    result["evidence_refs"].length > 0 ? result["evidence_refs"] : [];
   const seen = new Set<string>();
   for (const r of existing) {
     if (isRecord(r)) {
@@ -774,9 +753,9 @@ function _coerce_result_payload(
   }
 }
 
-/** Python tuple key `(str(source), rowid)`; JSON.stringify preserves int-vs-str-vs-None distinctions. */
+/** Stable manifest key; JSON.stringify keeps the source string and preserves int/string/null rowid. */
 function _evidence_manifest_key(source: any, rowid: any): string {
-  return JSON.stringify([pyStr(source), rowid ?? null]);
+  return JSON.stringify([String(source), rowid ?? null]);
 }
 
 function _coerce_evidence_refs(value: any): Record<string, any>[] {
@@ -787,13 +766,13 @@ function _coerce_evidence_refs(value: any): Record<string, any>[] {
   for (const item of value) {
     if (isRecord(item)) {
       const ref: Record<string, any> = { ...item };
-      if (!("source" in ref) && pyTruthy(ref["table"])) {
+      if (!("source" in ref) && ref["table"]) {
         ref["source"] = String(ref["table"]);
       }
       if (!("summary" in ref) && "description" in ref) {
         const desc = ref["description"];
         delete ref["description"];
-        ref["summary"] = String(pyOr(desc, ""));
+        ref["summary"] = String(desc || "");
       }
       refs.push(ref);
       continue;
@@ -816,11 +795,11 @@ function _dedupe_evidence_dicts(refs: Record<string, any>[]): Record<string, any
   const deduped: Record<string, any>[] = [];
   const seen = new Set<string>();
   for (const ref of refs) {
-    const source = String(pyOr(ref["source"], ""));
+    const source = String(ref["source"] || "");
     const table = ref["table"] === null || ref["table"] === undefined ? null : String(ref["table"]);
     const rowid = typeof ref["rowid"] === "number" && Number.isInteger(ref["rowid"]) ? Math.trunc(ref["rowid"]) : null;
     const record_id = ref["record_id"] === null || ref["record_id"] === undefined ? null : String(ref["record_id"]);
-    const summary = String(pyOr(ref["summary"], ""));
+    const summary = String(ref["summary"] || "");
     const key = JSON.stringify([source, table, rowid, record_id, summary]);
     if (seen.has(key)) {
       continue;
@@ -842,20 +821,20 @@ function _coerce_string_list(value: any): string[] {
     return [];
   }
   if (Array.isArray(value)) {
-    return value.map((item) => pyStr(item)).filter((s) => s.trim().length > 0);
+    return value.map((item) => String(item)).filter((s) => s.trim().length > 0);
   }
   if (isRecord(value)) {
-    return Object.entries(value).map(([key, val]) => `${key}: ${pyStr(val)}`);
+    return Object.entries(value).map(([key, val]) => `${key}: ${val}`);
   }
-  const text = pyStr(value).trim();
+  const text = String(value).trim();
   return text ? [text] : [];
 }
 
 function _coerce_interpretation(value: any, result: Record<string, any>): Record<string, any> {
   const raw: Record<string, any> = isRecord(value) ? { ...value } : {};
   if (!("signal_strength" in raw)) {
-    const score = pyInt(pyOr(result["score"], 0));
-    const status = String(pyOr(result["status"], ""));
+    const score = Math.trunc(Number(result["score"])) || 0;
+    const status = String(result["status"] || "");
     if (status === "not_triggered" || status === "error" || score === 0) {
       raw["signal_strength"] = "none";
     } else if (Math.abs(score) >= 3) {
@@ -882,8 +861,8 @@ export function error_result(
   message: string,
   graphql: CountingGraphQLTool | null = null,
 ): HeuristicAgentResult {
-  const msg = pyStr(pyOr(message, "")).trim() || "Heuristic agent failed without an error message.";
-  const category = pyOr(heuristic["category"], "risk");
+  const msg = String(message || "").trim() || "Heuristic agent failed without an error message.";
+  const category = heuristic["category"] || "risk";
   const direction = ["risk", "mitigation", "context", "quality"].includes(category) ? category : "quality";
   let validation_errors: string[] = [];
   if (graphql) {
@@ -900,7 +879,7 @@ export function error_result(
     finding: `Heuristic agent failed: ${msg}`,
     missing_evidence: ["Heuristic execution failed before a defensible conclusion could be reached."],
     graphql_queries: logs.map((log) => ({ ...log })),
-    tool_errors: logs.filter((log) => pyTruthy(log.error)).map((log) => log.error as string),
+    tool_errors: logs.filter((log) => Boolean(log.error)).map((log) => log.error as string),
     validation_errors,
     query_repair_attempts: validation_logs.filter((log) => !log.ok).length,
     caveats: [],
@@ -910,7 +889,7 @@ export function error_result(
 }
 
 function _repair_result_text(result: Record<string, any>): void {
-  const finding = String(pyOr(result["finding"], "")).trim();
+  const finding = String(result["finding"] || "").trim();
   if (!finding) {
     result["finding"] = "Heuristic agent returned no narrative finding.";
   }
@@ -928,8 +907,8 @@ function _merge_graphql_logs(existing: any, graphql: CountingGraphQLTool): Recor
       continue;
     }
     const key = JSON.stringify([
-      String(pyOr(item["query_name"], "")),
-      pyJsonDumps(pyOr(item["variables"], {}), true),
+      String(item["query_name"] || ""),
+      stableStringify(item["variables"] ?? {}),
       item["error"] ?? null,
     ]);
     if (seen.has(key)) {
@@ -953,16 +932,16 @@ function _merge_strings(existing: any, additions: string[]): string[] {
   const values: string[] = [];
   if (Array.isArray(existing)) {
     for (const item of existing) {
-      const s = pyStr(item);
+      const s = String(item);
       if (s.trim().length > 0) {
         values.push(s);
       }
     }
-  } else if (pyTruthy(existing)) {
-    values.push(pyStr(existing));
+  } else if (existing) {
+    values.push(String(existing));
   }
   for (const item of additions) {
-    const s = pyStr(item);
+    const s = String(item);
     if (s.trim().length > 0) {
       values.push(s);
     }
@@ -975,7 +954,7 @@ function _response_tool_calls(response: any): Record<string, any>[] {
   if (Array.isArray(tool_calls)) {
     return tool_calls.filter((call) => isRecord(call)).map((call) => ({ ...call }));
   }
-  const additional_kwargs = pyOr(response?.additional_kwargs, {});
+  const additional_kwargs = response?.additional_kwargs ?? {};
   const raw_calls = additional_kwargs["tool_calls"];
   const calls: Record<string, any>[] = [];
   if (!Array.isArray(raw_calls)) {
@@ -985,9 +964,9 @@ function _response_tool_calls(response: any): Record<string, any>[] {
     if (!isRecord(raw)) {
       continue;
     }
-    const func = pyOr(raw["function"], {});
-    const name = pyOr(func["name"], raw["name"]);
-    const raw_args = pyOr(pyOr(func["arguments"], raw["args"]), {});
+    const func = raw["function"] ?? {};
+    const name = func["name"] || raw["name"];
+    const raw_args = func["arguments"] || raw["args"] || {};
     let args: any;
     if (typeof raw_args === "string") {
       try {
@@ -1008,14 +987,13 @@ function _elapsed_ms(startMs: number): number {
 }
 
 export function validate_result_dict(data: Record<string, any>): HeuristicAgentResult {
-  // Python: `try: return model_validate(data) except ValidationError: raise` — a no-op wrapper that
-  // lets the ZodError propagate.
+  // Thin wrapper that validates the dict and lets any ZodError propagate.
   return HeuristicAgentResultSchema.parse(data);
 }
 
-// ── HeuristicAgentResult field set (Python HeuristicAgentResult.model_fields) ──
-// PORT NOTE: HeuristicAgentResultSchema is a ZodEffects (a .strict() object wrapped by .superRefine);
-// unwrap to the inner object to read its field names, mirroring `.model_fields`.
+// ── HeuristicAgentResult field set ──
+// HeuristicAgentResultSchema is a ZodEffects (a .strict() object wrapped by .superRefine); unwrap to
+// the inner object to read its field names.
 function _heuristic_result_field_names(): Set<string> {
   let schema: any = HeuristicAgentResultSchema;
   while (schema?._def?.typeName === "ZodEffects") {
@@ -1025,47 +1003,13 @@ function _heuristic_result_field_names(): Set<string> {
 }
 const HEURISTIC_RESULT_FIELDS = _heuristic_result_field_names();
 
-// ── Python-compat helpers ──
+// ── Local helpers ──
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Python `a or b`: returns `a` when truthy (bool()), else `b`. */
-function pyOr(a: any, b: any): any {
-  return pyTruthy(a) ? a : b;
-}
-
-/** Python bool(): "", 0, [], {}, None/undefined are all falsy. */
-function pyTruthy(value: unknown): boolean {
-  if (value === null || value === undefined) {
-    return false;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value !== 0 && !Number.isNaN(value);
-  }
-  if (typeof value === "string") {
-    return value.length > 0;
-  }
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-  if (typeof value === "object") {
-    return Object.keys(value).length > 0;
-  }
-  return true;
-}
-
-/** Python `int(x)` (truncating). Non-numeric -> 0 (the callers only pass numeric-or-falsy values). */
-function pyInt(value: any): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : 0;
-}
-
-/** Python str.partition(sep) -> [before, sep, after]; no match -> [s, "", ""]. */
+/** Split on the first occurrence of `sep` into [before, sep, after]; no match -> [s, "", ""]. */
 function partition(s: string, sep: string): [string, string, string] {
   const idx = s.indexOf(sep);
   if (idx === -1) {
@@ -1074,25 +1018,24 @@ function partition(s: string, sep: string): [string, string, string] {
   return [s.slice(0, idx), sep, s.slice(idx + sep.length)];
 }
 
-/** Python str.isdigit() for the ASCII case: non-empty all-digit. */
+/** True for a non-empty ASCII all-digit string. */
 function isDigits(s: string): boolean {
   return s.length > 0 && /^[0-9]+$/.test(s);
 }
 
-/** Python text[:limit] slices by code point. */
+/** Truncate to at most `limit` Unicode code points (astral-safe). */
 function sliceCodePoints(text: string, limit: number): string {
   return [...text].slice(0, limit).join("");
 }
 
-/** Python str(exc) — for Error subclasses that is the message (no "Error: " prefix). */
+/** Message text of an error (no "Error: " prefix), or a stringified non-error value. */
 function errStr(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
-// PORT NOTE (ZodError -> str): reproduces enough of pydantic's `str(ValidationError)` for the substring
-// matching in `_corrective_instruction` — one "<path>: <message>" line per issue, guaranteeing the
-// superRefine messages ("...require evidence_for", "...require evidence_against or missing_evidence")
-// are present.
+// Render a ZodError as one "<path>: <message>" line per issue; keeps the superRefine messages
+// ("...require evidence_for", "...require evidence_against or missing_evidence") that
+// `_corrective_instruction` matches on.
 function zodErrorText(exc: unknown): string {
   if (exc instanceof z.ZodError) {
     return exc.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("\n");
@@ -1100,142 +1043,15 @@ function zodErrorText(exc: unknown): string {
   return String(exc);
 }
 
-// PORT NOTE (str()/repr()): reproduces Python str()/repr() closely enough for the values that flow
-// through here (None/True/False, single-quoted strings, {'k': v} dict syntax) so rendered strings match.
-function pyStr(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  return pyRepr(value);
-}
-
-function pyRepr(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  if (typeof value === "string") {
-    return pyReprStr(value);
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map(pyRepr).join(", ") + "]";
-  }
-  if (isRecord(value)) {
-    const parts = Object.keys(value).map((key) => `${pyReprStr(key)}: ${pyRepr(value[key])}`);
-    return "{" + parts.join(", ") + "}";
-  }
-  return String(value);
-}
-
-function pyReprStr(s: string): string {
-  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
-  let out = quote;
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === "\\") {
-      out += "\\\\";
-    } else if (ch === quote) {
-      out += "\\" + quote;
-    } else if (ch === "\n") {
-      out += "\\n";
-    } else if (ch === "\r") {
-      out += "\\r";
-    } else if (ch === "\t") {
-      out += "\\t";
-    } else if (code < 0x20 || code === 0x7f) {
-      out += "\\x" + code.toString(16).padStart(2, "0");
-    } else {
-      out += ch;
-    }
-  }
-  return out + quote;
-}
-
-// PORT NOTE (json.dumps): mirrors Python json.dumps(ensure_ascii=True, default=str,
-// separators=(", ", ": "), sort_keys=<sortKeys>) so ToolMessage content matches byte-for-byte. Used for
-// the tool-result content fed back to the model.
-function pyJsonDumps(value: unknown, sortKeys: boolean): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  const t = typeof value;
-  if (t === "string") {
-    return jsonEncStr(value as string);
-  }
-  if (t === "boolean") {
-    return value ? "true" : "false";
-  }
-  if (t === "number") {
-    return String(value);
-  }
-  if (t === "bigint") {
-    return (value as bigint).toString();
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map((item) => pyJsonDumps(item, sortKeys)).join(", ") + "]";
-  }
-  if (isRecord(value)) {
-    let keys = Object.keys(value);
-    if (sortKeys) {
-      keys = keys.sort();
-    }
-    const parts = keys.map((key) => `${jsonEncStr(key)}: ${pyJsonDumps(value[key], sortKeys)}`);
-    return "{" + parts.join(", ") + "}";
-  }
-  // default=str fallback
-  return jsonEncStr(String(value));
-}
-
-function jsonEncStr(s: string): string {
-  let out = '"';
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === '"') {
-      out += '\\"';
-    } else if (ch === "\\") {
-      out += "\\\\";
-    } else if (ch === "\n") {
-      out += "\\n";
-    } else if (ch === "\r") {
-      out += "\\r";
-    } else if (ch === "\t") {
-      out += "\\t";
-    } else if (ch === "\b") {
-      out += "\\b";
-    } else if (ch === "\f") {
-      out += "\\f";
-    } else if (code < 0x20) {
-      out += "\\u" + code.toString(16).padStart(4, "0");
-    } else if (code < 0x80) {
-      out += ch;
-    } else if (code > 0xffff) {
-      const c = code - 0x10000;
-      const hi = 0xd800 + (c >> 10);
-      const lo = 0xdc00 + (c & 0x3ff);
-      out += "\\u" + hi.toString(16).padStart(4, "0") + "\\u" + lo.toString(16).padStart(4, "0");
-    } else {
-      out += "\\u" + code.toString(16).padStart(4, "0");
-    }
-  }
-  return out + '"';
+/** Deterministic JSON with recursively sorted object keys, for stable dedup keys. */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.keys(val as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, (val as Record<string, unknown>)[k]]),
+        )
+      : val,
+  );
 }

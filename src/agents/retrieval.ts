@@ -1,17 +1,8 @@
-// Port of occupancy_engine/agents/retrieval.py.
-//
 // Shortcut retrieval helpers over the CountingGraphQLTool: fetch compact source rows / people for
-// the resolved subject address or a specific person id. Behavior is preserved 1:1 with the Python
-// source (query text, compaction field lists, summary formatting, error envelopes).
+// the resolved subject address or a specific person id.
 //
-// PORT NOTE (keyword args): Python's keyword-only params (`*, limit=..., offset=..., sources=...`)
-// become a trailing options object. Defaults apply only when the option is omitted (undefined), via
-// `?? default`; an explicitly-passed 0 is kept (matching Python, where the default only fires when the
-// arg is absent). The `int()`/`max`/`min` clamping then runs exactly as in Python.
-//
-// PORT NOTE (str()/casefold()): source normalization uses `.trim().toLowerCase()` for Python
-// `.strip().casefold()` (identical for the ASCII source names used here). Summary TEXT built from
-// values uses `pyStr` (None/True/False parity). See docs/MIGRATION.md "Known inherent divergences".
+// The limit/offset/sources options default only when omitted (undefined); an explicitly-passed 0 is
+// kept, then the max/min clamping runs.
 import { CountingGraphQLTool, GraphQLToolError } from "./graphql_tool.ts";
 import type { ResolvedAddressContext } from "./models.ts";
 
@@ -125,7 +116,7 @@ function _record_summary(source: string, data: Record<string, any>): string {
   for (const key of ["ownername", "firstname", "first_name", "lastname", "last_name", "address", "zip", "status", "own_rent", "matched", "property_type_normalized"]) {
     const value = data[key];
     if (value !== null && value !== undefined && value !== "") {
-      bits.push(`${key}=${pyStr(value)}`);
+      bits.push(`${key}=${value}`);
     }
   }
   return bits.join("; ");
@@ -136,7 +127,7 @@ function _compact_source_node(source: string, node: Record<string, any>): Record
   const compact_data = _compact_record_data(source, data);
   return {
     source,
-    table: orElse(node["table"], source),
+    table: node["table"] || source,
     rowid: node["rowid"] ?? null,
     summary: _record_summary(source, compact_data),
     data: compact_data,
@@ -149,10 +140,10 @@ export async function fetch_address_records(
   source: string,
   opts: { limit?: number; offset?: number } = {},
 ): Promise<Record<string, any>> {
-  source = String(orElse(source, "")).trim().toLowerCase();
-  const limit = Math.max(1, Math.min(pyInt(opts.limit ?? 20), 100));
-  const offset = Math.max(0, pyInt(opts.offset ?? 0));
-  const field = mapGet(ADDRESS_SOURCE_FIELDS, source);
+  source = String(source ?? "").trim().toLowerCase();
+  const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 20)), 100));
+  const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)));
+  const field = Object.hasOwn(ADDRESS_SOURCE_FIELDS, source) ? ADDRESS_SOURCE_FIELDS[source] : undefined;
   if (!field) {
     return { ok: false, error: `Unsupported address source: ${source}`, supported_sources: ["base", ...Object.keys(ADDRESS_SOURCE_FIELDS).sort()] };
   }
@@ -174,12 +165,12 @@ export async function fetch_address_records(
     if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc) };
   }
-  const conn = orElse(orElse(data["address"], {})[field], {});
+  const conn = (data["address"] ?? {})[field] ?? {};
   return {
     ok: true,
     source,
-    totalCount: pyInt(orElse(conn["totalCount"], 0)),
-    hasMore: truthy(conn["hasMore"]),
+    totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    hasMore: Boolean(conn["hasMore"]),
     records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
   };
 }
@@ -190,14 +181,12 @@ export async function fetch_address_records_multi(
   opts: { sources?: string[] | null; limit?: number; offset?: number } = {},
 ): Promise<Record<string, any>> {
   const requested = Array.isArray(opts.sources) ? opts.sources : [];
-  const normalized = orElse(
-    requested.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase()),
-    Object.keys(ADDRESS_SOURCE_FIELDS),
-  ) as string[];
+  const requestedNorm = requested.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase());
+  const normalized = requestedNorm.length > 0 ? requestedNorm : Object.keys(ADDRESS_SOURCE_FIELDS);
   const supported = normalized.filter((s) => Object.hasOwn(ADDRESS_SOURCE_FIELDS, s));
   const unsupported = setDifferenceSorted(normalized, supported);
-  const limit = Math.max(1, Math.min(pyInt(opts.limit ?? 25), 100));
-  const offset = Math.max(0, pyInt(opts.offset ?? 0));
+  const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 25)), 100));
+  const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)));
   if (supported.length === 0) {
     return { ok: false, error: "No supported address sources requested.", supported_sources: Object.keys(ADDRESS_SOURCE_FIELDS).sort(), unsupported_sources: unsupported };
   }
@@ -219,14 +208,14 @@ export async function fetch_address_records_multi(
     if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc), unsupported_sources: unsupported };
   }
-  const address = orElse(data["address"], {});
+  const address = data["address"] ?? {};
   const records: Record<string, any> = {};
   for (const source of supported) {
     const field = ADDRESS_SOURCE_FIELDS[source]!;
-    const conn = orElse(address[field], {});
+    const conn = address[field] ?? {};
     records[source] = {
-      totalCount: pyInt(orElse(conn["totalCount"], 0)),
-      hasMore: truthy(conn["hasMore"]),
+      totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+      hasMore: Boolean(conn["hasMore"]),
       records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
     };
   }
@@ -238,8 +227,8 @@ export async function fetch_people_at_address(
   address_id: number,
   opts: { limit?: number; offset?: number } = {},
 ): Promise<Record<string, any>> {
-  const limit = Math.max(1, Math.min(pyInt(opts.limit ?? 25), 100));
-  const offset = Math.max(0, pyInt(opts.offset ?? 0));
+  const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 25)), 100));
+  const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)));
   const query = `
     query AgentPeopleAtAddressShortcut($id: Int!, $limit: Int, $offset: Int) {
       peopleAtAddress(addressId: $id, limit: $limit, offset: $offset) {
@@ -256,12 +245,12 @@ export async function fetch_people_at_address(
     if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc) };
   }
-  const conn = orElse(data["peopleAtAddress"], {});
+  const conn = data["peopleAtAddress"] ?? {};
   return {
     ok: true,
     address_id,
-    totalCount: pyInt(orElse(conn["totalCount"], 0)),
-    hasMore: truthy(conn["hasMore"]),
+    totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    hasMore: Boolean(conn["hasMore"]),
     people: asArray(conn["nodes"]).map((node) => _compact_person_node(node)),
   };
 }
@@ -271,18 +260,16 @@ export async function fetch_person_records(
   person_id: string,
   opts: { sources?: string[] | null; limit?: number } = {},
 ): Promise<Record<string, any>> {
-  person_id = String(orElse(person_id, "")).trim();
+  person_id = String(person_id ?? "").trim();
   if (!person_id) {
     return { ok: false, error: "person_id is required." };
   }
   const requested = Array.isArray(opts.sources) ? opts.sources : [];
-  const normalized = orElse(
-    requested.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase()),
-    Object.keys(PERSON_SOURCE_FIELDS),
-  ) as string[];
+  const requestedNorm = requested.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase());
+  const normalized = requestedNorm.length > 0 ? requestedNorm : Object.keys(PERSON_SOURCE_FIELDS);
   const supported = normalized.filter((s) => Object.hasOwn(PERSON_SOURCE_FIELDS, s));
   const unsupported = setDifferenceSorted(normalized, supported);
-  const limit = Math.max(1, Math.min(pyInt(opts.limit ?? 20), 100));
+  const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 20)), 100));
   const selections = supported
     .map((s) => PERSON_SOURCE_FIELDS[s])
     .map((field) => `${field}(limit: $limit) { totalCount hasMore nodes { table rowid data } }`)
@@ -306,14 +293,14 @@ export async function fetch_person_records(
     if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc), unsupported_sources: unsupported };
   }
-  const person = orElse(data["person"], {});
+  const person = data["person"] ?? {};
   const records: Record<string, any> = {};
   for (const source of supported) {
     const field = PERSON_SOURCE_FIELDS[source]!;
-    const conn = orElse(person[field], {});
+    const conn = person[field] ?? {};
     records[source] = {
-      totalCount: pyInt(orElse(conn["totalCount"], 0)),
-      hasMore: truthy(conn["hasMore"]),
+      totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+      hasMore: Boolean(conn["hasMore"]),
       records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
     };
   }
@@ -330,11 +317,11 @@ export async function fetch_search_people(
   name: string,
   opts: { limit?: number } = {},
 ): Promise<Record<string, any>> {
-  name = String(orElse(name, "")).trim();
+  name = String(name ?? "").trim();
   if (!name) {
     return { ok: false, error: "name is required." };
   }
-  const limit = Math.max(1, Math.min(pyInt(opts.limit ?? 10), 50));
+  const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 10)), 50));
   const query = `
     query AgentSearchPeopleShortcut($q: String!, $limit: Int) {
       searchPersons(query: $q, limit: $limit) {
@@ -351,10 +338,10 @@ export async function fetch_search_people(
     if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc) };
   }
-  const conn = orElse(data["searchPersons"], {});
+  const conn = data["searchPersons"] ?? {};
   const records: Record<string, any>[] = [];
   for (const node of asArray(conn["nodes"])) {
-    const person = orElse(node["person"], {});
+    const person = node["person"] ?? {};
     records.push({
       id: person["id"] ?? null,
       firstname: person["firstname"] ?? null,
@@ -366,8 +353,8 @@ export async function fetch_search_people(
   return {
     ok: true,
     source: "people_search",
-    count: pyInt(orElse(conn["totalCount"], 0)),
-    has_more: truthy(conn["hasMore"]),
+    count: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    has_more: Boolean(conn["hasMore"]),
     records,
   };
 }
@@ -379,57 +366,20 @@ export function _resolve_bundle_address_id(context: ResolvedAddressContext): num
   return context.evidence_map.address_id;
 }
 
-// ── Python-semantics helpers ──────────────────────────────────────────────────
-
-function truthy(value: any): boolean {
-  if (value === null || value === undefined) return false;
-  if (value === false) return false;
-  if (value === true) return true;
-  if (typeof value === "number") return value !== 0 && !Number.isNaN(value);
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
-}
-
-/** Python `value or fallback`. */
-function orElse(value: any, fallback: any): any {
-  return truthy(value) ? value : fallback;
-}
-
-/** Python str(): None -> "None", True/False -> "True"/"False", else String(). */
-function pyStr(value: any): string {
-  if (value === null || value === undefined) return "None";
-  if (value === true) return "True";
-  if (value === false) return "False";
-  return String(value);
-}
-
-/** Python int(): truncate toward zero. */
-function pyInt(value: any): number {
-  return Math.trunc(Number(value));
-}
-
 function isDict(value: any): value is Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Python dict.get(key): own-property lookup only (never the JS prototype chain). */
-function mapGet(map: Record<string, string>, key: string): string | undefined {
-  return Object.hasOwn(map, key) ? map[key] : undefined;
-}
-
-/** Python `x or []` for list access (nodes may be null). */
+/** GraphQL connection nodes may be null; coerce to an array for iteration. */
 function asArray(value: any): any[] {
   return Array.isArray(value) ? value : [];
 }
 
-/** Python str(exc): GraphQLToolError message with no "Error: " prefix. */
 function errStr(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
-/** Python sorted(set(a) - set(b)) — items in `a` not in `b`, deduped, sorted. */
+/** Items in `a` not in `b`, deduped and sorted. */
 function setDifferenceSorted(a: string[], b: string[]): string[] {
   const bset = new Set(b);
   return [...new Set(a.filter((s) => !bset.has(s)))].sort();

@@ -1,11 +1,4 @@
-// Port of occupancy_engine/agents/toolsets/base.py.
-//
-// PORT NOTE (@dataclass -> class): Python's `@dataclass Diagnostics` (mutable, with default_factory
-// fields) becomes a class whose fields are initialized in-place, so `new Diagnostics()` yields the same
-// fresh, independent lists/counters. It is mutated in place by the loop and toolset dispatch.
-//
-// PORT NOTE (Protocol -> interface): `RetrievalToolset` is a Python `Protocol` (structural). The TS
-// equivalent is an `interface`; GraphQLToolset/TypedToolset conform structurally (they `implements` it).
+// Diagnostics container and the RetrievalToolset interface for subagent runs.
 import type { CountingGraphQLTool } from "../graphql_tool.ts";
 import type { HeuristicAgentInput } from "../models.ts";
 

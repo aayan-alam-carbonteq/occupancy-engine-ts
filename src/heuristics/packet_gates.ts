@@ -1,6 +1,5 @@
-// Port of occupancy_engine/heuristics/packet_gates.py.
-// Packet-level gating with field-aware (row-level) inspection. The
-// case_quality_and_synthesis special-casing is preserved exactly.
+// Packet-level gating with field-aware (row-level) inspection, including the
+// case_quality_and_synthesis special-casing.
 
 import { _atomic_gate_summary, _evidence_from_report_dict } from "./adapters.ts";
 import {
@@ -689,8 +688,8 @@ function _ownerrescount_notes(
   return notes;
 }
 
-// Encodes a (first, last) name key injectively (null-byte delimiter) to match
-// Python's tuple-keyed set membership for distinct-name counting.
+// Encodes a (first, last) name key injectively (null-byte delimiter) so a pair of strings can be
+// used as a single set/map key for distinct-name counting.
 function _encodeKey(key: readonly [string, string]): string {
   return `${key[0]}\u0000${key[1]}`;
 }

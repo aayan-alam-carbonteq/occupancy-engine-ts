@@ -1,4 +1,3 @@
-// Port of occupancy_engine/heuristics/adapters.py.
 // Small adapters between GateEvaluation objects and the evidence-dict shapes the
 // packet gate + engine layers consume.
 
@@ -29,9 +28,9 @@ export function _evidence_from_report(
     rows[source] = [];
   }
   return makeAddressEvidence({
-    address: String(pyOr(query["address"], "")),
-    normalized_address: String(pyOr(query["normalized_address"], "")),
-    zip: String(pyOr(query["zip"], "")),
+    address: String(query["address"] ?? ""),
+    normalized_address: String(query["normalized_address"] ?? ""),
+    zip: String(query["zip"] ?? ""),
     rows,
     owner_ids: [],
     owner_name_keys: [],
@@ -51,12 +50,12 @@ export function _evidence_from_report_dict(
   }
   const source_counts: Record<string, number> = {};
   for (const [key, value] of Object.entries(source_counts_raw)) {
-    source_counts[String(key)] = Math.trunc(Number(pyOr(value, 0)));
+    source_counts[String(key)] = Math.trunc(Number(value ?? 0));
   }
   return makeAddressEvidence({
-    address: String(pyOr(evidence["address"], "")),
-    normalized_address: String(pyOr(evidence["normalized_address"], "")),
-    zip: String(pyOr(evidence["zip"], "")),
+    address: String(evidence["address"] ?? ""),
+    normalized_address: String(evidence["normalized_address"] ?? ""),
+    zip: String(evidence["zip"] ?? ""),
     rows,
     owner_ids: (asArray(evidence["owner_ids"]) ?? []).map((v) => String(v)),
     owner_name_keys: (asArray(evidence["owner_name_keys"]) ?? []).map((item) => {
@@ -81,21 +80,6 @@ export function _evidence_from_report_dict(
     data_gaps: (asArray(evidence["data_gaps"]) ?? []).map((v) => String(v)),
     property_types: (asArray(evidence["property_types"]) ?? []).map((v) => String(v)),
   });
-}
-
-// PORT NOTE: `a or b`/truthiness helpers matching Python semantics.
-function pyBool(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
-}
-
-function pyOr(a: unknown, b: unknown): unknown {
-  return pyBool(a) ? a : b;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -1,7 +1,6 @@
-// Port of occupancy_engine/observability/pricing.py.
-// NOTE: the Python openrouter_pricing live-fetch fallback is out of scope for the agent-app port
-// (the benchmarks use native Anthropic pricing); unknown OpenRouter models return null cost, exactly
-// as the Python path does when live rates are unavailable.
+// Model pricing tables and cost estimation for token usage.
+// NOTE: the openrouter_pricing live-fetch fallback is out of scope here (the benchmarks use native
+// Anthropic pricing); unknown OpenRouter models return null cost when live rates are unavailable.
 import { makeCostEstimate, type CostEstimate, type TokenUsage } from "./models.ts";
 
 export interface ModelPricing {

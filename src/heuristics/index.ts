@@ -1,5 +1,4 @@
-// Port of occupancy_engine/heuristics/__init__.py.
-// Re-exports the exact public API __init__.py exposes via its __all__.
+// Re-exports the public heuristics API.
 
 export { evaluate_address, evaluate_evidence } from "./engine.ts";
 export { evaluate_packet_gate, evaluate_packet_gates } from "./packet_gates.ts";

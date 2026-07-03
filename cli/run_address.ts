@@ -1,4 +1,4 @@
-// Port of occupancy_engine/agents/run_address.py — run the agent network for one address.
+// Run the agent network for one address.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
@@ -78,7 +78,7 @@ async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  // metrics_events is exclude=True in Python's model_dump_json — omit from the output JSON.
+  // metrics_events is excluded from serialization — omit it from the output JSON.
   const { metrics_events, ...assessmentOut } = assessment;
   const output = JSON.stringify(assessmentOut, null, 2);
   const out = values.out;

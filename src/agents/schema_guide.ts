@@ -1,4 +1,4 @@
-// Port of occupancy_engine/agents/schema_guide.py.
+// GraphQL schema-guide query and formatting helpers.
 type Dict = Record<string, any>;
 
 export const SCHEMA_GUIDE_QUERY = `

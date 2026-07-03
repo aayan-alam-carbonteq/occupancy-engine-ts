@@ -1,4 +1,4 @@
-// Port of occupancy_engine/env.py — minimal .env loader + LangSmith env sync.
+// Minimal .env loader + LangSmith env sync.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 

@@ -1,12 +1,11 @@
-// Port of occupancy_engine/agents/llm.py.
+// LLM provider factory: builds a configured chat model per provider.
 //
-// PORT NOTE (dependency guard): Python wraps each provider import in try/except ImportError ->
-// AgentDependencyError. JS uses static imports and the LangChain provider packages are declared
-// dependencies, so there is no runtime ImportError to catch. AgentDependencyError is preserved as an
-// exported error class (for API parity) but is no longer thrown from a missing-import path.
+// The LangChain provider packages are declared dependencies and imported statically, so there is no
+// missing-module error to guard against at runtime. AgentDependencyError is preserved as an exported
+// error class but is no longer thrown from a missing-import path.
 //
-// PORT NOTE (timeout units): Python (httpx) `timeout` is in seconds; the JS SDKs use milliseconds.
-// timeout_seconds is multiplied by 1000 so the wall-clock timeout behaviour is preserved.
+// Timeout units: the SDKs use milliseconds, so timeout_seconds is multiplied by 1000 to preserve the
+// wall-clock timeout behaviour.
 import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -94,8 +93,8 @@ function createGeminiModel(config: LlmConfig): BaseChatModel {
     throw new AgentConfigurationError("Gemini provider requires GEMINI_API_KEY or GOOGLE_API_KEY.");
   }
   const model = config.model || process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  // PORT NOTE: JS ChatGoogleGenerativeAI exposes no `timeout` field, so timeout_seconds is not
-  // forwarded (Python passes it to langchain_google_genai). All other kwargs map directly.
+  // ChatGoogleGenerativeAI exposes no `timeout` field, so timeout_seconds is not forwarded. All other
+  // options map directly.
   return new ChatGoogleGenerativeAI({
     model,
     apiKey,

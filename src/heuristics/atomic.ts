@@ -1,7 +1,6 @@
-// Port of occupancy_engine/heuristics/atomic.py.
 // Atomic heuristic *definitions* (no gates, no executors): the reasoning-path
 // catalog keyed by the tax owner and cross-source evidence surfaces.
-// @dataclass(frozen=True) -> readonly interface fields + builder functions.
+// Modeled as readonly interfaces plus builder functions.
 
 export type SignalRole =
   | "risk"
@@ -79,9 +78,8 @@ export const DEFAULT_OUTPUT_FIELDS: readonly string[] = [
   "verdict_effect",
 ];
 
-// PORT NOTE: dataclasses.asdict -> a recursive deep-clone into plain objects/arrays
-// (class instances lose their prototype, tuples become arrays), matching how the
-// Python catalog builders serialize frozen dataclasses.
+// Recursive deep-clone into plain objects/arrays (class instances lose their prototype),
+// used by the catalog builders to serialize their definitions.
 export function asdict(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => asdict(item));

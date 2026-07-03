@@ -1,4 +1,3 @@
-// Port of occupancy_engine/heuristics/engine.py.
 // Top-level packet evaluation: runs the atomic engine, packet gates, per-packet
 // rollups, and the weighted synthesis into a single HeuristicsEvaluationReport.
 
@@ -122,7 +121,7 @@ function _evaluate_packet(
       }
       const status = path["status"];
       const pathId = path["path_id"];
-      if (_isActive(status) && pyBool(pathId)) {
+      if (_isActive(status) && Boolean(pathId)) {
         triggered_paths.push(String(pathId));
       }
     }
@@ -164,19 +163,9 @@ function _isActive(status: unknown): boolean {
   );
 }
 
-// PORT NOTE: datetime.now(UTC).isoformat(timespec="seconds").
+// ISO-8601 timestamp truncated to whole seconds, with an explicit UTC offset.
 function _now_iso_seconds(): string {
   return `${new Date().toISOString().slice(0, 19)}+00:00`;
-}
-
-function pyBool(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

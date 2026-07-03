@@ -1,4 +1,4 @@
-// Port of occupancy_engine/observability/models.py.
+// Telemetry record types for the metrics recorder.
 // These are internal telemetry records built by our own recorder (never parsed from untrusted
 // input), so they are plain TS types with default factories rather than zod schemas.
 

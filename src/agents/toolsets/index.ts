@@ -1,7 +1,4 @@
-// Port of occupancy_engine/agents/toolsets/__init__.py.
-//
-// The retrieval-mode factory the orchestrator uses to build the subagent toolset. Python's
-// keyword-only `include_shortcuts` becomes a positional boolean parameter.
+// The retrieval-mode factory the orchestrator uses to build the subagent toolset.
 import { GraphQLToolset } from "./graphql_toolset.ts";
 import { TypedToolset } from "./typed_toolset.ts";
 import type { RetrievalToolset } from "./base.ts";

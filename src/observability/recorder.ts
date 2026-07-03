@@ -1,22 +1,7 @@
-// Port of occupancy_engine/observability/recorder.py.
-//
-// PORT NOTE (naming): the MetricsRecorder public methods keep their Python snake_case names
-// (span, record_llm_call, record_tool_call, record_graphql_call, record_counter, record_event,
-// events, summary, payload_metadata) so the many call sites across the agent pipeline map 1:1.
-// Python keyword-only args ("*, name=..., agent_id=...") become a single options object.
-//
-// PORT NOTE (context / concurrency): Python uses two contextvars.ContextVar values — one for the
-// per-async-task current recorder, one for the current span id. Node's AsyncLocalStorage is the
-// faithful equivalent: a value set via `.run(store, fn)` is visible to the whole async subtree
-// spawned inside `fn` (propagating across every `await`) and is isolated between concurrent tasks.
-//   - `with set_current_recorder(rec): ...`  ->  `runWithRecorder(rec, fn)`
-//   - `current_recorder()`                   ->  `currentRecorder()`
-// The `with recorder.span(...) as sid: <body>` context manager becomes
-// `recorder.span(phase, opts, async (sid) => { <body> })`.
-//
-// PORT NOTE (locking): Python guards `_events` / `_seen_llm_run_ids` with a threading.Lock because
-// LangChain callbacks can fire from worker threads. The JS event loop is single-threaded and these
-// mutations are synchronous, so no lock is needed.
+// Metrics recorder: collects per-run telemetry events (spans, LLM/tool/GraphQL calls,
+// counters) and rolls them up into a RunMetricsSummary. The current recorder and the
+// current span id live in AsyncLocalStorage, so they propagate across every `await` to
+// the whole async subtree while staying isolated between concurrent runs.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
@@ -46,7 +31,7 @@ export interface RunMetricsContext {
   include_shortcuts: boolean;
 }
 
-/** Build a RunMetricsContext with the Python dataclass defaults (run_id is required). */
+/** Build a RunMetricsContext with default field values (run_id is required). */
 export function makeRunMetricsContext(
   partial: Partial<RunMetricsContext> & Pick<RunMetricsContext, "run_id">,
 ): RunMetricsContext {
@@ -128,8 +113,8 @@ export function currentRecorder(): AnyMetricsRecorder {
 }
 
 /**
- * PORT NOTE: replaces Python's `with set_current_recorder(rec): ...` context manager. Runs `fn`
- * with `rec` installed as the current recorder for the whole async subtree, then restores.
+ * Runs `fn` with `recorder` installed as the current recorder for the whole async
+ * subtree, then restores the previously installed recorder.
  */
 export function runWithRecorder<T>(recorder: AnyMetricsRecorder, fn: () => T): T {
   return recorderStorage.run(recorder, fn);
@@ -345,7 +330,7 @@ export class MetricsRecorder {
 
   payload_metadata(value: unknown, opts: PayloadMetadataOptions = {}): Record<string, unknown> {
     const previewLimit = opts.preview_limit ?? 4000;
-    const text = typeof value === "string" ? value : pyJsonDumps(value);
+    const text = typeof value === "string" ? value : JSON.stringify(value);
     const payload: Record<string, unknown> = {
       chars: codePointLength(text),
       bytes: Buffer.byteLength(text, "utf8"),
@@ -385,7 +370,7 @@ export class NoopMetricsRecorder {
   }
 
   payload_metadata(value: unknown, _opts: PayloadMetadataOptions = {}): Record<string, unknown> {
-    const text = typeof value === "string" ? value : pyJsonDumps(value);
+    const text = typeof value === "string" ? value : JSON.stringify(value);
     return {
       chars: codePointLength(text),
       bytes: Buffer.byteLength(text, "utf8"),
@@ -398,12 +383,12 @@ function uuidHex(): string {
   return randomUUID().replace(/-/g, "");
 }
 
-/** Port of _elapsed_ms: milliseconds since `startMs`, rounded to 3 decimals. */
+/** Milliseconds since `startMs`, rounded to 3 decimals. */
 function elapsedMs(startMs: number): number {
   return Math.round((performance.now() - startMs) * 1000) / 1000;
 }
 
-/** Python `type(exc).__name__`. */
+/** Constructor (class) name of a thrown value, falling back to its typeof. */
 function errorTypeName(exc: unknown): string {
   if (exc !== null && typeof exc === "object") {
     const ctor = (exc as { constructor?: { name?: string } }).constructor;
@@ -414,13 +399,13 @@ function errorTypeName(exc: unknown): string {
   return typeof exc;
 }
 
-/** Python `str(exc)`. */
+/** String form of a thrown value. */
 function errorMessageOf(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
 function codePointLength(text: string): number {
-  // Python len(str) counts Unicode code points; JS string.length counts UTF-16 units.
+  // Count Unicode code points rather than UTF-16 code units.
   let count = 0;
   for (const _ of text) {
     count += 1;
@@ -429,77 +414,6 @@ function codePointLength(text: string): number {
 }
 
 function sliceByCodePoints(text: string, limit: number): string {
-  // Python text[:limit] slices by code point.
+  // Slice by Unicode code point rather than UTF-16 code unit.
   return [...text].slice(0, limit).join("");
-}
-
-// PORT NOTE (payload hashing): Python computes chars/bytes/sha256 over
-// `json.dumps(value, sort_keys=True, default=str)`. This helper mirrors that serialization
-// (sorted keys, ", "/": " separators, ensure_ascii escaping, Infinity/NaN literals, non-JSON
-// values coerced via String()) so the fingerprints line up with the Python recorder. Because
-// ensure_ascii yields pure ASCII, `chars`/`bytes` also match Python's len() for dict/list inputs.
-function pyJsonDumps(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  const t = typeof value;
-  if (t === "string") {
-    return encodePyString(value as string);
-  }
-  if (t === "boolean") {
-    return value ? "true" : "false";
-  }
-  if (t === "number") {
-    return String(value);
-  }
-  if (t === "bigint") {
-    return (value as bigint).toString();
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map(pyJsonDumps).join(", ") + "]";
-  }
-  const proto = Object.getPrototypeOf(value);
-  if (proto === Object.prototype || proto === null) {
-    const obj = value as Record<string, unknown>;
-    const parts = Object.keys(obj)
-      .sort()
-      .map((key) => encodePyString(key) + ": " + pyJsonDumps(obj[key]));
-    return "{" + parts.join(", ") + "}";
-  }
-  // default=str fallback (dates, class instances, etc.)
-  return encodePyString(String(value));
-}
-
-function encodePyString(s: string): string {
-  let out = '"';
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === '"') {
-      out += '\\"';
-    } else if (ch === "\\") {
-      out += "\\\\";
-    } else if (ch === "\n") {
-      out += "\\n";
-    } else if (ch === "\r") {
-      out += "\\r";
-    } else if (ch === "\t") {
-      out += "\\t";
-    } else if (ch === "\b") {
-      out += "\\b";
-    } else if (ch === "\f") {
-      out += "\\f";
-    } else if (code < 0x20) {
-      out += "\\u" + code.toString(16).padStart(4, "0");
-    } else if (code < 0x80) {
-      out += ch;
-    } else if (code > 0xffff) {
-      const c = code - 0x10000;
-      const hi = 0xd800 + (c >> 10);
-      const lo = 0xdc00 + (c & 0x3ff);
-      out += "\\u" + hi.toString(16).padStart(4, "0") + "\\u" + lo.toString(16).padStart(4, "0");
-    } else {
-      out += "\\u" + code.toString(16).padStart(4, "0");
-    }
-  }
-  return out + '"';
 }

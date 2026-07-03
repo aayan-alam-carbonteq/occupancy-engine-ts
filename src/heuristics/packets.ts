@@ -1,4 +1,3 @@
-// Port of occupancy_engine/heuristics/packets.py.
 // PacketDefinition catalog (incl. the `group` field and the two group
 // assignments occupancy_presence / owner_property_context) plus the catalog
 // accessors the agent layer consumes.
@@ -289,8 +288,8 @@ function _packet_for_agent(packet: PacketDefinition): Record<string, unknown> {
     }
   }
   let subquestions: readonly unknown[] = reasoning_paths
-    .map((path) => pyOr(path["predicate"], path["title"], path["id"]))
-    .filter((path) => pyBool(path));
+    .map((path) => path["predicate"] || path["title"] || path["id"])
+    .filter((value) => Boolean(value));
   if (subquestions.length === 0) {
     subquestions = packet.output_fields;
   }
@@ -345,23 +344,4 @@ function _packet_scoring_guidance(packet: PacketDefinition): string {
     "separate risk evidence from caveats or mitigations. " +
     `Apply this reliability ladder in reasoning: ${ladder}.`
   );
-}
-
-// PORT NOTE: Python truthiness / `a or b or c` used by _packet_for_agent.
-function pyBool(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
-}
-
-function pyOr(...values: unknown[]): unknown {
-  for (let i = 0; i < values.length; i += 1) {
-    if (i === values.length - 1) return values[i];
-    if (pyBool(values[i])) return values[i];
-  }
-  return undefined;
 }

@@ -1,6 +1,4 @@
-// Port of occupancy_engine/heuristics/types.py.
-// @dataclass(frozen=True) -> readonly interface fields + builder functions that
-// apply the same defaults Python's dataclass field defaults provide.
+// Core heuristics types: readonly interfaces plus builder functions that apply the field defaults.
 
 export type PacketDecision = "run" | "skip" | "run_for_absence";
 

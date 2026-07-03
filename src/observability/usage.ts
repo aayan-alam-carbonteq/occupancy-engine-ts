@@ -1,4 +1,4 @@
-// Port of occupancy_engine/observability/usage.py.
+// Extract token usage from LLM responses and metadata.
 import { makeTokenUsage, type TokenUsage } from "./models.ts";
 
 type Dict = Record<string, unknown>;
@@ -54,7 +54,7 @@ function isEmpty(d: Dict): boolean {
   return Object.keys(d).length === 0;
 }
 
-/** Return the first value coercible to an integer, else 0 (port of _int). */
+/** Return the first value coercible to an integer, else 0. */
 function int(...values: unknown[]): number {
   for (const value of values) {
     if (value === null || value === undefined) {

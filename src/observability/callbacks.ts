@@ -1,20 +1,11 @@
-// Port of occupancy_engine/observability/callbacks.py.
+// A small, self-contained bridge from LangChain's LLM lifecycle callbacks into the local
+// MetricsRecorder. observability/index.ts re-exports LocalMetricsCallbackHandler and agents/tracing.ts
+// attaches it in runnableConfig.
 //
-// PORT NOTE: this module is not in the original "files to port" list, but observability/__init__.py
-// re-exports LocalMetricsCallbackHandler and agents/tracing.py attaches it in runnable_config, so it
-// is required to make index.ts / tracing.ts faithful and type-check. It is a small, self-contained
-// bridge from LangChain's LLM lifecycle callbacks into the local MetricsRecorder.
-//
-// PORT NOTE (callback API): Python's BaseCallbackHandler uses snake_case `on_*` hooks; LangChain.js
-// uses camelCase `handle*` hooks with a slightly different signature (run ids arrive as strings, not
-// UUIDs; metadata/tags are positional). The mapping is:
-//   on_chat_model_start -> handleChatModelStart
-//   on_llm_start        -> handleLLMStart
-//   on_llm_end          -> handleLLMEnd
-//   on_llm_error        -> handleLLMError
-//   on_retry            -> (no JS equivalent; see below)
-// LangChain.js has no retry callback, so Python's `on_retry` -> record_counter("langchain_retry")
-// has no faithful hook and is intentionally omitted (SDK retries stay internal).
+// LangChain's callbacks are camelCase `handle*` hooks (run ids arrive as strings, not UUIDs;
+// metadata/tags are positional): handleChatModelStart / handleLLMStart / handleLLMEnd / handleLLMError.
+// There is no retry callback, so the record_counter("langchain_retry") path has no faithful hook and
+// is intentionally omitted (SDK retries stay internal).
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import { performance } from "node:perf_hooks";
 import type { Serialized } from "@langchain/core/load/serializable";

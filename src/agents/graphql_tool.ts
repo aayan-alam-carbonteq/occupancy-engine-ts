@@ -1,47 +1,5 @@
-// Port of occupancy_engine/agents/graphql_tool.py.
-//
-// This is the agent's entire data-access layer: an HTTP GraphQL client + per-agent budget
-// counting + query validation + response compaction. Behavior is preserved 1:1 with the Python
-// source, including the exact error strings that downstream toolsets/subagents match on
-// ("GraphQL query budget exceeded: ...", "Only read-only GraphQL query operations are allowed.",
-// the validation hints / suggested-schema-targets / correct-query-skeletons, etc.).
-//
-// PORT NOTE (schema validation / the `graphql` package):
-//   Python uses graphql-core (`get_introspection_query`, `parse`, `build_client_schema`, `validate`)
-//   inside `validate_query` for *field-level* validation against the built client schema. The npm
-//   equivalent is graphql-js (`graphql` package) — the faithful port of graphql-core — which is now a
-//   dependency, so `validate_query` runs the exact same pipeline: parse -> validate against
-//   buildClientSchema(introspection). This gates every toolset execute (an invalid-field query yields
-//   ok=false + the hint payload and is NOT executed).
-//
-//   RESIDUAL DIFFERENCE (error strings): graphql-js wraps identifiers/values in "double quotes" in its
-//   error messages; graphql-core (Python) uses 'single quotes'. Python feeds `str(error)` (which is
-//   message + "\n\n" + a "GraphQL request:L:C" source snippet — identical format in both libraries) into
-//   the hint/target/skeleton helpers, whose substring checks use single quotes ("Cannot query field 'X'
-//   on type 'Y'", "Unknown type 'ID'", "Expected value of type 'StringFilterInput'"). We reproduce Python
-//   exactly by (a) using `String(error)` so the snippet is included just like graphql-core, and (b)
-//   normalizing the message line's double quotes to single quotes (see `normalizeErrorString`) so those
-//   matches fire and `errors` matches graphql-core's output. Only the message line is normalized; the
-//   source snippet reproduces the original query verbatim (double quotes preserved), exactly as
-//   graphql-core does. The helper functions themselves are ported verbatim (unchanged single-quote checks).
-//
-// PORT NOTE (HTTP / timeout): Python's `urllib.request.urlopen(req, timeout=timeout_seconds)`
-//   (SECONDS) becomes native `fetch(..., { signal: AbortSignal.timeout(timeout_seconds * 1000) })`
-//   (MILLISECONDS). Python reads at most `max_response_bytes + 1` bytes and errors if the body is
-//   larger; fetch has no partial read, so we download the full body and check its UTF-8 byte length
-//   (`> max_response_bytes` -> error) — same observable outcome, different resource usage. urllib
-//   raises HTTPError for non-2xx (caught as a URLError -> "GraphQL request failed: ..."); fetch does
-//   not throw on 4xx/5xx, so we replicate by throwing on `!response.ok`. The inner exception text of
-//   network/timeout failures differs by runtime, but the "GraphQL request failed: {exc}" /
-//   "GraphQL introspection failed: {exc}" wrapper and the GraphQLToolError type are preserved.
-//
-// PORT NOTE (async model): Python offloads the blocking urllib calls via `asyncio.to_thread`, so it
-//   keeps a sync `*_sync` implementation plus a thin async wrapper. `fetch` is natively async, so the
-//   `query_sync` / `validate_query_sync` / `describe_schema_sync` split collapses into the async
-//   `query` / `validate_query` / `describe_schema` methods (no external caller used the `_sync`
-//   variants, `.introspection`, or `.client_schema`). `cached_property introspection` becomes a
-//   memoized async method (the cached promise is cleared on rejection, since Python's cached_property
-//   does not memoize exceptions).
+// The agent's data-access layer: an HTTP GraphQL client with per-agent budget counting,
+// query validation, and response compaction.
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -66,8 +24,7 @@ export class GraphQLToolError extends Error {
   }
 }
 
-// Python pydantic BaseModel(extra="forbid"). These are internal response carriers (the task calls for
-// classes/interfaces, not zod). All fields are always populated on construction below.
+// Internal response carriers; all fields are always populated on construction below.
 export interface GraphQLResponse {
   data: Record<string, unknown>;
   errors: Array<Record<string, unknown>>;
@@ -125,13 +82,11 @@ export class GraphQLHttpTool {
       throw new GraphQLToolError("GraphQL response was not an object.");
     }
     const rawErrors = payload["errors"];
-    const errorsVal = pyTruthy(rawErrors) ? rawErrors : [];
-    if (pyTruthy(errorsVal)) {
-      const errList = Array.isArray(errorsVal) ? errorsVal : [{ message: pyStr(errorsVal) }];
-      throw new GraphQLToolError(`GraphQL returned errors: ${pyRepr(errList)}`);
+    if (Array.isArray(rawErrors) ? rawErrors.length > 0 : Boolean(rawErrors)) {
+      const errList = Array.isArray(rawErrors) ? rawErrors : [{ message: String(rawErrors) }];
+      throw new GraphQLToolError(`GraphQL returned errors: ${JSON.stringify(errList)}`);
     }
-    const dataRaw = payload["data"];
-    const data = pyTruthy(dataRaw) ? dataRaw : {};
+    const data = payload["data"] ?? {};
     if (!isRecord(data)) {
       throw new GraphQLToolError("GraphQL response data was not an object.");
     }
@@ -149,13 +104,12 @@ export class GraphQLHttpTool {
       const schema = await this.clientSchema();
       const document = parse(query);
       const errors = validate(schema, document);
-      // Python: messages = [str(error) for error in errors]. graphql-js String(error) == graphql-core
-      // str(error) (message + "\n\n" + location snippet), modulo the double->single quote normalization.
-      messages = errors.map((error) => normalizeErrorString(String(error)));
+      // String(error) is the message plus a "GraphQL request:L:C" source snippet.
+      messages = errors.map((error) => String(error));
     } catch (exc) {
-      // Python: except (GraphQLToolError, GraphQLError). Anything else propagates.
+      // Only tool-guardrail or GraphQL errors produce a validation payload; anything else propagates.
       if (exc instanceof GraphQLToolError || exc instanceof GraphQLError) {
-        const message = exc instanceof GraphQLError ? normalizeErrorString(String(exc)) : exc.message;
+        const message = exc instanceof GraphQLError ? String(exc) : exc.message;
         return {
           ok: false,
           query_name,
@@ -182,8 +136,8 @@ export class GraphQLHttpTool {
     return describeSchema(schema, target);
   }
 
-  // cached_property client_schema = build_client_schema(self.introspection). Memoized; the cached
-  // promise is dropped on rejection (cached_property does not memoize exceptions).
+  // Memoized client schema built from introspection; the cached promise is dropped on rejection so
+  // the next access re-fetches.
   private clientSchema(): Promise<GraphQLSchema> {
     if (this._clientSchema !== null) {
       return this._clientSchema;
@@ -206,8 +160,7 @@ export class GraphQLHttpTool {
     }
     const promise = this._fetchIntrospection();
     this._introspection = promise;
-    // cached_property does not memoize exceptions; drop the cached promise on rejection so the next
-    // access re-fetches.
+    // Drop the cached promise on rejection so the next access re-fetches.
     promise.catch(() => {
       if (this._introspection === promise) {
         this._introspection = null;
@@ -217,22 +170,19 @@ export class GraphQLHttpTool {
   }
 
   private async _fetchIntrospection(): Promise<Record<string, unknown>> {
-    // Python: get_introspection_query(descriptions=True). graphql-js getIntrospectionQuery is the port.
     const bodyString = JSON.stringify({ query: getIntrospectionQuery({ descriptions: true }), variables: {} });
     const text = await this._httpPost(
       bodyString,
       "GraphQL introspection failed",
       `GraphQL introspection response exceeded ${this.max_response_bytes} bytes.`,
     );
-    // Python: json.loads(...) here is NOT wrapped — a decode error propagates uncaught.
+    // A JSON parse error here propagates uncaught (unlike query(), which wraps it).
     const payload = asRecord(JSON.parse(text) as unknown);
     const rawErrors = payload["errors"];
-    const errorsVal = pyTruthy(rawErrors) ? rawErrors : [];
-    if (pyTruthy(errorsVal)) {
-      throw new GraphQLToolError(`GraphQL introspection returned errors: ${pyRepr(errorsVal)}`);
+    if (Array.isArray(rawErrors) ? rawErrors.length > 0 : Boolean(rawErrors)) {
+      throw new GraphQLToolError(`GraphQL introspection returned errors: ${JSON.stringify(rawErrors)}`);
     }
-    const dataRaw = payload["data"];
-    const data = pyTruthy(dataRaw) ? dataRaw : {};
+    const data = payload["data"] ?? {};
     if (!isRecord(data)) {
       throw new GraphQLToolError("GraphQL introspection data was not an object.");
     }
@@ -252,7 +202,7 @@ export class GraphQLHttpTool {
       throw new GraphQLToolError(`${failPrefix}: ${errStr(exc)}`);
     }
     if (!response.ok) {
-      // urllib raises HTTPError (a URLError) for non-2xx before reading the body.
+      // fetch does not throw on non-2xx, so surface it as a tool error before reading the body.
       throw new GraphQLToolError(`${failPrefix}: HTTP ${response.status} ${response.statusText}`);
     }
     let text: string;
@@ -348,7 +298,7 @@ export class CountingGraphQLTool {
       });
       throw exc;
     }
-    const response_bytes = Buffer.byteLength(pyJsonDumps(response.data, false), "utf8");
+    const response_bytes = Buffer.byteLength(JSON.stringify(response.data), "utf8");
     this.logs.push(
       GraphQLQueryLogSchema.parse({
         query_name,
@@ -439,7 +389,7 @@ export class CountingGraphQLTool {
       metadata: {
         target: target || "Query",
         schema_tool_calls: this.schema_tool_calls,
-        response_bytes: Buffer.byteLength(pyJsonDumps(data, false), "utf8"),
+        response_bytes: Buffer.byteLength(JSON.stringify(data), "utf8"),
       },
       agent_id: this.agent_id,
       heuristic_id: this.heuristic_id,
@@ -458,42 +408,28 @@ function queryMetadata(query: string, variables: Record<string, unknown>): Recor
     query_sha256: createHash("sha256").update(query, "utf8").digest("hex"),
     query_chars: Array.from(query).length,
     variable_keys: Object.keys(variables).map(String).sort(),
-    // ensure_ascii output is pure ASCII, so string length == Python len() (code points).
-    variables_chars: pyJsonDumps(variables, true).length,
+    variables_chars: JSON.stringify(variables).length,
   };
 }
 
-/** Port of _elapsed_ms: milliseconds since `startMs`, rounded to 3 decimals (matches recorder). */
+/** Milliseconds since `startMs`, rounded to 3 decimals (matches recorder). */
 function elapsedMs(startMs: number): number {
   return Math.round((performance.now() - startMs) * 1000) / 1000;
 }
 
-/** Python str(exc): for RuntimeError/GraphQLToolError this is the message (no "Error: " prefix). */
+/** Message text of an error value (no "Error: " prefix). */
 function errStr(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
-// PORT NOTE (see header): normalize graphql-js "double-quote" error messages to graphql-core's
-// 'single-quote' form so the ported hint/target/skeleton matchers (which use single quotes) fire
-// exactly as in Python, and so `errors` matches graphql-core's output. Only the message line (before
-// the "\n\n" source-location block that String(error)/printError appends) is normalized; the location
-// snippet reproduces the original query verbatim (double quotes preserved), exactly as graphql-core does.
-function normalizeErrorString(s: string): string {
-  const sep = s.indexOf("\n\n");
-  if (sep === -1) {
-    return s.replaceAll('"', "'");
-  }
-  return s.slice(0, sep).replaceAll('"', "'") + s.slice(sep);
-}
-
 function validationHints(message: string): string[] {
   const hints: string[] = [];
-  if (message.includes("Cannot query field 'sourceRecord' on type 'PropertyPersonAssociation'")) {
+  if (message.includes('Cannot query field "sourceRecord" on type "PropertyPersonAssociation"')) {
     hints.push(
       "Use PropertyPersonAssociation.provenance { source rowid summary } on owner edges, or fetch Query.sourceRecord(source, rowid) separately for raw data.",
     );
   }
-  if (message.includes("Expected value of type 'StringFilterInput'")) {
+  if (message.includes('Expected value of type "StringFilterInput"')) {
     hints.push(
       'Filter fields use objects, e.g. where: {firstname: {eq: "ELGIN"}} not where: {firstname: "ELGIN"}.',
     );
@@ -506,7 +442,7 @@ function validationHints(message: string): string[] {
       "For source connections use nodes { source table rowid recordId summary data }; these fields are not on the connection itself.",
     );
   }
-  if (message.includes("Unknown type 'ID'")) {
+  if (message.includes('Unknown type "ID"')) {
     hints.push("This schema uses Int for address ids and String for person/source ids; do not use GraphQL ID.");
   }
   if (message.includes("must have a selection of subfields")) {
@@ -524,7 +460,7 @@ function suggestedSchemaTargets(messages: string[]): string[] {
   if (joined.includes("SourceRecordConnection") || joined.includes("Connection")) {
     targets.push("SourceRecordConnection", "SourceRecord", "Address");
   }
-  if (joined.includes("Person") || joined.includes("field 'name'")) {
+  if (joined.includes("Person") || joined.includes('field "name"')) {
     targets.push("Person");
   }
   if (joined.includes("address") || joined.includes("Address")) {
@@ -555,10 +491,7 @@ function correctQuerySkeletons(messages: string[]): string[] {
     );
     skeletons.push(addressUtilityRecordsQuery());
   }
-  if (
-    joined.includes("Cannot query field 'name' on type 'Person'") ||
-    joined.includes('Cannot query field "name" on type "Person"')
-  ) {
+  if (joined.includes('Cannot query field "name" on type "Person"')) {
     skeletons.push(
       `query PeopleAtAddress($id: Int!, $limit: Int = 25) {
   peopleAtAddress(addressId: $id, limit: $limit) {
@@ -580,7 +513,7 @@ function correctQuerySkeletons(messages: string[]): string[] {
 }`,
     );
   }
-  if (joined.includes("Unknown type 'ID'") || joined.includes('Unknown type "ID"')) {
+  if (joined.includes('Unknown type "ID"')) {
     skeletons.push(
       `query AddressByIntId($id: Int!) {
   address(id: $id) { id normAddress zip5 }
@@ -902,7 +835,7 @@ function summarizeSourceData(data: Record<string, unknown>): string {
   for (const key of SUMMARY_PRIORITY_KEYS) {
     const value = data[key];
     if (value !== null && value !== undefined && value !== "") {
-      parts.push(`${key}=${pyStr(value)}`);
+      parts.push(`${key}=${String(value)}`);
     }
     if (parts.length >= 8) {
       break;
@@ -911,14 +844,14 @@ function summarizeSourceData(data: Record<string, unknown>): string {
   if (parts.length === 0) {
     for (const [key, value] of Object.entries(data)) {
       if (value !== null && value !== undefined && value !== "") {
-        parts.push(`${key}=${pyStr(value)}`);
+        parts.push(`${key}=${String(value)}`);
       }
       if (parts.length >= 8) {
         break;
       }
     }
   }
-  // Python slices str[:600] by code point.
+  // Cap the summary at 600 code points.
   return Array.from(parts.join("; ")).slice(0, 600).join("");
 }
 
@@ -966,7 +899,7 @@ function findType(schema: Record<string, unknown>, name: unknown): Record<string
 }
 
 function typeFields(schema: Record<string, unknown>, typeName: unknown): Record<string, unknown>[] {
-  if (!pyTruthy(typeName)) {
+  if (!typeName) {
     return [];
   }
   const typeInfo = findType(schema, typeName);
@@ -976,7 +909,7 @@ function typeFields(schema: Record<string, unknown>, typeName: unknown): Record<
 function renderFields(fields: unknown[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const field of fields) {
-    if (!isRecord(field) || !pyTruthy(field["name"])) {
+    if (!isRecord(field) || !field["name"]) {
       continue;
     }
     const args = asArray(field["args"]).map((arg) => {
@@ -996,7 +929,7 @@ function renderFields(fields: unknown[]): Record<string, unknown>[] {
 function renderInputFields(fields: unknown[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const field of fields) {
-    if (!isRecord(field) || !pyTruthy(field["name"])) {
+    if (!isRecord(field) || !field["name"]) {
       continue;
     }
     out.push({
@@ -1024,184 +957,16 @@ function typeName(typeRef: unknown): string {
   return String(name || kind || "Unknown");
 }
 
-// ── Python-compat helpers ──
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Python `x or {}` / `(x or {})` for dict access. */
+/** Returns the value if it is a plain object, else an empty object. */
 function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-/** Python `x or []` for list access. */
+/** Returns the value if it is an array, else an empty array. */
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
-}
-
-/** Python bool(): "", 0, [], {}, None/undefined are all falsy. */
-function pyTruthy(value: unknown): boolean {
-  if (value === null || value === undefined) {
-    return false;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value !== 0 && !Number.isNaN(value);
-  }
-  if (typeof value === "string") {
-    return value.length > 0;
-  }
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-  if (typeof value === "object") {
-    return Object.keys(value).length > 0;
-  }
-  return true;
-}
-
-// PORT NOTE (Python str()/repr()): reproduces Python's str()/repr() closely enough for the values
-// that flow through here (JSON scalars/lists/dicts from server responses): None/True/False, single-
-// quoted strings with quote-swap + control-char escaping, {'k': v} dict syntax. The one unavoidable
-// gap: JS has no int/float distinction, so a whole-number float (Python "1.0") renders as "1".
-function pyStr(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  return pyRepr(value);
-}
-
-function pyRepr(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  if (typeof value === "string") {
-    return pyReprStr(value);
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map(pyRepr).join(", ") + "]";
-  }
-  if (isRecord(value)) {
-    const parts = Object.keys(value).map((key) => `${pyReprStr(key)}: ${pyRepr(value[key])}`);
-    return "{" + parts.join(", ") + "}";
-  }
-  return String(value);
-}
-
-function pyReprStr(s: string): string {
-  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
-  let out = quote;
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === "\\") {
-      out += "\\\\";
-    } else if (ch === quote) {
-      out += "\\" + quote;
-    } else if (ch === "\n") {
-      out += "\\n";
-    } else if (ch === "\r") {
-      out += "\\r";
-    } else if (ch === "\t") {
-      out += "\\t";
-    } else if (code < 0x20 || code === 0x7f) {
-      out += "\\x" + code.toString(16).padStart(2, "0");
-    } else {
-      out += ch;
-    }
-  }
-  return out + quote;
-}
-
-// PORT NOTE (byte/char counts): mirrors Python json.dumps(ensure_ascii=True, default=str,
-// separators=(", ", ": "), sort_keys=<sortKeys>) so `variables_chars` / `response_bytes` line up.
-// Used only for observability counts (never sent to the server). Whole-number floats diverge (see pyStr).
-function pyJsonDumps(value: unknown, sortKeys: boolean): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  const t = typeof value;
-  if (t === "string") {
-    return jsonEncStr(value as string);
-  }
-  if (t === "boolean") {
-    return value ? "true" : "false";
-  }
-  if (t === "number") {
-    return String(value);
-  }
-  if (t === "bigint") {
-    return (value as bigint).toString();
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map((item) => pyJsonDumps(item, sortKeys)).join(", ") + "]";
-  }
-  if (isRecord(value)) {
-    let keys = Object.keys(value);
-    if (sortKeys) {
-      keys = keys.sort();
-    }
-    const parts = keys.map((key) => `${jsonEncStr(key)}: ${pyJsonDumps(value[key], sortKeys)}`);
-    return "{" + parts.join(", ") + "}";
-  }
-  // default=str fallback
-  return jsonEncStr(String(value));
-}
-
-/** JSON string encoder with ensure_ascii=True (matches recorder.pyJsonDumps' encoder). */
-function jsonEncStr(s: string): string {
-  let out = '"';
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === '"') {
-      out += '\\"';
-    } else if (ch === "\\") {
-      out += "\\\\";
-    } else if (ch === "\n") {
-      out += "\\n";
-    } else if (ch === "\r") {
-      out += "\\r";
-    } else if (ch === "\t") {
-      out += "\\t";
-    } else if (ch === "\b") {
-      out += "\\b";
-    } else if (ch === "\f") {
-      out += "\\f";
-    } else if (code < 0x20) {
-      out += "\\u" + code.toString(16).padStart(4, "0");
-    } else if (code < 0x80) {
-      out += ch;
-    } else if (code > 0xffff) {
-      const c = code - 0x10000;
-      const hi = 0xd800 + (c >> 10);
-      const lo = 0xdc00 + (c & 0x3ff);
-      out += "\\u" + hi.toString(16).padStart(4, "0") + "\\u" + lo.toString(16).padStart(4, "0");
-    } else {
-      out += "\\u" + code.toString(16).padStart(4, "0");
-    }
-  }
-  return out + '"';
 }

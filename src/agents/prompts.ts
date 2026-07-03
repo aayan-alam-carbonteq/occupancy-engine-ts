@@ -1,137 +1,18 @@
-// Port of occupancy_engine/agents/prompts.py.
+// Prompt text and prompt builders for the agent pipeline.
 //
-// Prompt TEXT is behavior-critical: every string literal below is reproduced VERBATIM from the
-// Python source (character-for-character, including punctuation, newlines, capitalization, and
-// exact wording). Do not "improve", rewrap, or paraphrase.
-//
-// The module is self-contained (Python imported only `json` and `typing.Any`). Inputs are plain
-// dicts modelled here as `Record<string, any>`.
+// The prompt strings below are behavior-critical: their exact wording, punctuation, and formatting
+// are tuned. Do not rewrap or paraphrase them — the builders only control how VALUES are rendered
+// into the surrounding text. Inputs are plain objects modelled as `Record<string, any>`.
 
 type Dict = Record<string, any>;
-
-// ---------------------------------------------------------------------------
-// Python-semantics helpers (truthiness, str(), int(), json.dumps).
-// ---------------------------------------------------------------------------
-
-/** Mirror Python truthiness: None/False/0/""/[]/{} are falsy, everything else truthy. */
-function truthy(value: any): boolean {
-  if (value === null || value === undefined) return false;
-  if (value === false) return false;
-  if (value === true) return true;
-  if (typeof value === "number") return value !== 0 && !Number.isNaN(value);
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
-}
-
-/** Mirror Python's `value or fallback`. */
-function orElse<T>(value: any, fallback: T): any {
-  return truthy(value) ? value : fallback;
-}
-
-/** Mirror Python str(): None -> "None", True -> "True", False -> "False", else String(). */
-// PORT NOTE: Python f-string interpolation uses str(); a missing dict key becomes None -> "None"
-// and bools render as "True"/"False" (not JS "undefined"/"true"/"false"). pyStr preserves that.
-// Float-vs-int distinction (Python 5.0 -> "5.0") is not representable in JS (single number type);
-// integer-valued floats render as "5" here. In practice these interpolations carry ints/strings.
-function pyStr(value: any): string {
-  if (value === null || value === undefined) return "None";
-  if (value === true) return "True";
-  if (value === false) return "False";
-  return String(value);
-}
-
-/** Mirror Python int(): truncate toward zero. */
-function pyInt(value: any): number {
-  return Math.trunc(Number(value));
-}
-
-/** Mirror Python len() for the container shapes used here. */
-function pyLen(value: any): number {
-  if (typeof value === "string") return value.length;
-  if (Array.isArray(value)) return value.length;
-  if (value && typeof value === "object") return Object.keys(value).length;
-  return 0;
-}
 
 function isDict(value: any): boolean {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Code-point ordering, matching Python's default sort of str keys. */
+// Compare strings by code point (default lexicographic order).
 function codePointCompare(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-// PORT NOTE: json.dumps(x, indent=2, sort_keys=True) is reproduced faithfully here rather than via
-// JSON.stringify, because the rendered text is part of behavior-critical prompt output. Differences
-// replicated: (1) object keys sorted RECURSIVELY by code point; (2) ensure_ascii=True — every char
-// < 0x20 or >= 0x7f is escaped as \uXXXX (lowercase hex, UTF-16 code units incl. surrogate pairs),
-// with short escapes \" \\ \b \t \n \f \r; (3) None/undefined -> null (undefined-valued object keys
-// are kept, not dropped as JSON.stringify would). Float-valued integers (Python 5.0 -> "5.0") cannot
-// be distinguished in JS and render as "5"; the dicts passed here carry ints/strings/None in practice.
-function pyJsonEscapeString(s: string): string {
-  let out = '"';
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    switch (c) {
-      case 0x22:
-        out += '\\"';
-        break;
-      case 0x5c:
-        out += "\\\\";
-        break;
-      case 0x08:
-        out += "\\b";
-        break;
-      case 0x09:
-        out += "\\t";
-        break;
-      case 0x0a:
-        out += "\\n";
-        break;
-      case 0x0c:
-        out += "\\f";
-        break;
-      case 0x0d:
-        out += "\\r";
-        break;
-      default:
-        if (c < 0x20 || c > 0x7e) {
-          out += "\\u" + c.toString(16).padStart(4, "0");
-        } else {
-          out += s[i];
-        }
-    }
-  }
-  return out + '"';
-}
-
-function pyJsonDumps(value: any, indent = 2): string {
-  const unit = " ".repeat(indent);
-  const serialize = (v: any, level: number): string => {
-    if (v === null || v === undefined) return "null";
-    if (v === true) return "true";
-    if (v === false) return "false";
-    if (typeof v === "number") return String(v);
-    if (typeof v === "string") return pyJsonEscapeString(v);
-    if (Array.isArray(v)) {
-      if (v.length === 0) return "[]";
-      const pad = unit.repeat(level + 1);
-      const items = v.map((item) => pad + serialize(item, level + 1));
-      return "[\n" + items.join(",\n") + "\n" + unit.repeat(level) + "]";
-    }
-    if (typeof v === "object") {
-      const keys = Object.keys(v).sort(codePointCompare);
-      if (keys.length === 0) return "{}";
-      const pad = unit.repeat(level + 1);
-      const items = keys.map((k) => pad + pyJsonEscapeString(k) + ": " + serialize(v[k], level + 1));
-      return "{\n" + items.join(",\n") + "\n" + unit.repeat(level) + "}";
-    }
-    return "null";
-  };
-  return serialize(value, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +124,7 @@ export function heuristic_user_prompt(
       "- Prefer get_address_records/get_people_at_address/get_person_records before custom GraphQL.",
     );
   }
-  if (truthy(heuristic["packet"])) {
+  if (heuristic["packet"]) {
     let retrieval_section: string[];
     if (tool_guide != null) {
       retrieval_section = ["Available tools:", tool_guide, ""];
@@ -265,7 +146,7 @@ export function heuristic_user_prompt(
       _heuristic_brief(heuristic),
       "",
       "Master-Assigned Mission",
-      render_plan_section(orElse(plan, {})),
+      render_plan_section(plan ?? {}),
       "",
       "Case Context",
       render_context_sections(context),
@@ -291,10 +172,10 @@ export function heuristic_user_prompt(
     _heuristic_brief(heuristic),
     "",
     "Master-assigned mission:",
-    pyJsonDumps(orElse(plan, {})),
+    JSON.stringify(plan ?? {}, null, 2),
     "",
     "Case context:",
-    pyJsonDumps(context),
+    JSON.stringify(context, null, 2),
     "",
   ];
   if (tool_guide != null) {
@@ -346,20 +227,21 @@ export function grouped_heuristic_user_prompt(
 ): string {
   context = { ...context };
   delete context["_heuristic_plan"];
-  let plansArr: Dict[] = truthy(plans) ? Array.from(plans as Dict[]) : heuristics.map(() => ({}));
+  let plansArr: Dict[] = plans && plans.length > 0 ? Array.from(plans) : heuristics.map(() => ({}));
   // Present the most source-heavy packet first. The grouped agent tends to front-load the first
   // packet, so leading with the harder (more sources) one keeps a later, source-richer packet from
   // being skimmed (n=12: owner_identity_and_mailing lost ~0.10 data coverage when it trailed the
-  // simpler property_tax_context). Python's sort is stable, so equal-weight packets keep their order.
-  // PORT NOTE: Python sorted(..., reverse=True) is stable (ties keep original order). Reproduced with
-  // a stable descending sort (weightB - weightA); do NOT sort ascending then reverse, which would
-  // flip ties.
-  const weightOf = (h: Dict): number =>
-    pyLen(orElse(orElse(h["context_scope"], h["input_sources"]), []));
+  // simpler property_tax_context). Sort descending by source count, keeping it stable so equal-weight
+  // packets keep their original order (sort the indices; do NOT sort ascending then reverse, which
+  // would flip ties).
+  const weightOf = (h: Dict): number => {
+    const scope = h["context_scope"]?.length ? h["context_scope"] : h["input_sources"]?.length ? h["input_sources"] : [];
+    return scope.length;
+  };
   const order = heuristics.map((_, i) => i).sort((a, b) => weightOf(heuristics[b]!) - weightOf(heuristics[a]!));
   heuristics = order.map((i) => heuristics[i]!);
   plansArr = order.map((i) => plansArr[i]!);
-  const ids = heuristics.map((h) => pyStr(h["id"]));
+  const ids = heuristics.map((h) => String(h["id"]));
 
   let retrieval_section: string[];
   if (tool_guide != null) {
@@ -393,10 +275,10 @@ export function grouped_heuristic_user_prompt(
     const heuristic = heuristics[index]!;
     const plan = index < plansArr.length ? plansArr[index] : {};
     packet_blocks.push(
-      `### Heuristic ${index + 1} of ${heuristics.length}: ${pyStr(heuristic["id"])}`,
+      `### Heuristic ${index + 1} of ${heuristics.length}: ${heuristic["id"]}`,
       _heuristic_brief(heuristic),
       "Master-Assigned Mission",
-      render_plan_section(orElse(plan, {})),
+      render_plan_section(plan ?? {}),
       "",
     );
   }
@@ -437,7 +319,7 @@ export function schema_context_for_heuristic(heuristic: Dict): string {
     "- Fetch raw source data only as provenance fallback with sourceRecord(source, rowid) or sourceRecords(...).",
     "- Connection pattern: someConnection(limit: $limit) { totalCount hasMore nodes { ... } }.",
   ];
-  if (truthy(source_enums)) {
+  if (source_enums.length > 0) {
     lines.push("- Relevant Source enum values: " + [...new Set(source_enums)].join(", ") + ".");
   }
   lines.push("");
@@ -538,10 +420,10 @@ export function master_planning_user_prompt(context: Dict, heuristics: Dict[], s
     "The plan controls which workers run and what each worker should investigate.",
     "",
     "Resolved address and evidence map:",
-    sectioned ? render_context_sections(context) : pyJsonDumps(context),
+    sectioned ? render_context_sections(context) : JSON.stringify(context, null, 2),
     "",
     "Candidate heuristics:",
-    sectioned ? render_heuristic_sections(compact_heuristics) : pyJsonDumps(compact_heuristics),
+    sectioned ? render_heuristic_sections(compact_heuristics) : JSON.stringify(compact_heuristics, null, 2),
     "",
     "Planning rules:",
     "- Use submit_investigation_plan exactly once.",
@@ -569,16 +451,16 @@ export function master_adjudication_user_prompt(
     "Conduct your adjudication and submit the final verdict.",
     "",
     "Resolved address context:",
-    sectioned ? render_context_sections(context) : pyJsonDumps(context),
+    sectioned ? render_context_sections(context) : JSON.stringify(context, null, 2),
     "",
     "Raw heuristic score summary:",
-    sectioned ? render_mapping_section(raw_score) : pyJsonDumps(raw_score),
+    sectioned ? render_mapping_section(raw_score) : JSON.stringify(raw_score, null, 2),
     "",
     "Detected structured conflicts:",
-    sectioned ? render_conflict_sections(conflicts) : pyJsonDumps(conflicts),
+    sectioned ? render_conflict_sections(conflicts) : JSON.stringify(conflicts, null, 2),
     "",
     "Analyst submissions:",
-    sectioned ? render_worker_sections(worker_results) : pyJsonDumps(worker_results),
+    sectioned ? render_worker_sections(worker_results) : JSON.stringify(worker_results, null, 2),
     "",
     "Adjudication requirements:",
     "- Keep raw_score equal to raw_score.final_score.",
@@ -627,20 +509,27 @@ export function prompt_context(
   if (profile === "full") {
     return context;
   }
-  const evidence_map = orElse(context["evidence_map"], {});
+  const evidence_map = context["evidence_map"] ?? {};
   const selected = context["selected"];
+  const ctxCounts = context["source_counts"];
+  const emCounts = evidence_map["source_counts"];
+  const source_counts =
+    ctxCounts && Object.keys(ctxCounts).length ? ctxCounts : emCounts && Object.keys(emCounts).length ? emCounts : {};
+  const ctxTypes = context["property_types"];
+  const emTypes = evidence_map["property_types"];
+  const property_types = ctxTypes?.length ? ctxTypes : emTypes?.length ? emTypes : [];
   const compact: Dict = {
     input_address: context["input_address"],
     input_zip: context["input_zip"],
     selected: selected,
     ambiguous: context["ambiguous"],
-    source_counts: orElse(context["source_counts"], orElse(evidence_map["source_counts"], {})),
-    property_types: orElse(context["property_types"], orElse(evidence_map["property_types"], [])),
+    source_counts,
+    property_types,
     evidence_map: compact_evidence_map(evidence_map, source_scope),
     schema_mini_guide: MINI_SCHEMA_GUIDE,
   };
-  if (truthy(context["ambiguous"])) {
-    compact["candidates"] = orElse(context["candidates"], []);
+  if (context["ambiguous"]) {
+    compact["candidates"] = context["candidates"] ?? [];
   }
   return compact;
 }
@@ -649,25 +538,25 @@ export function compact_evidence_map(
   evidence_map: Dict,
   source_scope: string[] | readonly string[] | null = null,
 ): Dict {
-  const scope = new Set<string>(orElse(source_scope, []) as string[]);
-  let refs: any[] = orElse(evidence_map["evidence_refs"], []);
+  const scope = new Set<string>((source_scope ?? []) as string[]);
+  let refs: any[] = evidence_map["evidence_refs"] ?? [];
   if (scope.size > 0) {
-    refs = refs.filter((ref) => isDict(ref) && scope.has(String(orElse(ref["source"], ""))));
+    refs = refs.filter((ref) => isDict(ref) && scope.has(String(ref["source"] ?? "")));
   }
   return {
     address_id: evidence_map["address_id"],
     normalized_address: evidence_map["normalized_address"],
     zip5: evidence_map["zip5"],
-    source_counts: orElse(evidence_map["source_counts"], {}),
-    property_types: orElse(evidence_map["property_types"], []),
-    rental_market_summary: orElse(evidence_map["rental_market_summary"], []),
-    owner_summaries: orElse(evidence_map["owner_summaries"], []),
-    people_at_address: orElse(evidence_map["people_at_address"], []),
-    owner_presence_hints: orElse(evidence_map["owner_presence_hints"], []),
-    owner_elsewhere_hints: orElse(evidence_map["owner_elsewhere_hints"], []),
-    nonowner_occupancy_hints: orElse(evidence_map["nonowner_occupancy_hints"], []),
-    freshness_hints: orElse(evidence_map["freshness_hints"], []),
-    data_gaps: orElse(evidence_map["data_gaps"], []),
+    source_counts: evidence_map["source_counts"] ?? {},
+    property_types: evidence_map["property_types"] ?? [],
+    rental_market_summary: evidence_map["rental_market_summary"] ?? [],
+    owner_summaries: evidence_map["owner_summaries"] ?? [],
+    people_at_address: evidence_map["people_at_address"] ?? [],
+    owner_presence_hints: evidence_map["owner_presence_hints"] ?? [],
+    owner_elsewhere_hints: evidence_map["owner_elsewhere_hints"] ?? [],
+    nonowner_occupancy_hints: evidence_map["nonowner_occupancy_hints"] ?? [],
+    freshness_hints: evidence_map["freshness_hints"] ?? [],
+    data_gaps: evidence_map["data_gaps"] ?? [],
     evidence_refs: refs.slice(0, 8).filter((ref) => isDict(ref)).map((ref) => _compact_ref(ref)),
   };
 }
@@ -678,92 +567,93 @@ function _compact_ref(ref: Dict): Dict {
     table: ref["table"],
     rowid: ref["rowid"],
     record_id: ref["record_id"],
-    summary: orElse(ref["summary"], ""),
+    summary: ref["summary"] ?? "",
   };
 }
 
 export function render_plan_section(plan: Dict): string {
-  if (!truthy(plan)) {
+  if (!plan || Object.keys(plan).length === 0) {
     return "- No master plan was provided.";
   }
   const lines = [
-    `- Heuristic: ${pyStr(orElse(plan["heuristic_id"], "unknown"))}`,
-    `- Decision: ${pyStr(orElse(plan["decision"], "unknown"))}`,
-    `- Priority: ${pyStr(orElse(plan["priority"], "medium"))}`,
+    `- Heuristic: ${plan["heuristic_id"] || "unknown"}`,
+    `- Decision: ${plan["decision"] || "unknown"}`,
+    `- Priority: ${plan["priority"] || "medium"}`,
   ];
-  if (truthy(plan["reason"])) {
-    lines.push(`- Reason: ${pyStr(plan["reason"])}`);
+  if (plan["reason"]) {
+    lines.push(`- Reason: ${plan["reason"]}`);
   }
-  if (truthy(plan["expected_sources"])) {
+  if (plan["expected_sources"]?.length) {
     lines.push(`- Expected sources: ${_list_text(plan["expected_sources"])}`);
   }
-  if (truthy(plan["known_data_gaps"])) {
+  if (plan["known_data_gaps"]?.length) {
     lines.push(`- Known data gaps: ${_list_text(plan["known_data_gaps"])}`);
   }
-  if (truthy(plan["mission"])) {
-    lines.push(`- Mission: ${pyStr(plan["mission"])}`);
+  if (plan["mission"]) {
+    lines.push(`- Mission: ${plan["mission"]}`);
   }
   return lines.join("\n");
 }
 
 export function render_context_sections(context: Dict): string {
-  const evidence_map = orElse(context["evidence_map"], {});
-  const selected = orElse(context["selected"], {});
-  const source_counts = orElse(context["source_counts"], orElse(evidence_map["source_counts"], {}));
+  const evidence_map = context["evidence_map"] ?? {};
+  const selected = context["selected"] ?? {};
+  const ctxCounts = context["source_counts"];
+  const emCounts = evidence_map["source_counts"];
+  const source_counts =
+    ctxCounts && Object.keys(ctxCounts).length ? ctxCounts : emCounts && Object.keys(emCounts).length ? emCounts : {};
   const lines = [
     "Address Resolution",
-    `- Input: ${pyStr(orElse(context["input_address"], ""))} ${pyStr(orElse(context["input_zip"], ""))}`.trim(),
-    `- Selected: ${pyStr(
-      orElse(
-        orElse(selected["norm_address"], orElse(selected["normAddress"], evidence_map["normalized_address"])),
-        "none",
-      ),
-    )} ${pyStr(orElse(selected["zip5"], orElse(evidence_map["zip5"], "")))}`.trim(),
-    `- Ambiguous: ${pyStr(context["ambiguous"])}`,
+    `- Input: ${context["input_address"] ?? ""} ${context["input_zip"] ?? ""}`.trim(),
+    `- Selected: ${
+      selected["norm_address"] || selected["normAddress"] || evidence_map["normalized_address"] || "none"
+    } ${selected["zip5"] || evidence_map["zip5"] || ""}`.trim(),
+    `- Ambiguous: ${context["ambiguous"]}`,
     "",
     "Source Availability",
     `- ${_source_count_text(source_counts)}`,
   ];
+  const ctxTypes = context["property_types"];
+  const emTypes = evidence_map["property_types"];
+  const property_types = ctxTypes?.length ? ctxTypes : emTypes?.length ? emTypes : [];
+  lines.push(..._section_items("Property Types", property_types));
   lines.push(
-    ..._section_items("Property Types", orElse(context["property_types"], orElse(evidence_map["property_types"], []))),
+    ..._section_items("Owners", _summary_items(evidence_map["owner_summaries"] ?? [], "owner_name", "summaries")),
   );
-  lines.push(
-    ..._section_items("Owners", _summary_items(orElse(evidence_map["owner_summaries"], []), "owner_name", "summaries")),
-  );
-  lines.push(..._section_items("People At Address", _people_items(orElse(evidence_map["people_at_address"], []))));
+  lines.push(..._section_items("People At Address", _people_items(evidence_map["people_at_address"] ?? [])));
   lines.push(
     ..._section_items("Signals", [
-      ..._prefixed_items("owner presence", orElse(evidence_map["owner_presence_hints"], [])),
-      ..._prefixed_items("owner elsewhere", orElse(evidence_map["owner_elsewhere_hints"], [])),
-      ..._prefixed_items("non-owner occupancy", orElse(evidence_map["nonowner_occupancy_hints"], [])),
-      ..._prefixed_items("freshness", orElse(evidence_map["freshness_hints"], [])),
+      ..._prefixed_items("owner presence", evidence_map["owner_presence_hints"] ?? []),
+      ..._prefixed_items("owner elsewhere", evidence_map["owner_elsewhere_hints"] ?? []),
+      ..._prefixed_items("non-owner occupancy", evidence_map["nonowner_occupancy_hints"] ?? []),
+      ..._prefixed_items("freshness", evidence_map["freshness_hints"] ?? []),
     ]),
   );
-  lines.push(..._section_items("Data Gaps", orElse(evidence_map["data_gaps"], [])));
+  lines.push(..._section_items("Data Gaps", evidence_map["data_gaps"] ?? []));
   lines.push(
     ..._section_items(
       "Evidence References",
-      (orElse(evidence_map["evidence_refs"], []) as any[]).map((ref) => _ref_text(ref)),
+      ((evidence_map["evidence_refs"] ?? []) as any[]).map((ref) => _ref_text(ref)),
     ),
   );
   return lines.join("\n");
 }
 
 export function render_heuristic_sections(heuristics: Dict[]): string {
-  if (!truthy(heuristics)) {
+  if (heuristics.length === 0) {
     return "- none";
   }
   const blocks: string[] = [];
   for (const item of heuristics) {
     blocks.push(
       [
-        `${pyStr(item["id"])}: ${pyStr(orElse(item["title"], ""))}`.trim(),
-        `- Category: ${pyStr(orElse(item["category"], "unknown"))}`,
+        `${item["id"]}: ${item["title"] ?? ""}`.trim(),
+        `- Category: ${item["category"] || "unknown"}`,
         `- Input sources: ${_list_text(item["input_sources"])}`,
         `- Evidence packs: ${_list_text(item["required_evidence_packs"])}`,
-        `- Objective: ${pyStr(orElse(item["description"], ""))}`,
+        `- Objective: ${item["description"] ?? ""}`,
         `- Subquestions: ${_list_text(item["subquestions"])}`,
-        `- Scoring: ${pyStr(orElse(item["scoring_guidance"], ""))}`,
+        `- Scoring: ${item["scoring_guidance"] ?? ""}`,
       ].join("\n"),
     );
   }
@@ -771,62 +661,62 @@ export function render_heuristic_sections(heuristics: Dict[]): string {
 }
 
 export function render_mapping_section(value: Dict): string {
-  if (!truthy(value)) {
+  if (!value || Object.keys(value).length === 0) {
     return "- none";
   }
   return Object.entries(value)
-    .map(([key, val]) => `- ${key}: ${pyStr(val)}`)
+    .map(([key, val]) => `- ${key}: ${val}`)
     .join("\n");
 }
 
 export function render_conflict_sections(conflicts: Dict[]): string {
-  if (!truthy(conflicts)) {
+  if (conflicts.length === 0) {
     return "- none";
   }
   return conflicts
     .map(
       (item) =>
-        `- ${pyStr(orElse(item["id"], "conflict"))}: ${pyStr(orElse(item["title"], ""))} (${pyStr(
-          orElse(item["severity"], "unknown"),
-        )}) - ${pyStr(orElse(item["summary"], ""))}`,
+        `- ${item["id"] || "conflict"}: ${item["title"] ?? ""} (${item["severity"] || "unknown"}) - ${
+          item["summary"] ?? ""
+        }`,
     )
     .join("\n");
 }
 
 export function render_worker_sections(worker_results: Dict[]): string {
-  if (!truthy(worker_results)) {
+  if (worker_results.length === 0) {
     return "- none";
   }
   const blocks: string[] = [];
   for (const result of worker_results) {
     const lines = [
-      `${pyStr(result["heuristic_id"])}: ${pyStr(result["status"])} / score ${pyStr(result["local_score"])}`,
-      `- Direction: ${pyStr(result["direction"])} | confidence: ${pyStr(result["confidence"])}`,
-      `- Finding: ${pyStr(orElse(result["finding"], ""))}`,
+      `${result["heuristic_id"]}: ${result["status"]} / score ${result["local_score"]}`,
+      `- Direction: ${result["direction"]} | confidence: ${result["confidence"]}`,
+      `- Finding: ${result["finding"] ?? ""}`,
     ];
     lines.push(
       ..._section_items(
         "  Evidence For",
-        (orElse(result["evidence_for"], []) as any[]).map((ref) => _ref_text(ref)),
+        ((result["evidence_for"] ?? []) as any[]).map((ref) => _ref_text(ref)),
         false,
       ),
     );
     lines.push(
       ..._section_items(
         "  Evidence Against",
-        (orElse(result["evidence_against"], []) as any[]).map((ref) => _ref_text(ref)),
+        ((result["evidence_against"] ?? []) as any[]).map((ref) => _ref_text(ref)),
         false,
       ),
     );
-    lines.push(..._section_items("  Missing Evidence", orElse(result["missing_evidence"], []), false));
-    lines.push(..._section_items("  Caveats", orElse(result["caveats"], []), false));
+    lines.push(..._section_items("  Missing Evidence", result["missing_evidence"] ?? [], false));
+    lines.push(..._section_items("  Caveats", result["caveats"] ?? [], false));
     blocks.push(lines.join("\n"));
   }
   return blocks.join("\n\n");
 }
 
 function _section_items(title: string, items: any, empty = true): string[] {
-  const values = (orElse(items, []) as any[]).map((item) => pyStr(item)).filter((item) => item.trim() !== "");
+  const values = ((items ?? []) as any[]).map((item) => String(item)).filter((item) => item.trim() !== "");
   if (values.length === 0 && !empty) {
     return [];
   }
@@ -842,24 +732,22 @@ function _section_items(title: string, items: any, empty = true): string[] {
 }
 
 function _source_count_text(source_counts: Dict): string {
-  if (!truthy(source_counts)) {
+  if (!source_counts || Object.keys(source_counts).length === 0) {
     return "none";
   }
   return Object.entries(source_counts)
     .sort((a, b) => codePointCompare(a[0], b[0]))
-    .map(([source, count]) => `${source}=${pyStr(count)}`)
+    .map(([source, count]) => `${source}=${count}`)
     .join(", ");
 }
 
 function _summary_items(items: Dict[], label_key: string, summaries_key: string): string[] {
   const values: string[] = [];
   for (const item of items) {
-    const label = orElse(item[label_key], "unknown");
-    const summaries = orElse(item[summaries_key], []);
+    const label = item[label_key] || "unknown";
+    const summaries = (item[summaries_key] ?? []) as any[];
     values.push(
-      `${pyStr(label)}: ${
-        truthy(summaries) ? (summaries as any[]).map((summary) => pyStr(summary)).join("; ") : "no summary"
-      }`,
+      `${label}: ${summaries.length > 0 ? summaries.map((summary) => String(summary)).join("; ") : "no summary"}`,
     );
   }
   return values;
@@ -869,55 +757,55 @@ function _people_items(items: Dict[]): string[] {
   const values: string[] = [];
   for (const item of items) {
     values.push(
-      `${pyStr(orElse(item["name"], "unknown"))} | relationship=${pyStr(
-        orElse(item["relationship_to_owner"], "unknown"),
-      )} | sources=${_list_text(item["sources"])}`,
+      `${item["name"] || "unknown"} | relationship=${item["relationship_to_owner"] || "unknown"} | sources=${_list_text(item["sources"])}`,
     );
   }
   return values;
 }
 
 function _prefixed_items(prefix: string, items: any[]): string[] {
-  return items.map((item) => `${prefix}: ${pyStr(item)}`);
+  return items.map((item) => `${prefix}: ${item}`);
 }
 
 function _ref_text(ref: Dict): string {
-  return `${pyStr(orElse(ref["source"], "unknown"))}:${pyStr(
-    orElse(orElse(ref["rowid"], ref["record_id"]), "n/a"),
-  )} - ${pyStr(orElse(ref["summary"], ""))}`;
+  return `${ref["source"] || "unknown"}:${ref["rowid"] || ref["record_id"] || "n/a"} - ${ref["summary"] ?? ""}`;
 }
 
 function _heuristic_brief(heuristic: Dict): string {
-  const category = pyStr(orElse(heuristic["category"], "risk"));
-  const score = pyInt(orElse(heuristic["score"], 0));
-  const score_cap = pyInt(orElse(heuristic["score_cap"], 0));
-  const execution_mode = pyStr(orElse(heuristic["execution_mode"], "deterministic"));
-  const subquestions = orElse(heuristic["subquestions"], []) as any[];
-  const scoring_guidance = pyStr(orElse(heuristic["scoring_guidance"], ""));
-  const agent_guidance = pyStr(orElse(heuristic["agent_guidance"], ""));
-  const context_scope = orElse(orElse(heuristic["context_scope"], heuristic["input_sources"]), []);
+  const category: string = heuristic["category"] || "risk";
+  const score = Math.trunc(Number(heuristic["score"] ?? 0));
+  const score_cap = Math.trunc(Number(heuristic["score_cap"] ?? 0));
+  const execution_mode: string = heuristic["execution_mode"] || "deterministic";
+  const subquestions = (heuristic["subquestions"] ?? []) as any[];
+  const scoring_guidance: string = heuristic["scoring_guidance"] ?? "";
+  const agent_guidance: string = heuristic["agent_guidance"] ?? "";
+  const context_scope = heuristic["context_scope"]?.length
+    ? heuristic["context_scope"]
+    : heuristic["input_sources"]?.length
+      ? heuristic["input_sources"]
+      : [];
   const lines = [
-    `Name: ${pyStr(orElse(heuristic["title"], heuristic["id"]))}`,
-    `Objective: ${pyStr(orElse(heuristic["description"], "Evaluate whether this signal is present."))}`,
+    `Name: ${heuristic["title"] || heuristic["id"]}`,
+    `Objective: ${heuristic["description"] || "Evaluate whether this signal is present."}`,
     `Signal category: ${_category_explanation(category)}`,
     `Context scope: ${_list_text(context_scope)}`,
     `Relevant evidence packs: ${_list_text(heuristic["required_evidence_packs"])}`,
-    `Default confidence if triggered: ${pyStr(orElse(heuristic["confidence"], "medium"))}`,
+    `Default confidence if triggered: ${heuristic["confidence"] || "medium"}`,
     `Execution mode: ${execution_mode}`,
     "Your role: investigate this heuristic using local evidence and submit advisory findings" +
       " for the master orchestrator. The Lead Case Adjudicator owns the final case-level verdict.",
   ];
-  if (truthy(subquestions)) {
-    lines.push("Required subquestions: " + subquestions.map((item) => pyStr(item)).join(" | "));
+  if (subquestions.length > 0) {
+    lines.push("Required subquestions: " + subquestions.map((item) => String(item)).join(" | "));
   }
-  if (truthy(agent_guidance)) {
+  if (agent_guidance) {
     lines.push(`Agent guidance: ${agent_guidance}`);
   }
-  if (truthy(scoring_guidance)) {
+  if (scoring_guidance) {
     lines.push(`Scoring rubric: ${scoring_guidance}`);
   }
   if (category === "agent_only" || execution_mode === "agent") {
-    if (!truthy(scoring_guidance)) {
+    if (!scoring_guidance) {
       lines.push(
         "Scoring guidance: this is a reasoning heuristic. Use score 0 unless the config says" +
           " otherwise; focus on documenting caveats and evidence interpretation" +
@@ -931,27 +819,27 @@ function _heuristic_brief(heuristic: Dict): string {
     );
   } else if (category === "context" || category === "quality") {
     lines.push(
-      `Scoring guidance: this is ${category} evidence. Use up to ${orElse(score_cap, score)} points` +
+      `Scoring guidance: this is ${category} evidence. Use up to ${score_cap || score} points` +
         ` only when it materially affects interpretation.`,
     );
   } else {
     lines.push(
-      `Scoring guidance: this is risk evidence. If supported, use up to ${orElse(score_cap, score)}` +
+      `Scoring guidance: this is risk evidence. If supported, use up to ${score_cap || score}` +
         ` points; otherwise use 0.`,
     );
   }
-  const amplifiers = orElse(heuristic["amplifiers"], []) as any[];
-  const amplifier_score = pyInt(orElse(heuristic["amplifier_score"], 0));
-  if (truthy(amplifiers) && truthy(amplifier_score)) {
+  const amplifiers = (heuristic["amplifiers"] ?? []) as any[];
+  const amplifier_score = Math.trunc(Number(heuristic["amplifier_score"] ?? 0));
+  if (amplifiers.length > 0 && amplifier_score) {
     lines.push(
       `Amplifier context: if evidence also supports ${_list_text(amplifiers)}, note that` +
         ` this can strengthen the interpretation by about ${amplifier_score} point(s).` +
         ` Do not invent amplifier evidence.`,
     );
   }
-  const caveats = orElse(heuristic["caveats"], []) as any[];
-  if (truthy(caveats)) {
-    lines.push("Known caveats: " + caveats.map((c) => pyStr(c)).join("; "));
+  const caveats = (heuristic["caveats"] ?? []) as any[];
+  if (caveats.length > 0) {
+    lines.push("Known caveats: " + caveats.map((c) => String(c)).join("; "));
   }
   lines.push(
     "Trigger standard: trigger only when local GraphQL evidence directly supports the" +
@@ -988,11 +876,11 @@ function _category_explanation(category: string): string {
 }
 
 function _list_text(value: any): string {
-  if (!truthy(value)) {
-    return "none specified";
-  }
   if (typeof value === "string") {
-    return value;
+    return value === "" ? "none specified" : value;
   }
-  return (value as any[]).map((item) => pyStr(item)).join(", ");
+  if (Array.isArray(value)) {
+    return value.length === 0 ? "none specified" : value.map((item) => String(item)).join(", ");
+  }
+  return "none specified";
 }

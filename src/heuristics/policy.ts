@@ -1,4 +1,3 @@
-// Port of occupancy_engine/heuristics/policy.py.
 // Source reliability weights, canonical/unranked context sources, and the
 // deterministic source-token-by-path table used by weighted synthesis.
 

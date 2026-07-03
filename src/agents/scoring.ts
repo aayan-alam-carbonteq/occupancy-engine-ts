@@ -1,4 +1,4 @@
-// Port of occupancy_engine/agents/scoring.py.
+// Aggregate heuristic agent results into a scored verdict breakdown.
 import type { HeuristicAgentResult, ScoreBreakdown, VerdictBand } from "./models.ts";
 
 export function scoreResults(results: HeuristicAgentResult[]): ScoreBreakdown {

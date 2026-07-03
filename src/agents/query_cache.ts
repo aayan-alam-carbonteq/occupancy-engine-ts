@@ -1,8 +1,5 @@
-// Port of occupancy_engine/agents/query_cache.py.
-//
-// PORT NOTE (single-flight): Python coalesces concurrent identical queries using an asyncio.Future
-// registered in `_inflight` before any `await`. The JS equivalent stores the in-flight Promise in a
-// Map, again before yielding control. Because everything between the cache checks and the
+// Single-flight query cache: concurrent identical queries are coalesced by storing the in-flight
+// Promise in a Map before yielding control. Because everything between the cache checks and the
 // `_inflight.set(...)` is synchronous (no `await`), concurrent callers that arrive while a query is
 // running observe the in-flight Promise and await it instead of re-executing. Errors are not cached.
 
@@ -10,9 +7,8 @@ function cacheKey(query: string, variables: Record<string, unknown> | null | und
   return query.trim() + "\x00" + canonicalJson(variables ?? {});
 }
 
-// Deterministic, sorted-key JSON used only as an internal cache identity (mirrors Python's
-// json.dumps(..., sort_keys=True); exact byte-parity with Python is not required because the key
-// never leaves the TS process).
+// Deterministic, sorted-key JSON used only as an internal cache identity. Exact byte-parity is not
+// required because the key never leaves the process.
 function canonicalJson(value: unknown): string {
   return JSON.stringify(sortValue(value));
 }

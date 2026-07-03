@@ -1,4 +1,4 @@
-// Port of occupancy_engine/agents/tracing.py.
+// LangChain RunnableConfig builder that wires trace tags/metadata to LangSmith and the metrics callback.
 import { randomUUID } from "node:crypto";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { LocalMetricsCallbackHandler, currentRecorder } from "../observability/index.ts";
@@ -67,9 +67,8 @@ export function makeInvestigationTrace(
  * Build a LangChain RunnableConfig carrying the trace tags/metadata (which flow to LangSmith) and,
  * when the current recorder is enabled, the local metrics callback.
  *
- * PORT NOTE: Python emits the key `run_name`; LangChain.js reads `runName` — mapped accordingly so
- * the run name actually reaches the tracer. Everything else (merged metadata, ls_provider /
- * ls_model_name aliases, tag set) is preserved verbatim.
+ * LangChain.js reads the `runName` key, so the run name is set there to actually reach the tracer.
+ * Everything else (merged metadata, ls_provider / ls_model_name aliases, tag set) flows through as-is.
  */
 export function runnableConfig(
   name: string,

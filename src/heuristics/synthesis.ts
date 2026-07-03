@@ -1,4 +1,3 @@
-// Port of occupancy_engine/heuristics/synthesis.py.
 // Source-reliability-weighted synthesis layered on top of the atomic synthesis.
 
 import { asdict } from "./atomic.ts";
@@ -32,7 +31,7 @@ export function weighted_synthesis(args: {
         status === "context" ||
         status === "mitigation" ||
         status === "quality") &&
-      pyBool(pathId)
+      Boolean(pathId)
     ) {
       active_paths.add(String(pathId));
     }
@@ -143,7 +142,7 @@ function _source_weight_adjustment(
   );
   if (ranked_sources.length === 0) {
     return {
-      path_id: String(pyOr(path["path_id"], "")),
+      path_id: String(path["path_id"] ?? ""),
       base_score,
       weighted_score: 0.0,
       applied_source: null,
@@ -160,7 +159,7 @@ function _source_weight_adjustment(
   })[0]!;
   const weight = SOURCE_RELIABILITY_WEIGHTS[applied]!;
   return {
-    path_id: String(pyOr(path["path_id"], "")),
+    path_id: String(path["path_id"] ?? ""),
     base_score,
     weighted_score: round2(base_score * weight),
     applied_source: applied,
@@ -179,12 +178,12 @@ function _base_path_score(path: Record<string, unknown>): number {
     moderate: 2,
     strong: 3,
   };
-  return weights[String(pyOr(path["signal_strength"], "none"))] ?? 0;
+  return weights[String(path["signal_strength"] || "none")] ?? 0;
 }
 
 function _path_sources(path: Record<string, unknown>): readonly string[] {
   return _path_sources_by_ref_or_name(
-    String(pyOr(path["path_id"], "")),
+    String(path["path_id"] ?? ""),
     asArray(path["evidence_refs"]) ?? [],
   );
 }
@@ -477,24 +476,10 @@ function _intersects(candidates: readonly string[], set: ReadonlySet<string>): b
   return candidates.some((item) => set.has(item));
 }
 
-// PORT NOTE: round(x, 2). Every product/sum here is a 2-decimal-exact value, so
-// no round-half-to-even tie ever arises; scaled rounding matches Python.
+// Round to 2 decimals via scaling. Every product/sum here is already a
+// 2-decimal-exact value, so no half-way tie-breaking ambiguity arises.
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-function pyBool(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
-}
-
-function pyOr(a: unknown, b: unknown): unknown {
-  return pyBool(a) ? a : b;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

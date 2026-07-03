@@ -1,39 +1,9 @@
-// Port of occupancy_engine/agents/orchestrator.py.
-//
-// The top-level investigation orchestration: preflight address resolution + evidence-map build,
+// Top-level investigation orchestration: preflight address resolution + evidence-map build,
 // deterministic packet gating, the master planner LLM, per-group subagent dispatch (bucketing +
-// budget-scaled CountingGraphQLTool + shared QueryCache + a concurrency limiter + per-bucket
-// timeout), scoring, the master adjudicator LLM (with retries + fallback), conflict/evidence
-// dedup, and the final assessment assembly. Every logical flow is preserved 1:1 with the Python.
-//
-// PORT NOTE (pydantic -> zod): `X(...)` pydantic construction becomes either a plain typed object
-//   (when every field is supplied) or `XSchema.parse({...})` (to apply pydantic defaults / run the
-//   same validation on model-derived input). `X.model_validate(d)` -> `XSchema.parse(d)`, catching
-//   `ValidationError` -> catching `z.ZodError`. `model.model_dump()` -> the object is already plain.
-//
-// PORT NOTE (RunnableLambda): Python wraps `run_investigation` / `run_worker` in
-//   `RunnableLambda(fn).ainvoke({}, config=...)` to attach the run name/tags/metadata + local
-//   metrics callback and to establish a parent LangSmith run. LangChain.js `RunnableLambda.from(fn)
-//   .invoke({}, config)` is the faithful equivalent. The metrics themselves come from `recorder.span`
-//   and each nested `model.invoke`'s own callbacks; the recorder dedups LLM events by langchain_run_id,
-//   so the wrapper never double-counts.
-//
-// PORT NOTE (recorder span / context): `with set_current_recorder(rec): ...` -> `runWithRecorder(rec,
-//   fn)`; `with recorder.span(phase, ...): body` -> `recorder.span(phase, opts, async () => body)`.
-//   The AsyncLocalStorage-backed recorder/span contexts propagate across `await`, `Promise.all`, and
-//   the RunnableLambda call, so parent-span parenting matches the Python contextvars behavior.
-//
-// PORT NOTE (asyncio.Semaphore): a tiny FIFO permit limiter (`Semaphore` below) replaces
-//   `asyncio.Semaphore(max_concurrency)`; `async with semaphore:` becomes acquire()/finally-release().
-//
-// PORT NOTE (asyncio.wait_for): `withTimeout(promise, ms)` races the work against a timer that rejects
-//   with `Error("")` (str("") == Python's `str(TimeoutError())`), so on timeout the generic bucket
-//   catch produces `error_result` for every packet — matching Python's `except Exception` path. The
-//   underlying work cannot be cancelled (JS has no coroutine cancellation), an accepted divergence.
-//
-// PORT NOTE (submit tools): Python `@tool(args_schema=Model)` stubs (`del ...; return {}`) become
-//   LangChain.js `tool(async () => ({}), { name, description, schema })` with a zod schema. The loop
-//   routes by tool name and reads the tool_call args directly; the tool func is never invoked.
+// budget-scaled CountingGraphQLTool + shared QueryCache + a concurrency limiter + per-bucket timeout),
+// scoring, the master adjudicator LLM (with retries + fallback), conflict/evidence dedup, and the
+// final assessment assembly. The submit_* tools are stubs that return {}: the loop routes by tool
+// name and reads the tool_call args directly, so a tool's own func is never invoked.
 import { Buffer } from "node:buffer";
 import { HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { RunnableLambda } from "@langchain/core/runnables";
@@ -381,8 +351,8 @@ export class AgentOrchestrator {
       { query: request.address, zip: request.zip || null },
       { result_summary: "address search and source counts" },
     );
-    const search = pyOr(data["searchAddresses"], {}) as Record<string, any>;
-    const nodes = pyOr(search["nodes"], []) as any[];
+    const search = (data["searchAddresses"] ?? {}) as Record<string, any>;
+    const nodes = (search["nodes"] ?? []) as any[];
     const candidates = nodes.map((node) => _candidate(node as Record<string, any>));
     let address_data: Record<string, any> | null = (data["addressByText"] ?? null) as Record<string, any> | null;
     if (address_data === null && candidates.length > 0) {
@@ -394,9 +364,9 @@ export class AgentOrchestrator {
       address_data = (by_id["address"] ?? null) as Record<string, any> | null;
     }
     const selected = _selected_candidate(address_data, candidates);
-    const source_counts = _source_counts(pyOr(address_data, {}) as Record<string, any>);
+    const source_counts = _source_counts((address_data ?? {}) as Record<string, any>);
     const property_types: string[] = [];
-    const evidence_map = _evidence_map(pyOr(address_data, {}) as Record<string, any>, selected, source_counts, property_types);
+    const evidence_map = _evidence_map((address_data ?? {}) as Record<string, any>, selected, source_counts, property_types);
     const ambiguous = selected === null || _is_ambiguous(candidates);
     return ResolvedAddressContextSchema.parse({
       input_address: request.address,
@@ -559,7 +529,7 @@ export class AgentOrchestrator {
           request.agent_timeout_seconds * bucket.length * 1000,
         );
       } catch (exc) {
-        // Failure is reported as structured results (matches Python's `except Exception`).
+        // Any failure (including a bucket timeout) is reported as structured error results.
         return bucket.map((h) => error_result(h, errStr(exc), graphql));
       } finally {
         semaphore.release();
@@ -776,7 +746,7 @@ function _investigation_plan_from_tool_calls(
   }
   const allowed_ids = new Set(heuristics.map((item) => String(item["id"])));
   for (const call of tool_calls) {
-    if (String(pyOr(call["name"], "")) !== "submit_investigation_plan") {
+    if (String(call["name"] || "") !== "submit_investigation_plan") {
       return null;
     }
     const args = isRecord(call["args"]) ? call["args"] : {};
@@ -838,14 +808,14 @@ function _default_plan_for_heuristic(
   reason: string,
   context: ResolvedAddressContext | null = null,
 ): HeuristicPlan {
-  const sources = (pyOr(heuristic["input_sources"], []) as any[]).map((item) => String(item));
+  const sources = ((heuristic["input_sources"] ?? []) as any[]).map((item) => String(item));
   let gaps: string[] = [];
   if (context !== null) {
     gaps = sources.filter((source) => (context.source_counts[source] ?? 0) === 0);
   }
   const decision: "run" | "run_for_absence" =
     gaps.length > 0 && gaps.length === sources.length && sources.length > 0 ? "run_for_absence" : "run";
-  const title = String(pyOr(heuristic["title"], heuristic["id"]));
+  const title = String(heuristic["title"] || heuristic["id"]);
   return {
     heuristic_id: String(heuristic["id"]),
     decision,
@@ -862,7 +832,7 @@ function _default_plan_for_heuristic(
 /**
  * Bucket running heuristics by their packet group, preserving first-seen order.
  *
- * Heuristics with no group (group is None/absent) each become a singleton bucket, so a solo packet
+ * Heuristics with no group (group unset or absent) each become a singleton bucket, so a solo packet
  * dispatches exactly as before.
  */
 export function _bucket_by_group(heuristics: Record<string, any>[]): Record<string, any>[][] {
@@ -870,7 +840,7 @@ export function _bucket_by_group(heuristics: Record<string, any>[]): Record<stri
   const index_by_group = new Map<string, number>();
   for (const heuristic of heuristics) {
     const group = heuristic["group"];
-    if (!pyTruthy(group)) {
+    if (!group) {
       buckets.push([heuristic]);
       continue;
     }
@@ -978,8 +948,8 @@ function _case_adjudication_from_tool_calls(
     return null;
   }
   for (const call of tool_calls) {
-    const name = String(pyOr(call["name"], ""));
-    const tool_call_id = String(pyOr(call["id"], "submit_case_adjudication"));
+    const name = String(call["name"] || "");
+    const tool_call_id = String(call["id"] || "submit_case_adjudication");
     if (name !== "submit_case_adjudication") {
       return {
         ok: false,
@@ -1018,7 +988,7 @@ function _response_tool_calls(response: any): Record<string, any>[] {
   if (Array.isArray(tool_calls)) {
     return tool_calls.filter((call) => isRecord(call)).map((call) => ({ ...call }));
   }
-  const additional_kwargs = pyOr(response?.additional_kwargs, {});
+  const additional_kwargs = response?.additional_kwargs ?? {};
   const raw_calls = additional_kwargs["tool_calls"];
   if (!Array.isArray(raw_calls)) {
     return [];
@@ -1029,7 +999,7 @@ function _response_tool_calls(response: any): Record<string, any>[] {
       continue;
     }
     const func = isRecord(call["function"]) ? call["function"] : {};
-    let args: any = pyOr(func["arguments"], {});
+    let args: any = func["arguments"] || {};
     if (typeof args === "string") {
       try {
         args = JSON.parse(args);
@@ -1037,13 +1007,13 @@ function _response_tool_calls(response: any): Record<string, any>[] {
         args = {};
       }
     }
-    parsed.push({ id: call["id"], name: pyOr(func["name"], call["name"]), args });
+    parsed.push({ id: call["id"], name: func["name"] || call["name"], args });
   }
   return parsed;
 }
 
 export function fallback_adjudication(raw_score: any, reason: string): CaseAdjudication {
-  const score = pyInt(pyOr(raw_score?.final_score, 0));
+  const score = Math.trunc(Number(raw_score?.final_score)) || 0;
   const band: VerdictBand = (raw_score?.band ?? "low_evidence") as VerdictBand;
   return {
     raw_score: score,
@@ -1149,11 +1119,11 @@ function _agent_metrics(opts: {
 function _candidate(node: Record<string, any>): AddressCandidate {
   const address = isRecord(node["address"]) ? node["address"] : {};
   return AddressCandidateSchema.parse({
-    id: pyInt(address["id"]),
-    norm_address: pyOr(address["normAddress"], ""),
-    zip5: pyOr(address["zip5"], ""),
-    match_score: Number(pyOr(node["matchScore"], 0)),
-    relation_count: pyInt(pyOr(node["relationCount"], 0)),
+    id: Math.trunc(Number(address["id"])) || 0,
+    norm_address: address["normAddress"] || "",
+    zip5: address["zip5"] || "",
+    match_score: Number(node["matchScore"] || 0),
+    relation_count: Math.trunc(Number(node["relationCount"])) || 0,
     matched_fields: [...(Array.isArray(node["matchedFields"]) ? node["matchedFields"] : [])],
   });
 }
@@ -1171,12 +1141,12 @@ function _selected_candidate(
   address_data: Record<string, any> | null,
   candidates: AddressCandidate[],
 ): AddressCandidate | null {
-  if (pyTruthy(address_data)) {
+  if (address_data !== null && Object.keys(address_data).length > 0) {
     const ad = address_data as Record<string, any>;
     return AddressCandidateSchema.parse({
-      id: pyInt(ad["id"]),
-      norm_address: pyOr(ad["normAddress"], ""),
-      zip5: pyOr(ad["zip5"], ""),
+      id: Math.trunc(Number(ad["id"])) || 0,
+      norm_address: ad["normAddress"] || "",
+      zip5: ad["zip5"] || "",
       match_score: 1.0,
       relation_count: 0,
       matched_fields: ["address"],
@@ -1209,8 +1179,8 @@ function _source_counts(address_data: Record<string, any>): Record<string, numbe
   };
   const counts: Record<string, number> = {};
   for (const [source, field] of Object.entries(mapping)) {
-    const value = pyOr(address_data[field], {});
-    counts[source] = pyInt(pyOr(value["totalCount"], 0));
+    const value = address_data[field] ?? {};
+    counts[source] = Math.trunc(Number(value["totalCount"])) || 0;
   }
   return counts;
 }
@@ -1221,8 +1191,8 @@ function _evidence_map(
   source_counts: Record<string, number>,
   property_types: string[],
 ): CaseEvidenceMap {
-  const normalized_address = pyOr(selected ? selected.norm_address : address_data["normAddress"], "");
-  const zip5 = pyOr(selected ? selected.zip5 : address_data["zip5"], "");
+  const normalized_address = (selected ? selected.norm_address : address_data["normAddress"]) || "";
+  const zip5 = (selected ? selected.zip5 : address_data["zip5"]) || "";
   const owners = _owner_summaries(address_data, normalized_address);
   const people = _people_at_address_summaries(address_data, owners);
   const refs = _source_refs(address_data, "taxProperties", "tax", 5);
@@ -1237,7 +1207,7 @@ function _evidence_map(
   if (selected) {
     address_id = selected.id;
   } else if (address_data["id"] !== null && address_data["id"] !== undefined) {
-    address_id = pyInt(address_data["id"]);
+    address_id = Math.trunc(Number(address_data["id"])) || 0;
   } else {
     address_id = null;
   }
@@ -1263,18 +1233,18 @@ function _owner_summaries(address_data: Record<string, any>, normalized_address:
   const summaries: OwnerEvidenceSummary[] = [];
   const seen = new Set<string>();
   for (const node of _source_nodes(address_data, "taxProperties").slice(0, 5)) {
-    const data = pyOr(node["data"], {});
-    const owner = String(pyOr(data["ownername"], "Unknown owner")).trim();
+    const data = node["data"] ?? {};
+    const owner = String(data["ownername"] || "Unknown owner").trim();
     if (!owner || seen.has(owner)) {
       continue;
     }
     seen.add(owner);
     const mailing_parts = [data["owneraddressline1"], data["ownercity"], data["ownerstate"], data["ownerzipcode"]];
     const mailing = mailing_parts
-      .filter((part) => pyTruthy(part))
+      .filter((part) => Boolean(part))
       .map((part) => String(part).trim())
       .join(" ");
-    const mailing_line = String(pyOr(data["owneraddressline1"], "")).trim();
+    const mailing_line = String(data["owneraddressline1"] || "").trim();
     const mailing_matches =
       mailing_line && normalized_address ? _same_address_text(mailing_line, normalized_address) : null;
     const bits = [`owner=${owner}`];
@@ -1283,7 +1253,7 @@ function _owner_summaries(address_data: Record<string, any>, normalized_address:
     }
     for (const key of ["residential", "condo", "lendername", "totalliencount", "totallienbalance", "ownerrescount", "recordingdate"]) {
       if (data[key] !== null && data[key] !== undefined && data[key] !== "") {
-        bits.push(`${key}=${pyStr(data[key])}`);
+        bits.push(`${key}=${data[key]}`);
       }
     }
     summaries.push(
@@ -1316,7 +1286,9 @@ function _people_at_address_summaries(
   for (const [field, source] of fields) {
     const nodes = _source_nodes(address_data, field).slice(0, 10);
     for (const node of nodes) {
-      const data = pyOr(node["data"], node);
+      // Use the nested `data` blob when it has fields; otherwise fall back to the node's own fields.
+      const rawData = node["data"];
+      const data = isRecord(rawData) && Object.keys(rawData).length > 0 ? rawData : node;
       const name = _person_name(data);
       if (!name) {
         continue;
@@ -1337,7 +1309,7 @@ function _people_at_address_summaries(
       const summary_bits = [source];
       for (const key of ["own_rent", "ownRent", "address", "zip", "dob", "dob_year", "year", "make", "model"]) {
         if (data[key] !== null && data[key] !== undefined && data[key] !== "") {
-          summary_bits.push(`${key}=${pyStr(data[key])}`);
+          summary_bits.push(`${key}=${data[key]}`);
         }
       }
       current.summaries.push(summary_bits.join("; "));
@@ -1390,9 +1362,9 @@ function _nonowner_occupancy_hints(address_data: Record<string, any>, owners: Ow
 function _freshness_hints(address_data: Record<string, any>): string[] {
   const hints: string[] = [];
   for (const node of _source_nodes(address_data, "taxProperties").slice(0, 5)) {
-    const data = pyOr(node["data"], {});
-    if (pyTruthy(data["recordingdate"])) {
-      hints.push(`Tax recordingdate=${pyStr(data["recordingdate"])}`);
+    const data = node["data"] ?? {};
+    if (data["recordingdate"]) {
+      hints.push(`Tax recordingdate=${data["recordingdate"]}`);
     }
   }
   return hints.slice(0, 10);
@@ -1406,7 +1378,7 @@ function _source_refs(
 ): EvidenceReference[] {
   const refs: EvidenceReference[] = [];
   for (const node of _source_nodes(address_data, field).slice(0, limit)) {
-    const data = pyOr(node["data"], {});
+    const data = node["data"] ?? {};
     const dataSubset: Record<string, any> = {};
     for (const key of Object.keys(data).slice(0, 12)) {
       dataSubset[key] = data[key];
@@ -1414,7 +1386,7 @@ function _source_refs(
     refs.push(
       EvidenceReferenceSchema.parse({
         source,
-        table: pyOr(node["table"], source),
+        table: node["table"] || source,
         rowid: node["rowid"] ?? null,
         summary: _short_source_summary(source, data),
         data: dataSubset,
@@ -1425,7 +1397,7 @@ function _source_refs(
 }
 
 function _source_nodes(address_data: Record<string, any>, field: string): Record<string, any>[] {
-  const value = pyOr(address_data[field], {});
+  const value = address_data[field] ?? {};
   const nodes = isRecord(value) ? value["nodes"] : null;
   const list = Array.isArray(nodes) ? nodes : [];
   return list.filter((node) => isRecord(node));
@@ -1434,21 +1406,21 @@ function _source_nodes(address_data: Record<string, any>, field: string): Record
 function _short_source_summary(source: string, data: Record<string, any>): string {
   const parts = [source];
   for (const key of ["ownername", "firstname", "firstName", "lastname", "lastName", "address", "status", "own_rent", "ownRent"]) {
-    if (pyTruthy(data[key])) {
-      parts.push(`${key}=${pyStr(data[key])}`);
+    if (data[key]) {
+      parts.push(`${key}=${data[key]}`);
     }
   }
   return parts.join("; ");
 }
 
 function _person_name(data: Record<string, any>): string {
-  if (pyTruthy(data["fullName"])) {
+  if (data["fullName"]) {
     return String(data["fullName"]).trim().toUpperCase();
   }
-  const first = pyOr(data["firstname"], data["firstName"]);
-  const last = pyOr(data["lastname"], data["lastName"]);
+  const first = data["firstname"] || data["firstName"];
+  const last = data["lastname"] || data["lastName"];
   const name = [first, last]
-    .filter((part) => pyTruthy(part))
+    .filter((part) => Boolean(part))
     .map((part) => String(part).trim())
     .join(" ");
   return name.toUpperCase();
@@ -1506,8 +1478,8 @@ function _global_caveats(context: ResolvedAddressContext, results: HeuristicAgen
 
 // ── Concurrency + timeout primitives ──
 
-// PORT NOTE (asyncio.Semaphore): a minimal FIFO permit limiter. acquire() takes a permit or queues a
-// resolver; release() hands the permit directly to the next waiter (FIFO) or returns it to the pool.
+// A minimal FIFO permit limiter. acquire() takes a permit or queues a resolver; release() hands the
+// permit directly to the next waiter (FIFO) or returns it to the pool.
 class Semaphore {
   private permits: number;
   private readonly waiters: Array<() => void> = [];
@@ -1534,9 +1506,8 @@ class Semaphore {
   }
 }
 
-// PORT NOTE (asyncio.wait_for): race the work against a timer. On timeout, reject with Error("") so the
-// caller's `errStr` yields "" (== str(TimeoutError())), and error_result falls back to its default
-// message — matching Python's `except Exception` bucket path.
+// Race the work against a timer. On timeout, reject with Error("") so the caller's `errStr` yields ""
+// and error_result falls back to its default message via the generic bucket catch.
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -1549,130 +1520,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// ── Python-compat helpers ──
+// ── Local helpers ──
 
-/** Python `raise ValueError(...)` — a distinguishable error for the adjudication retry path. */
+/** A distinguishable error for the adjudication retry path. */
 class ValueError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Python `a or b`: returns `a` when truthy (bool()), else `b`. */
-function pyOr(a: any, b: any): any {
-  return pyTruthy(a) ? a : b;
-}
-
-/** Python bool(): "", 0, [], {}, None/undefined are all falsy. */
-function pyTruthy(value: unknown): boolean {
-  if (value === null || value === undefined) {
-    return false;
-  }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value !== 0 && !Number.isNaN(value);
-  }
-  if (typeof value === "string") {
-    return value.length > 0;
-  }
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-  if (typeof value === "object") {
-    return Object.keys(value).length > 0;
-  }
-  return true;
-}
-
-/** Python `int(x)` (truncating). Non-numeric -> 0. */
-function pyInt(value: any): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : 0;
-}
-
-/** Python str(exc) — for Error subclasses that is the message (no "Error: " prefix). */
+/** Message text of an error (no "Error: " prefix), or a stringified non-error value. */
 function errStr(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
-// PORT NOTE (ZodError -> str): a readable "<path>: <message>" rendering, used for the corrective error
-// text handed back to the master LLM on a failed adjudication tool call (informational only).
+// A readable "<path>: <message>" rendering, used for the corrective error text handed back to the
+// master LLM on a failed adjudication tool call (informational only).
 function zodErrorText(exc: unknown): string {
   if (exc instanceof z.ZodError) {
     return exc.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("\n");
   }
   return String(exc);
-}
-
-// PORT NOTE (str()/repr()): reproduces Python str()/repr() for the scalar/container values rendered
-// into evidence summaries and prompt bits (None/True/False, single-quoted strings, {'k': v} dicts).
-function pyStr(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  return pyRepr(value);
-}
-
-function pyRepr(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "None";
-  }
-  if (typeof value === "boolean") {
-    return value ? "True" : "False";
-  }
-  if (typeof value === "number") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  if (typeof value === "string") {
-    return pyReprStr(value);
-  }
-  if (Array.isArray(value)) {
-    return "[" + value.map(pyRepr).join(", ") + "]";
-  }
-  if (isRecord(value)) {
-    const parts = Object.keys(value).map((key) => `${pyReprStr(key)}: ${pyRepr(value[key])}`);
-    return "{" + parts.join(", ") + "}";
-  }
-  return String(value);
-}
-
-function pyReprStr(s: string): string {
-  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
-  let out = quote;
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === "\\") {
-      out += "\\\\";
-    } else if (ch === quote) {
-      out += "\\" + quote;
-    } else if (ch === "\n") {
-      out += "\\n";
-    } else if (ch === "\r") {
-      out += "\\r";
-    } else if (ch === "\t") {
-      out += "\\t";
-    } else if (code < 0x20 || code === 0x7f) {
-      out += "\\x" + code.toString(16).padStart(2, "0");
-    } else {
-      out += ch;
-    }
-  }
-  return out + quote;
 }

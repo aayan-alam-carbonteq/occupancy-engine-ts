@@ -1,6 +1,4 @@
-// Port of occupancy_engine/agents/models.py.
-// pydantic BaseModel(extra="forbid") -> z.object(...).strict(); Field(default_factory=...) -> .default();
-// field/model validators -> .superRefine. z.infer gives the equivalent (all-fields-present) type.
+// Agent input/output schemas. Strict zod objects reject unknown keys; validators run via .superRefine.
 import { z } from "zod";
 
 export const HEURISTIC_STATUS = ["triggered", "not_triggered", "inconclusive", "context", "mitigation", "quality", "error"] as const;
@@ -305,8 +303,8 @@ export const CaseAdjudicationSchema = z
   .strict();
 export type CaseAdjudication = z.infer<typeof CaseAdjudicationSchema>;
 
-// metrics_events is exclude=True in Python (omitted from serialization). We keep it on the type and
-// strip it when writing JSON (see cli serialization).
+// metrics_events is excluded from serialization. We keep it on the type and strip it when writing
+// JSON (see cli serialization).
 export const OccupancyAgentAssessmentSchema = z
   .object({
     query: jsonRecord,
@@ -327,6 +325,6 @@ export const OccupancyAgentAssessmentSchema = z
 export type OccupancyAgentAssessment = z.infer<typeof OccupancyAgentAssessmentSchema>;
 
 export function runTimestamp(): string {
-  // ISO with seconds precision (isoformat(timespec="seconds"))
+  // ISO timestamp truncated to seconds precision (drops the milliseconds).
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
