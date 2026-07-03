@@ -1,0 +1,9 @@
+node_modules/
+bun.lockb
+*.log
+.env
+experiments/
+runs/
+dist/
+.DS_Store
+*.tsbuildinfo

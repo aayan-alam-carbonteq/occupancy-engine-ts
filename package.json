@@ -1,0 +1,28 @@
+{
+  "name": "occupancy-engine-ts",
+  "version": "0.1.0",
+  "description": "TypeScript port of the occupancy-engine agent pipeline (agents + heuristics + observability + judge). Talks to the existing Python GraphQL server over HTTP.",
+  "type": "module",
+  "module": "src/index.ts",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "run-address": "bun run cli/run_address.ts",
+    "run-batch": "bun run cli/run_investigation_batch.ts"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/google-genai": "^0.1.0",
+    "@langchain/openai": "^0.3.0",
+    "langchain": "^0.3.0",
+    "langsmith": "^0.2.0",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

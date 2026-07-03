@@ -1,0 +1,11 @@
+import { ChatAnthropic } from "@langchain/anthropic";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+const submit = tool(async (_a: any) => ({}), { name: "submit", description: "d", schema: z.object({ answer: z.string() }) });
+const llm = new ChatAnthropic({ model: "claude-haiku-4-5-20251001", maxRetries: 0 });
+const bound = llm.bindTools([submit], { tool_choice: "any" });
+const sys = new SystemMessage({ content: [{ type: "text", text: "Return via the submit tool.", cache_control: { type: "ephemeral" } }] as any });
+const r: any = await bound.invoke([sys, new HumanMessage("say hi via submit(answer)")]);
+console.log("tool_calls:", JSON.stringify(r.tool_calls));
+console.log("usage_metadata:", JSON.stringify(r.usage_metadata));
