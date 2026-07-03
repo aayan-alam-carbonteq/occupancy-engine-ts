@@ -53,3 +53,17 @@ Runtime: **Bun** (native TS, test runner, fetch). Source of truth for behavior: 
   helpers (`_coerce_result_payload`) → explicit build-then-parse functions preserving the same mutations.
 - `async def` → `async` functions; `asyncio.gather` → `Promise.all`; `asyncio.Semaphore` → a small
   concurrency limiter.
+
+## Known inherent divergences (JS vs Python)
+
+- **Whole-valued floats in JSON text.** Python serializes `16.0`; JS (no int/float distinction) emits
+  `16`. Numerically identical, only the JSON textual form differs. Affects synthesis
+  `raw_signal_score`/`weighted_*_score` and any float that lands on an integer. Not fixable without a
+  custom serializer and not behavior-affecting; noted for byte-diff expectations.
+- **`str()`/`repr()`/`json.dumps` parity.** Where the Python builds prompt/summary TEXT from values, the
+  ports reproduce Python's `str()` ("None"/"True"/"False"), `repr()`, and `json.dumps(sort_keys=True,
+  ensure_ascii=True)` semantics with small local helpers (`pyStr`, `pyJsonDumps`, etc.) so rendered strings
+  and byte/char counts match. Verified byte-for-byte for prompts, payload_metadata, and graphql summaries.
+- **GraphQL validation error wording.** graphql-js quotes identifiers with `"double quotes"` vs
+  graphql-core's `'single quotes'`; the graphql_tool port normalizes the message line (only) so the
+  toolset's substring-based hint/skeleton matching fires identically.
