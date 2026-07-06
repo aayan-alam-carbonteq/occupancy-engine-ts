@@ -108,7 +108,7 @@ function createAnthropicModel(config: LlmConfig): BaseChatModel {
   if (!apiKey) {
     throw new AgentConfigurationError("Anthropic provider requires ANTHROPIC_API_KEY.");
   }
-  const model = config.model || process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-latest";
+  const model = config.model || process.env.ANTHROPIC_MODEL || "claude-haiku-4-5";
   return new ChatAnthropic({
     model,
     apiKey,
