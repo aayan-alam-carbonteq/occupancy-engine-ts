@@ -8,6 +8,10 @@ import { investigate_address } from "../src/agents/orchestrator.ts";
 import type { MetricEvent, RunMetricsSummary } from "../src/observability/models.ts";
 import { writeRunMetrics } from "../src/observability/writers.ts";
 
+export function resolveGraphqlUrl(flag: string | undefined, env: string | undefined): string | undefined {
+  return flag ?? env ?? undefined;
+}
+
 async function main(argv: string[]): Promise<number> {
   loadDotenv();
   const { values } = parseArgs({
@@ -41,15 +45,21 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: false,
   });
 
-  if (!values.address || !values["graphql-url"]) {
-    process.stderr.write("--address and --graphql-url are required\n");
+  const graphqlUrl = resolveGraphqlUrl(values["graphql-url"], process.env.GRAPHQL_URL);
+
+  if (!values.address) {
+    process.stderr.write("--address is required\n");
+    return 2;
+  }
+  if (!graphqlUrl) {
+    process.stderr.write("--graphql-url is required (or set GRAPHQL_URL)\n");
     return 2;
   }
 
   const request = AgentInvestigationRequestSchema.parse({
     address: values.address,
     zip: values.zip,
-    graphql_url: values["graphql-url"],
+    graphql_url: graphqlUrl,
     provider: values.provider,
     model: values.model ?? null,
     base_url: values["base-url"] ?? null,
@@ -96,4 +106,6 @@ async function main(argv: string[]): Promise<number> {
   return 0;
 }
 
-main(process.argv.slice(2)).then((code) => process.exit(code));
+if (import.meta.main) {
+  main(process.argv.slice(2)).then((code) => process.exit(code));
+}
