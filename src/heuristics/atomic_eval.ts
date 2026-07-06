@@ -1,8 +1,7 @@
-// Port of occupancy_engine/heuristics/atomic_eval.py.
 // The atomic evaluation logic: per-heuristic gate decisions, deterministic
 // reasoning-path executors, and case-level synthesis. Behavioral-critical.
-// @dataclass(frozen=True) -> readonly interface + make* builders (Python default
-// field values are applied inside the builders).
+// Modeled as readonly interfaces + make* builders (default field values are
+// applied inside the builders).
 
 import { Database } from "bun:sqlite";
 
@@ -34,14 +33,13 @@ export type PathStatus =
 export type SignalStrength = "none" | "weak" | "moderate" | "strong";
 export type RecommendedWeight = "ignore" | "low" | "medium" | "high";
 
-// PORT NOTE: atomic_eval.py declares module-local VerdictBandCandidate /
-// CaseArchetypeCandidate Literals. VerdictBandCandidate is identical to
-// types.py's; the local CaseArchetypeCandidate is a subset (no
-// "non_rental_absentee_owner"). We reuse the (wider) types.ts aliases — every
-// value produced here is a member of them, so behavior is unchanged.
+// VerdictBandCandidate / CaseArchetypeCandidate could be narrower here (the
+// archetype set produced in this module excludes "non_rental_absentee_owner"),
+// but we reuse the wider types.ts aliases — every value produced here is a
+// member of them, so behavior is unchanged.
 
 // ---------------------------------------------------------------------------
-// Dataclasses -> readonly interfaces + builders
+// Readonly interfaces + builders
 
 export interface HeuristicGate {
   readonly required_sources: readonly string[];
@@ -217,9 +215,9 @@ export interface AtomicEvaluationReport {
   readonly caveats: readonly string[];
 }
 
-// PORT NOTE: AddressEvidence is nominally distinguished from a plain evidence
-// dict (Python `isinstance(evidence, AddressEvidence)`). A Symbol brand does
-// this without leaking into asdict/JSON output (Object.keys skips symbol keys).
+// AddressEvidence is distinguished from a plain evidence object at runtime via a
+// Symbol brand, which does this without leaking into asdict/JSON output (Object.keys
+// skips symbol keys).
 const ADDRESS_EVIDENCE_BRAND = Symbol("AddressEvidence");
 
 export interface AddressEvidence {
@@ -330,7 +328,7 @@ function isAtomicHeuristic(value: unknown): value is AtomicHeuristic {
 }
 
 // ---------------------------------------------------------------------------
-// Source families (atomic_eval.py declares these locally, not via policy).
+// Source families (declared locally here, not via policy).
 
 const SUBSTANTIVE_SOURCES: readonly string[] = [
   "tax",
@@ -628,8 +626,8 @@ export function build_evidence(
     }
     const ownerIdSet = new Set<string>();
     for (const row of subject_rows["tax"] ?? []) {
-      if (pyBool(row["id"])) {
-        ownerIdSet.add(String(pyOr(row["id"], "")));
+      if (hasContent(row["id"])) {
+        ownerIdSet.add(String(firstTruthy(row["id"], "")));
       }
     }
     owner_ids = [...ownerIdSet].sort();
@@ -765,15 +763,15 @@ export function compare_atomic_to_agent_report(
   for (const item of agent_heuristics) {
     if (item !== null && typeof item === "object") {
       const rec = item as Record<string, unknown>;
-      const key = String(pyOr(rec["heuristic_id"], rec["id"]));
+      const key = String(firstTruthy(rec["heuristic_id"], rec["id"]));
       agent_statuses[key] = rec["status"];
     }
   }
   const atomicQuery = (asRecord(atomic["query"]) ?? {}) as Record<string, unknown>;
   const agentQuery = (asRecord(agent_report["query"]) ?? {}) as Record<string, unknown>;
   return {
-    address: pyOr(atomicQuery["address"], agentQuery["address"]),
-    zip: pyOr(atomicQuery["zip"], agentQuery["zip"]),
+    address: firstTruthy(atomicQuery["address"], agentQuery["address"]),
+    zip: firstTruthy(atomicQuery["zip"], agentQuery["zip"]),
     atomic_runnable_heuristics: atomic_gate_rows
       .filter(
         (row) => row["decision"] === "run" || row["decision"] === "run_for_absence",
@@ -811,9 +809,9 @@ export function summarize_atomic_agent_comparison(
   comparisons: Record<string, unknown>[],
 ): Record<string, unknown> {
   const total = comparisons.length;
-  const band_matches = comparisons.filter((item) => pyBool(item["band_match"])).length;
+  const band_matches = comparisons.filter((item) => hasContent(item["band_match"])).length;
   const archetype_matches = comparisons.filter((item) =>
-    pyBool(item["archetype_match"]),
+    hasContent(item["archetype_match"]),
   ).length;
   const skipped_counter: Record<string, number> = {};
   const triggered_counter: Record<string, number> = {};
@@ -1154,7 +1152,7 @@ function _source_counts(evidence_map: unknown): Record<string, number> {
     raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const out: Record<string, number> = {};
   for (const [source, count] of Object.entries(dict)) {
-    out[String(source)] = Math.trunc(Number(pyOr(count, 0)));
+    out[String(source)] = Math.trunc(Number(firstTruthy(count, 0)));
   }
   return out;
 }
@@ -1446,7 +1444,7 @@ function _foreclosure_or_distress_marker(
   evidence: AddressEvidence,
 ): PathEvaluation {
   const rows = rowsOf(evidence, "tax").filter(
-    (row) => pyBool(row["foreclosecode"]) || pyBool(row["forecloserecorddate"]),
+    (row) => hasContent(row["foreclosecode"]) || hasContent(row["forecloserecorddate"]),
   );
   if (rows.length > 0) {
     return _trigger(
@@ -1466,7 +1464,7 @@ function _company_or_trust_owner(
   const terms = ["llc", "inc", "trust", "estate", "corp", "company"];
   const rows = rowsOf(evidence, "tax").filter(
     (row) =>
-      pyBool(row["ownercompany"]) ||
+      hasContent(row["ownercompany"]) ||
       terms.some((term) => _norm(row["ownername"]).includes(term)),
   );
   if (rows.length > 0) {
@@ -1679,7 +1677,7 @@ function _owner_loan_elsewhere(
 ): PathEvaluation {
   const rows = _owner_related_rows_by_id(evidence, "loan").filter(
     (row) =>
-      _normalize_address(pyOr(row["address"], row["primaryaddress"])) !==
+      _normalize_address(firstTruthy(row["address"], row["primaryaddress"])) !==
       evidence.normalized_address,
   );
   if (rows.length > 0) {
@@ -2247,7 +2245,7 @@ function _same_person_name_variant_ambiguity(
   const seen = new Map<string, Set<string>>();
   for (const source of ["base", "loan", "drive", "voter", "auto", "trace"]) {
     for (const row of rowsOf(evidence, source)) {
-      const row_id = String(pyOr(row["id"], ""));
+      const row_id = String(firstTruthy(row["id"], ""));
       if (row_id) {
         if (!seen.has(row_id)) {
           seen.set(row_id, new Set());
@@ -2575,9 +2573,9 @@ function _coerce_evidence(
     }
   }
   return makeAddressEvidence({
-    address: String(pyOr(evidence["address"], "")),
-    normalized_address: String(pyOr(evidence["normalized_address"], "")),
-    zip: String(pyOr(evidence["zip"], "")),
+    address: String(firstTruthy(evidence["address"], "")),
+    normalized_address: String(firstTruthy(evidence["normalized_address"], "")),
+    zip: String(firstTruthy(evidence["zip"], "")),
     rows,
     owner_ids: (asArray(evidence["owner_ids"]) ?? []).map((v) => String(v)),
     owner_name_keys: (asArray(evidence["owner_name_keys"]) ?? []).map(
@@ -2666,7 +2664,7 @@ function _owner_related_rows_by_id(
 ): Record<string, unknown>[] {
   const ids = new Set(evidence.owner_ids);
   return rowsOf(evidence, source).filter((row) =>
-    ids.has(String(pyOr(row["id"], ""))),
+    ids.has(String(firstTruthy(row["id"], ""))),
   );
 }
 
@@ -2677,7 +2675,7 @@ function _owner_elsewhere_rows(
   const rows: Array<[string, Record<string, unknown>]> = [];
   for (const source of sources) {
     for (const row of _owner_related_rows_by_id(evidence, source)) {
-      const norm = _normalize_address(pyOr(row["address"], row["primaryaddress"]));
+      const norm = _normalize_address(firstTruthy(row["address"], row["primaryaddress"]));
       if (norm && norm !== evidence.normalized_address) {
         rows.push([source, row]);
       }
@@ -2692,8 +2690,8 @@ function _owner_summary(
 ): Record<string, unknown> {
   const mailing = _normalize_address(row["owneraddressline1"]);
   return {
-    owner_name: pyOr(row["ownername"], ""),
-    mailing_address: pyOr(row["owneraddressline1"], ""),
+    owner_name: firstTruthy(row["ownername"], ""),
+    mailing_address: firstTruthy(row["owneraddressline1"], ""),
     mailing_matches_subject: mailing ? mailing === normalized_address : null,
     source: "tax",
   };
@@ -2751,7 +2749,7 @@ function _owner_elsewhere_hints(
       )
       .all(...owner_ids, limit) as Record<string, unknown>[];
     for (const row of rows) {
-      const norm = _normalize_address(pyOr(row["address"], row["primaryaddress"]));
+      const norm = _normalize_address(firstTruthy(row["address"], row["primaryaddress"]));
       if (norm && norm !== normalized_address) {
         hints.push(`Owner-linked ${source} row points away from selected address.`);
         break;
@@ -2803,7 +2801,7 @@ function _owner_name_keys(
 }
 
 function _ownername_key(value: unknown): [string, string] | null {
-  const text = String(pyOr(value, "")).trim();
+  const text = String(firstTruthy(value, "")).trim();
   if (!text) {
     return null;
   }
@@ -2824,7 +2822,7 @@ function _is_owner_row(
   row: Record<string, unknown>,
   evidence: AddressEvidence,
 ): boolean {
-  const row_id = String(pyOr(row["id"], ""));
+  const row_id = String(firstTruthy(row["id"], ""));
   if (row_id && evidence.owner_ids.includes(row_id)) {
     return true;
   }
@@ -2843,8 +2841,8 @@ function _is_owner_name_row(
 }
 
 function _person_key(row: Record<string, unknown>): [string, string] {
-  const first = pyOr(row["firstname"], row["first_name"], row["firstName"], "");
-  const last = pyOr(row["lastname"], row["last_name"], row["lastName"], "");
+  const first = firstTruthy(row["firstname"], row["first_name"], row["firstName"], "");
+  const last = firstTruthy(row["lastname"], row["last_name"], row["lastName"], "");
   return [_norm(first), _norm(last)];
 }
 
@@ -2852,8 +2850,8 @@ function _portfolio_rows(evidence: AddressEvidence): Record<string, unknown>[] {
   const rows: Record<string, unknown>[] = [];
   for (const row of rowsOf(evidence, "tax")) {
     let count: number;
-    const parsed = Number(String(pyOr(row["ownerrescount"], "0")));
-    // Python: int(float(str(row.get("ownerrescount") or "0"))); ValueError -> 0
+    const parsed = Number(String(firstTruthy(row["ownerrescount"], "0")));
+    // Parse ownerrescount as an integer, truncating toward zero; unparseable values become 0.
     count = Number.isNaN(parsed) ? 0 : Math.trunc(parsed);
     if (count >= 2) {
       rows.push(row);
@@ -2885,15 +2883,15 @@ function _ref(source: string, row: Record<string, unknown>): EvidenceRef {
   }
   const publicData: Record<string, unknown> = Object.fromEntries(publicEntries);
   const digest = new Bun.CryptoHasher("sha1")
-    .update(_python_json_dumps_sorted(publicData))
+    .update(_canonical_json_dumps(publicData))
     .digest("hex")
     .slice(0, 8);
   const nameParts: string[] = [];
   const first = String(
-    pyOr(publicData["firstname"], publicData["first_name"], publicData["firstName"], ""),
+    firstTruthy(publicData["firstname"], publicData["first_name"], publicData["firstName"], ""),
   ).trim();
   const last = String(
-    pyOr(publicData["lastname"], publicData["last_name"], publicData["lastName"], ""),
+    firstTruthy(publicData["lastname"], publicData["last_name"], publicData["lastName"], ""),
   ).trim();
   if (first) {
     nameParts.push(first);
@@ -2905,7 +2903,7 @@ function _ref(source: string, row: Record<string, unknown>): EvidenceRef {
   const summary =
     name ||
     String(
-      pyOr(
+      firstTruthy(
         publicData["ownername"],
         publicData["address"],
         publicData["primaryaddress"],
@@ -2923,22 +2921,22 @@ function _ref(source: string, row: Record<string, unknown>): EvidenceRef {
 function _tax_lien_present(row: Record<string, unknown>): boolean {
   return (
     _truthy(row["totalliencount"]) ||
-    pyBool(row["totallienbalance"]) ||
-    pyBool(row["lendername"])
+    hasContent(row["totallienbalance"]) ||
+    hasContent(row["lendername"])
   );
 }
 
 function _base_mortgage_present(row: Record<string, unknown>): boolean {
   return (
-    pyBool(row["mortgageamountinthousands"]) ||
-    pyBool(row["mortgagelendername"]) ||
-    pyBool(row["refinanceamountinthousands"]) ||
-    pyBool(row["refinancelendername"])
+    hasContent(row["mortgageamountinthousands"]) ||
+    hasContent(row["mortgagelendername"]) ||
+    hasContent(row["refinanceamountinthousands"]) ||
+    hasContent(row["refinancelendername"])
   );
 }
 
 function _own_rent(row: Record<string, unknown>): string {
-  const value = _norm(pyOr(row["own_rent"], row["ownRent"]));
+  const value = _norm(firstTruthy(row["own_rent"], row["ownRent"]));
   if (value === "own" || value === "owner" || value === "1") {
     return "own";
   }
@@ -2949,7 +2947,7 @@ function _own_rent(row: Record<string, unknown>): string {
 }
 
 // ---------------------------------------------------------------------------
-// Primitive helpers (Python semantics)
+// Primitive helpers
 
 const POSITIVE_TRUTHY: ReadonlySet<string> = new Set(["1", "true", "t", "yes", "y"]);
 const NEGATIVE_TRUTHY: ReadonlySet<string> = new Set([
@@ -2967,11 +2965,10 @@ function _truthy(value: unknown): boolean {
   if (POSITIVE_TRUTHY.has(n)) {
     return true;
   }
-  return pyBool(value) && !NEGATIVE_TRUTHY.has(n);
+  return hasContent(value) && !NEGATIVE_TRUTHY.has(n);
 }
 
-// PORT NOTE: str(value or "").strip().split() joined by " ", then casefold.
-// casefold() -> toLowerCase() (ASCII-equivalent for the tokens compared here).
+// Coerce to string, collapse internal whitespace to single spaces, trim, and lowercase.
 function _norm(value: unknown): string {
   return String(value || "")
     .trim()
@@ -2985,9 +2982,8 @@ function _normalize_address(value: unknown): string {
   return normalize_address_value(String(value || "")).value;
 }
 
-// PORT NOTE: Python truthiness (bool(value)): None/""/0/0.0/False/empty-collection
-// are falsy; everything else truthy.
-function pyBool(value: unknown): boolean {
+// True when the value carries content: null/undefined/""/0/false and empty arrays/objects count as empty.
+function hasContent(value: unknown): boolean {
   if (value === null || value === undefined) {
     return false;
   }
@@ -3009,13 +3005,13 @@ function pyBool(value: unknown): boolean {
   return Boolean(value);
 }
 
-// PORT NOTE: `a or b or c` returns the first truthy value, else the last.
-function pyOr(...values: unknown[]): unknown {
+// Returns the first content-bearing value, else the last argument.
+function firstTruthy(...values: unknown[]): unknown {
   for (let i = 0; i < values.length; i += 1) {
     if (i === values.length - 1) {
       return values[i];
     }
-    if (pyBool(values[i])) {
+    if (hasContent(values[i])) {
       return values[i];
     }
   }
@@ -3038,7 +3034,7 @@ function _keysEqual(a: readonly [string, string], b: readonly [string, string]):
 }
 
 // Null-byte delimiter keeps the (first, last) encoding injective for names
-// that contain spaces (Python keys these maps/sets on the tuple value).
+// that contain spaces, so the pair can key a map/set as a single string.
 function _encodeKey(key: readonly [string, string]): string {
   return `${key[0]}\u0000${key[1]}`;
 }
@@ -3084,17 +3080,16 @@ function _top_counts(
     .map(([key, value]) => ({ id: key, count: value }));
 }
 
-// PORT NOTE: mirrors datetime.now(UTC).isoformat(timespec="seconds") ->
-// "YYYY-MM-DDTHH:MM:SS+00:00".
+// Current UTC time formatted as "YYYY-MM-DDTHH:MM:SS+00:00" (second precision).
 function _now_iso_seconds(): string {
   return `${new Date().toISOString().slice(0, 19)}+00:00`;
 }
 
-// PORT NOTE: json.dumps(obj, sort_keys=True) with the default ", "/": "
-// separators and ensure_ascii=True. Used only to derive the fallback EvidenceRef
-// digest. Python float repr (e.g. 2.0 -> "2.0") is not reproducible in JS
-// (2.0 -> "2"); this only affects the rare all-empty-name digest fallback.
-function _python_json_dumps_sorted(value: unknown): string {
+// Canonical JSON with sorted keys, ASCII-escaped output, and ", "/": " separators.
+// Used only to derive the fallback EvidenceRef digest. Whole-number floats render
+// without a trailing ".0" (2.0 -> "2"); this only affects the rare all-empty-name
+// digest fallback.
+function _canonical_json_dumps(value: unknown): string {
   if (value === null || value === undefined) {
     return "null";
   }
@@ -3105,23 +3100,23 @@ function _python_json_dumps_sorted(value: unknown): string {
     return String(value);
   }
   if (typeof value === "string") {
-    return _python_json_string(value);
+    return _canonical_json_string(value);
   }
   if (Array.isArray(value)) {
-    return `[${value.map((item) => _python_json_dumps_sorted(item)).join(", ")}]`;
+    return `[${value.map((item) => _canonical_json_dumps(item)).join(", ")}]`;
   }
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
       a < b ? -1 : a > b ? 1 : 0,
     );
     return `{${entries
-      .map(([k, v]) => `${_python_json_string(k)}: ${_python_json_dumps_sorted(v)}`)
+      .map(([k, v]) => `${_canonical_json_string(k)}: ${_canonical_json_dumps(v)}`)
       .join(", ")}}`;
   }
-  return _python_json_string(String(value));
+  return _canonical_json_string(String(value));
 }
 
-function _python_json_string(value: string): string {
+function _canonical_json_string(value: string): string {
   let out = '"';
   for (const char of value) {
     const code = char.codePointAt(0) ?? 0;

@@ -1,31 +1,22 @@
-// Port of occupancy_engine/agents/toolsets/graphql_toolset.py.
-//
 // The "tools" retrieval surface: the raw-GraphQL tools (validate_graphql, execute_graphql,
 // describe_schema) plus the optional shortcut tools (get_address_records, get_people_at_address,
 // get_person_records), their dispatch/compaction helpers, the budget-terminal envelope, and the
-// GraphQLToolset adapter (implements RetrievalToolset). Behavior is preserved 1:1 with the Python
-// source, including the EXACT tool names, arg schemas (names/types/descriptions/defaults/min-max),
-// dispatch routing, the budget error strings the subagent loop matches on, and the union source
-// scope used for grouped prompts.
+// GraphQLToolset adapter (implements RetrievalToolset). The EXACT tool names, arg schemas
+// (names/types/descriptions/defaults/min-max), dispatch routing, the budget error strings the
+// subagent loop matches on, and the union source scope used for grouped prompts are all significant.
 //
-// PORT NOTE (@tool -> tool()): Python `@tool("name", args_schema=PydanticModel)` uses the string
-// name + the function docstring as the description; LangChain.js `tool(func, { name, description,
-// schema })` takes those explicitly. Each stub passes name = (Python tool name), description =
-// (Python docstring verbatim), and schema = a zod object mirroring the pydantic args_schema
-// field-for-field. The func body is a stub (`async () => ({})`) exactly like Python's `return {}`,
-// because the subagent loop routes by tool name through `dispatch`, never invoking the tool's func.
+// Each tool is declared with `tool(func, { name, description, schema })`: name is the tool name,
+// description is its help text, and schema is a zod object describing its args. The func body is a
+// stub (`async () => ({})`) because the subagent loop routes by tool name through `dispatch`, never
+// invoking the tool's func.
 //
-// PORT NOTE (constants reuse): Python's graphql_toolset defines ADDRESS_SOURCE_FIELDS /
-// PERSON_SOURCE_FIELDS / SOURCE_DATA_FIELDS; in this TS port those live in retrieval.ts and are
+// ADDRESS_SOURCE_FIELDS / PERSON_SOURCE_FIELDS / SOURCE_DATA_FIELDS live in retrieval.ts and are
 // imported here (not duplicated). `_resolved_address_id(agent_input)` delegates to retrieval.ts's
-// `_resolve_bundle_address_id(agent_input.context)` (identical logic). The compaction helpers
-// (_compact_person_node/_compact_record_data/_record_summary/_compact_source_node) mirror the Python
-// copies here (retrieval.ts keeps its own private copies, matching the Python duplication).
+// `_resolve_bundle_address_id(agent_input.context)`. The compaction helpers
+// (_compact_person_node/_compact_record_data/_record_summary/_compact_source_node) are kept here as
+// private copies (retrieval.ts keeps its own).
 //
-// PORT NOTE (str()/casefold()/int()): source normalization uses `.trim().toLowerCase()` for Python
-// `.strip().casefold()` (identical for the ASCII source names). `int()` -> pyInt (truncate toward
-// zero). Python `dict.get(k) or default` / `x or []` -> orElse. Summary TEXT built from values uses
-// pyStr (None/True/False parity). See docs/MIGRATION.md "Known inherent divergences".
+// Source normalization uses `.trim().toLowerCase()`; the small primitive helpers at the bottom of
 import { createHash } from "node:crypto";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
@@ -45,7 +36,7 @@ import {
 } from "../retrieval.ts";
 import type { Diagnostics, RetrievalToolset } from "./base.ts";
 
-// ── Arg models (pydantic BaseModel -> zod object; class docstring -> .describe) ──────────────────
+// ── Arg models (zod object schemas) ──────────────────────────────────────────────────────────────
 
 const ValidateGraphQLArgs = z
   .object({
@@ -151,7 +142,7 @@ function _is_graphql_budget_error(exc: unknown): boolean {
 }
 
 function _graphql_budget_terminal_response(error: string | null = null): Record<string, any> {
-  const message = orElse(error, "GraphQL query budget is exhausted.");
+  const message = error || "GraphQL query budget is exhausted.";
   return {
     ok: false,
     stage: "budget_exhausted",
@@ -172,7 +163,7 @@ async function _validate_graphql_tool(
   if (diagnostics.graphql_budget_exhausted) {
     return _graphql_budget_terminal_response();
   }
-  const query = String(orElse(args["query"], ""));
+  const query = String(args["query"] ?? "");
   const variables = isDict(args["variables"]) ? args["variables"] : {};
   const result = await graphql.validate(query, variables);
   const payload = { ...result };
@@ -191,16 +182,15 @@ async function _execute_graphql_tool(
   if (diagnostics.graphql_budget_exhausted) {
     return _graphql_budget_terminal_response();
   }
-  const query = String(orElse(args["query"], ""));
+  const query = String(args["query"] ?? "");
   const variables = isDict(args["variables"]) ? args["variables"] : {};
-  const compact = truthy(Object.hasOwn(args, "compact") ? args["compact"] : true);
+  const compact = Boolean(Object.hasOwn(args, "compact") ? args["compact"] : true);
   const validation = await graphql.validate(query, variables);
   if (!validation.ok) {
     diagnostics.validation_errors.push(...validation.errors);
     diagnostics.query_repair_attempts += 1;
-    // Python: {"ok": False, "stage": "validation", **validation.model_dump()} — the spread's `ok`
-    // (== validation.ok, which is false here) wins while keeping `ok` at position 1. Reproduce that
-    // key order/value; destructure `ok` out of the spread so TS doesn't flag the intentional override.
+    // Emit { ok, stage: "validation", ...rest }: keep `ok` at position 1 with its value (false here),
+    // and destructure `ok` out of the spread so TS doesn't flag the intentional override.
     const { ok: _ok, ...validationRest } = validation;
     return { ok: validation.ok, stage: "validation", ...validationRest };
   }
@@ -255,7 +245,7 @@ function _resolved_address_id(agent_input: HeuristicAgentInput): number | null {
   return _resolve_bundle_address_id(agent_input.context);
 }
 
-// ── Compaction helpers (Python copies mirrored here) ────────────────────────────────────────────────
+// ── Compaction helpers ──────────────────────────────────────────────────────────────────────────────
 
 function _compact_person_node(node: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
@@ -289,7 +279,7 @@ function _record_summary(source: string, data: Record<string, any>): string {
   for (const key of ["ownername", "firstname", "first_name", "lastname", "last_name", "address", "zip", "status", "own_rent", "matched", "property_type_normalized"]) {
     const value = data[key];
     if (value !== null && value !== undefined && value !== "") {
-      bits.push(`${key}=${pyStr(value)}`);
+      bits.push(`${key}=${String(value)}`);
     }
   }
   return bits.join("; ");
@@ -300,7 +290,7 @@ function _compact_source_node(source: string, node: Record<string, any>): Record
   const compact_data = _compact_record_data(source, data);
   return {
     source,
-    table: orElse(node["table"], source),
+    table: node["table"] || source,
     rowid: node["rowid"] ?? null,
     summary: _record_summary(source, compact_data),
     data: compact_data,
@@ -316,9 +306,9 @@ async function _get_address_records_tool(
   if (diagnostics.graphql_budget_exhausted) {
     return _graphql_budget_terminal_response();
   }
-  const source = String(orElse(args["source"], "")).trim().toLowerCase();
-  const limit = Math.max(1, Math.min(pyInt(orElse(args["limit"], 20)), 100));
-  const offset = Math.max(0, pyInt(orElse(args["offset"], 0)));
+  const source = String(args["source"] ?? "").trim().toLowerCase();
+  const limit = Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 20)), 100));
+  const offset = Math.max(0, Math.trunc(Number(args["offset"] || 0)));
   const address_id = _resolved_address_id(agent_input);
   if (address_id === null) {
     return { ok: false, error: "No resolved address id is available." };
@@ -352,12 +342,12 @@ async function _get_address_records_tool(
     }
     return { ok: false, error: errStr(exc) };
   }
-  const conn = orElse(orElse(data["address"], {})[field], {});
+  const conn: any = ((data["address"] ?? {}) as any)[field] ?? {};
   return {
     ok: true,
     source,
-    totalCount: pyInt(orElse(conn["totalCount"], 0)),
-    hasMore: truthy(conn["hasMore"]),
+    totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    hasMore: Boolean(conn["hasMore"]),
     records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
   };
 }
@@ -375,8 +365,8 @@ async function _get_people_at_address_tool(
   if (address_id === null) {
     return { ok: false, error: "No resolved address id is available." };
   }
-  const limit = Math.max(1, Math.min(pyInt(orElse(args["limit"], 25)), 100));
-  const offset = Math.max(0, pyInt(orElse(args["offset"], 0)));
+  const limit = Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 25)), 100));
+  const offset = Math.max(0, Math.trunc(Number(args["offset"] || 0)));
   const query = `
     query AgentPeopleAtAddressShortcut($id: Int!, $limit: Int, $offset: Int) {
       peopleAtAddress(addressId: $id, limit: $limit, offset: $offset) {
@@ -400,12 +390,12 @@ async function _get_people_at_address_tool(
     }
     return { ok: false, error: errStr(exc) };
   }
-  const conn = orElse(data["peopleAtAddress"], {});
+  const conn: any = data["peopleAtAddress"] ?? {};
   return {
     ok: true,
     address_id,
-    totalCount: pyInt(orElse(conn["totalCount"], 0)),
-    hasMore: truthy(conn["hasMore"]),
+    totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    hasMore: Boolean(conn["hasMore"]),
     people: asArray(conn["nodes"]).map((node) => _compact_person_node(node)),
   };
 }
@@ -418,18 +408,20 @@ async function _get_person_records_tool(
   if (diagnostics.graphql_budget_exhausted) {
     return _graphql_budget_terminal_response();
   }
-  const person_id = String(orElse(args["person_id"], "")).trim();
+  const person_id = String(args["person_id"] ?? "").trim();
   if (!person_id) {
     return { ok: false, error: "person_id is required." };
   }
   const requested_sources = Array.isArray(args["sources"]) ? args["sources"] : [];
-  const sources = orElse(
-    requested_sources.filter((source: any) => String(source).trim() !== "").map((source: any) => String(source).trim().toLowerCase()),
-    ["base", "tax", "trace", "auto", "loan", "drive", "voter", "criminal", "linkedin"],
-  ) as string[];
+  const normalizedSources = requested_sources
+    .filter((source: any) => String(source).trim() !== "")
+    .map((source: any) => String(source).trim().toLowerCase());
+  const sources = (normalizedSources.length > 0
+    ? normalizedSources
+    : ["base", "tax", "trace", "auto", "loan", "drive", "voter", "criminal", "linkedin"]) as string[];
   const supported = sources.filter((source) => Object.hasOwn(PERSON_SOURCE_FIELDS, source));
   const unsupported = setDifferenceSorted(sources, supported);
-  const limit = Math.max(1, Math.min(pyInt(orElse(args["limit"], 20)), 100));
+  const limit = Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 20)), 100));
   const selections = supported
     .map((source) => PERSON_SOURCE_FIELDS[source])
     .map((field) => `${field}(limit: $limit) { totalCount hasMore nodes { table rowid data } }`)
@@ -460,14 +452,14 @@ async function _get_person_records_tool(
     }
     return { ok: false, error: errStr(exc), unsupported_sources: unsupported };
   }
-  const person = orElse(data["person"], {});
+  const person: any = data["person"] ?? {};
   const records: Record<string, any> = {};
   for (const source of supported) {
     const field = PERSON_SOURCE_FIELDS[source]!;
-    const conn = orElse(person[field], {});
+    const conn: any = person[field] ?? {};
     records[source] = {
-      totalCount: pyInt(orElse(conn["totalCount"], 0)),
-      hasMore: truthy(conn["hasMore"]),
+      totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+      hasMore: Boolean(conn["hasMore"]),
       records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
     };
   }
@@ -523,7 +515,9 @@ Final result constraints:
 export function _union_source_scope(agent_inputs: HeuristicAgentInput[]): string[] {
   const scope: string[] = [];
   for (const ai of agent_inputs) {
-    const sources: any = orElse(orElse(ai.heuristic["context_scope"], ai.heuristic["input_sources"]), []);
+    const contextScope = ai.heuristic["context_scope"] as any[] | undefined;
+    const inputSources = ai.heuristic["input_sources"] as any[] | undefined;
+    const sources: any[] = contextScope?.length ? contextScope : inputSources?.length ? inputSources : [];
     for (const source of sources) {
       const name = String(source);
       if (!scope.includes(name)) {
@@ -567,7 +561,11 @@ export class GraphQLToolset implements RetrievalToolset {
     return prompt_context(
       agent_input.context,
       agent_input.prompt_profile,
-      orElse(orElse(agent_input.heuristic["context_scope"], agent_input.heuristic["input_sources"]), []),
+      ((agent_input.heuristic["context_scope"] as any[] | undefined)?.length
+        ? (agent_input.heuristic["context_scope"] as string[])
+        : (agent_input.heuristic["input_sources"] as any[] | undefined)?.length
+          ? (agent_input.heuristic["input_sources"] as string[])
+          : []),
     );
   }
 
@@ -627,67 +625,38 @@ export class GraphQLToolset implements RetrievalToolset {
 
   describe_call(name: string, args: Record<string, any>, _result: Record<string, any>): Record<string, any> {
     if (name === "execute_graphql" || name === "validate_graphql") {
-      const query = String(orElse(args["query"], ""));
+      const query = String(args["query"] ?? "");
       return { query_sha256: createHash("sha256").update(query, "utf8").digest("hex"), query_chars: Array.from(query).length };
     }
     if (name === "describe_schema") {
-      return { target: orElse(args["target"], "Query") };
+      return { target: args["target"] || "Query" };
     }
-    return truthy(args["source"]) ? { source: args["source"] } : {};
+    return Boolean(args["source"]) ? { source: args["source"] } : {};
   }
 }
 
-// ── Python-semantics helpers ─────────────────────────────────────────────────────────────────────────
-
-function truthy(value: any): boolean {
-  if (value === null || value === undefined) return false;
-  if (value === false) return false;
-  if (value === true) return true;
-  if (typeof value === "number") return value !== 0 && !Number.isNaN(value);
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return Boolean(value);
-}
-
-/** Python `value or fallback`. */
-function orElse(value: any, fallback: any): any {
-  return truthy(value) ? value : fallback;
-}
-
-/** Python str(): None -> "None", True/False -> "True"/"False", else String(). */
-function pyStr(value: any): string {
-  if (value === null || value === undefined) return "None";
-  if (value === true) return "True";
-  if (value === false) return "False";
-  return String(value);
-}
-
-/** Python int(): truncate toward zero. */
-function pyInt(value: any): number {
-  return Math.trunc(Number(value));
-}
+// ── Primitive coercion helpers ───────────────────────────────────────────────────────────────────────
 
 function isDict(value: any): value is Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Python dict.get(key): own-property lookup only (never the JS prototype chain). */
+/** Map lookup by key: own-property lookup only (never the prototype chain). */
 function mapGet(map: Record<string, string>, key: string): string | undefined {
   return Object.hasOwn(map, key) ? map[key] : undefined;
 }
 
-/** Python `x or []` for list access (nodes may be null). */
+/** Coerce to an array for list access (nodes may be null). */
 function asArray(value: any): any[] {
   return Array.isArray(value) ? value : [];
 }
 
-/** Python str(exc): GraphQLToolError message with no "Error: " prefix. */
+/** Error message: GraphQLToolError message with no "Error: " prefix. */
 function errStr(exc: unknown): string {
   return exc instanceof Error ? exc.message : String(exc);
 }
 
-/** Python sorted(set(a) - set(b)) — items in `a` not in `b`, deduped, sorted. */
+/** Items in `a` not in `b`, deduped and sorted. */
 function setDifferenceSorted(a: string[], b: string[]): string[] {
   const bset = new Set(b);
   return [...new Set(a.filter((s) => !bset.has(s)))].sort();

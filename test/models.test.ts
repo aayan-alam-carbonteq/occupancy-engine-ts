@@ -8,7 +8,7 @@ const base = {
   finding: "some finding",
 };
 
-describe("HeuristicAgentResult validators (parity with pydantic)", () => {
+describe("HeuristicAgentResult schema validators", () => {
   test("triggered requires evidence_for", () => {
     expect(() => HeuristicAgentResultSchema.parse({ ...base, status: "triggered", score: 2, evidence_for: [] })).toThrow();
     const ok = HeuristicAgentResultSchema.parse({
