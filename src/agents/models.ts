@@ -185,7 +185,7 @@ export const AgentInvestigationRequestSchema = z
     max_query_repair_attempts: z.number().int().min(0).default(3),
     schema_tool_budget: z.number().int().min(0).default(8),
     trace_id: z.string().nullish().default(null),
-    disable_master_planning: z.boolean().default(false),
+    disable_master_planning: z.boolean().default(true),
     prompt_profile: z.enum(["compact", "full"]).default("compact"),
     retrieval_mode: z.enum(["tools", "typed_tools"]).default("tools"),
     include_shortcuts: z.boolean().default(false),
