@@ -60,9 +60,9 @@
     "area": "harness",
     "title": "Development harness (instruction/state/feature/feedback/bootstrap)",
     "user_visible_behavior": "AGENTS.md rules, PROGRESS.md continuity, feature list, init.sh, and a deterministic E2E suite.",
-    "status": "in_progress",
+    "status": "passing",
     "verification": "bun run verify green; ./init.sh clean; E2E-1 + E2E-2 pass with no network/API.",
-    "evidence": "",
+    "evidence": "bun run verify green (19 pass, 0 fail); env -u ANTHROPIC_API_KEY bun test test/e2e passes (2 pass, no key); ./init.sh clean.",
     "notes": "This plan. Set to passing only when E2E-1/E2E-2 pass and verify is green."
   },
   {
