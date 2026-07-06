@@ -31,7 +31,7 @@ export function weighted_synthesis(args: {
         status === "context" ||
         status === "mitigation" ||
         status === "quality") &&
-      Boolean(pathId)
+      pathId
     ) {
       active_paths.add(String(pathId));
     }

@@ -121,7 +121,7 @@ function _evaluate_packet(
       }
       const status = path["status"];
       const pathId = path["path_id"];
-      if (_isActive(status) && Boolean(pathId)) {
+      if (_isActive(status) && pathId) {
         triggered_paths.push(String(pathId));
       }
     }

@@ -631,7 +631,7 @@ export class GraphQLToolset implements RetrievalToolset {
     if (name === "describe_schema") {
       return { target: args["target"] || "Query" };
     }
-    return Boolean(args["source"]) ? { source: args["source"] } : {};
+    return args["source"] ? { source: args["source"] } : {};
   }
 }
 

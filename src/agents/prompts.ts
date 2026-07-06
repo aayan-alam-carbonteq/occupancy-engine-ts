@@ -395,7 +395,7 @@ function _heuristic_sources(heuristic: Dict): string[] {
   for (const value of values) {
     const source = String(value).trim().toLowerCase();
     if (
-      Object.prototype.hasOwnProperty.call(ADDRESS_SOURCE_FIELDS, source) &&
+      Object.hasOwn(ADDRESS_SOURCE_FIELDS, source) &&
       !normalized.includes(source)
     ) {
       normalized.push(source);
