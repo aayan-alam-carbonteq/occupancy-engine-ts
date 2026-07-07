@@ -36,6 +36,7 @@ async function main(argv: string[]): Promise<number> {
       "metrics-debug-payloads": { type: "boolean", default: false },
       "batch-id": { type: "string" },
       "trace-id": { type: "string" },
+      progress: { type: "boolean", default: false },
       out: { type: "string" },
     },
     allowPositionals: false,
@@ -71,9 +72,29 @@ async function main(argv: string[]): Promise<number> {
     trace_id: values["trace-id"] ?? null,
   });
 
+  // --progress: stream one NDJSON line per metric event to stdout so a parent
+  // process can render live per-agent progress. The report still goes to --out.
+  const hooks = values.progress
+    ? {
+        on_metric_event: (event: MetricEvent) => {
+          const line = JSON.stringify({
+            progress: {
+              event_type: event.event_type,
+              phase: event.phase,
+              agent_id: event.agent_id,
+              heuristic_id: event.heuristic_id,
+              name: event.name,
+              status: event.status,
+            },
+          });
+          process.stdout.write(line + "\n");
+        },
+      }
+    : {};
+
   let assessment: any;
   try {
-    assessment = await investigate_address(request);
+    assessment = await investigate_address(request, null, hooks);
   } catch (exc) {
     process.stderr.write(`agent investigation failed: ${(exc as Error).message ?? exc}\n`);
     return 1;

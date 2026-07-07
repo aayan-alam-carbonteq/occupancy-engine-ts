@@ -55,6 +55,7 @@ import { make_toolset } from "./toolsets/index.ts";
 import { makeInvestigationTrace, runnableConfig, type InvestigationTrace } from "./tracing.ts";
 import { evaluate_packet_gates } from "../heuristics/index.ts";
 import { MetricsRecorder, currentRecorder, runWithRecorder } from "../observability/index.ts";
+import type { MetricEvent } from "../observability/models.ts";
 
 const PREFLIGHT_QUERY = `
 query AgentAddressPreflight($query: String!, $zip: String) {
@@ -170,6 +171,7 @@ export class AgentOrchestrator {
   master_llm: any | null;
   max_concurrency: number;
   agent_timeout_seconds: number;
+  on_metric_event: ((event: MetricEvent) => void) | null;
 
   constructor(opts: {
     graphql: GraphQLHttpTool;
@@ -177,12 +179,14 @@ export class AgentOrchestrator {
     master_llm?: any | null;
     max_concurrency?: number;
     agent_timeout_seconds?: number;
+    on_metric_event?: (event: MetricEvent) => void;
   }) {
     this.graphql = opts.graphql;
     this.subagent = opts.subagent;
     this.master_llm = opts.master_llm ?? null;
     this.max_concurrency = opts.max_concurrency ?? 8;
     this.agent_timeout_seconds = opts.agent_timeout_seconds ?? 120.0;
+    this.on_metric_event = opts.on_metric_event ?? null;
   }
 
   async investigate(request: AgentInvestigationRequest): Promise<OccupancyAgentAssessment> {
@@ -200,7 +204,11 @@ export class AgentOrchestrator {
         prompt_profile: request.prompt_profile,
         include_shortcuts: request.include_shortcuts,
       },
-      { enabled: request.metrics_enabled, debug_payloads: request.metrics_debug_payloads },
+      {
+        enabled: request.metrics_enabled,
+        debug_payloads: request.metrics_debug_payloads,
+        on_event: this.on_metric_event ?? undefined,
+      },
     );
 
     const run_investigation = async (_: Record<string, any>): Promise<OccupancyAgentAssessment> => {
@@ -648,6 +656,7 @@ export class AgentOrchestrator {
 export async function investigate_address(
   request: AgentInvestigationRequest,
   subagent: HeuristicSubagent | null = null,
+  hooks: { on_metric_event?: (event: MetricEvent) => void } = {},
 ): Promise<OccupancyAgentAssessment> {
   const graphql = new GraphQLHttpTool(request.graphql_url, {
     timeout_seconds: request.graphql_timeout_seconds,
@@ -675,6 +684,7 @@ export async function investigate_address(
     master_llm,
     max_concurrency: request.max_concurrency,
     agent_timeout_seconds: request.agent_timeout_seconds,
+    on_metric_event: hooks.on_metric_event,
   });
   return await orchestrator.investigate(request);
 }

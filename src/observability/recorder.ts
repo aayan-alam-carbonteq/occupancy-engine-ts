@@ -126,11 +126,16 @@ export class MetricsRecorder {
   debug_payloads: boolean;
   private readonly _events: MetricEvent[] = [];
   private readonly _seen_llm_run_ids = new Set<string>();
+  private readonly _on_event: ((event: MetricEvent) => void) | null;
 
-  constructor(context: RunMetricsContext, opts: { enabled?: boolean; debug_payloads?: boolean } = {}) {
+  constructor(
+    context: RunMetricsContext,
+    opts: { enabled?: boolean; debug_payloads?: boolean; on_event?: (event: MetricEvent) => void } = {},
+  ) {
     this.context = context;
     this.enabled = opts.enabled ?? true;
     this.debug_payloads = opts.debug_payloads ?? false;
+    this._on_event = opts.on_event ?? null;
   }
 
   async span<T>(phase: string, opts: SpanOptions, fn: (spanId: string) => T | Promise<T>): Promise<T> {
@@ -258,6 +263,13 @@ export class MetricsRecorder {
       ...rest,
     });
     this._events.push(event);
+    if (this._on_event) {
+      try {
+        this._on_event(event);
+      } catch {
+        // A faulty sink must never break the investigation.
+      }
+    }
   }
 
   events(): MetricEvent[] {
