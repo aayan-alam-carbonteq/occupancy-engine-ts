@@ -28,11 +28,30 @@ describe("MetricsRecorder on_event sink", () => {
     await recorder.span("investigation", { agent_id: "agent-a" }, async () => "ok");
     recorder.record_counter("packets", {});
 
-    expect(seen.length).toBe(2);
-    expect(seen[0]?.event_type).toBe("span");
+    expect(seen.map((e) => e.event_type)).toEqual(["span_start", "span", "counter"]);
     expect(seen[0]?.agent_id).toBe("agent-a");
-    expect(seen[1]?.event_type).toBe("counter");
-    expect(recorder.events().length).toBe(2);
+    // Sink-only span_start never enters persisted run metrics.
+    expect(recorder.events().map((e) => e.event_type)).toEqual(["span", "counter"]);
+  });
+
+  it("emits the span_start bracket before the span body runs", async () => {
+    const seen: MetricEvent[] = [];
+    const recorder = makeRecorder((event) => seen.push(event));
+
+    await recorder.span(
+      "heuristic_workers",
+      { agent_id: "orchestrator", metadata: { launched_subagents: 3 } },
+      async () => {
+        expect(seen.map((e) => e.event_type)).toEqual(["span_start"]);
+        return "ok";
+      },
+    );
+
+    expect(seen.length).toBe(2);
+    expect(seen[0]?.phase).toBe("heuristic_workers");
+    expect(seen[0]?.metadata["launched_subagents"]).toBe(3);
+    expect(seen[0]?.span_id).toBe(seen[1]?.span_id ?? "missing");
+    expect(recorder.summary().event_count).toBe(1);
   });
 
   it("a throwing sink never breaks recording", async () => {

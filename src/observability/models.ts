@@ -4,6 +4,7 @@
 
 export type MetricEventType =
   | "span"
+  | "span_start"
   | "llm_call"
   | "tool_call"
   | "graphql_call"
