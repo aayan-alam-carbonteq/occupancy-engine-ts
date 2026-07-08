@@ -12,7 +12,7 @@ export function resolveGraphqlUrl(flag: string | undefined, env: string | undefi
   return flag ?? env ?? undefined;
 }
 
-/** One `--progress` NDJSON line for a metric event (see EngineProgressLine consumers). */
+/** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
 export function formatProgressLine(event: MetricEvent): string {
   const launched = event.metadata["launched_subagents"];
   return JSON.stringify({

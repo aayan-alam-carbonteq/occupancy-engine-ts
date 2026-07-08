@@ -157,6 +157,7 @@ export class MetricsRecorder {
         span_id: spanId,
         parent_span_id: parentSpanId,
         started_at: startedAt,
+        ended_at: startedAt,
         metadata: opts.metadata ?? {},
       }),
     );
