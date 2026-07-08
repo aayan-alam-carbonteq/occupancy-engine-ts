@@ -12,6 +12,22 @@ export function resolveGraphqlUrl(flag: string | undefined, env: string | undefi
   return flag ?? env ?? undefined;
 }
 
+/** One `--progress` NDJSON line for a metric event (see EngineProgressLine consumers). */
+export function formatProgressLine(event: MetricEvent): string {
+  const launched = event.metadata["launched_subagents"];
+  return JSON.stringify({
+    progress: {
+      event_type: event.event_type,
+      phase: event.phase,
+      agent_id: event.agent_id,
+      heuristic_id: event.heuristic_id,
+      name: event.name,
+      status: event.status,
+      ...(typeof launched === "number" ? { count: launched } : {}),
+    },
+  });
+}
+
 async function main(argv: string[]): Promise<number> {
   loadDotenv();
   const { values } = parseArgs({
@@ -87,17 +103,7 @@ async function main(argv: string[]): Promise<number> {
   const hooks = values.progress
     ? {
         on_metric_event: (event: MetricEvent) => {
-          const line = JSON.stringify({
-            progress: {
-              event_type: event.event_type,
-              phase: event.phase,
-              agent_id: event.agent_id,
-              heuristic_id: event.heuristic_id,
-              name: event.name,
-              status: event.status,
-            },
-          });
-          process.stdout.write(line + "\n");
+          process.stdout.write(formatProgressLine(event) + "\n");
         },
       }
     : {};
