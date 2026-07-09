@@ -15,13 +15,24 @@ export function resolveGraphqlUrl(flag: string | undefined, env: string | undefi
 /** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
 export function formatProgressLine(event: MetricEvent): string {
   const launched = event.metadata["launched_subagents"];
+  const workersTotal = event.metadata["workers_total"];
+  const workerIndex = event.metadata["worker_index"];
+  // span_start times the open; every other event type times its completion.
+  const ts = event.event_type === "span_start" ? event.started_at : event.ended_at;
   return JSON.stringify({
     progress: {
+      seq: event.seq,
+      event_id: event.event_id,
+      span_id: event.span_id,
+      parent_span_id: event.parent_span_id || null,
+      ts,
       event_type: event.event_type,
       phase: event.phase,
       agent_id: event.agent_id,
       heuristic_id: event.heuristic_id,
       name: event.name,
+      workers_total: typeof workersTotal === "number" ? workersTotal : null,
+      worker_index: typeof workerIndex === "number" ? workerIndex : null,
       status: event.status,
       ...(typeof launched === "number" ? { count: launched } : {}),
     },
