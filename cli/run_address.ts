@@ -12,6 +12,20 @@ export function resolveGraphqlUrl(flag: string | undefined, env: string | undefi
   return flag ?? env ?? undefined;
 }
 
+/**
+ * Where the final report JSON goes. When --progress is on, stdout is reserved for the
+ * NDJSON stream, so the report goes to --out (file) or, if absent, to stderr — never stdout.
+ */
+export function reportDestination(
+  progress: boolean,
+  out: string | undefined,
+): "file" | "stdout" | "stderr" {
+  if (out) {
+    return "file";
+  }
+  return progress ? "stderr" : "stdout";
+}
+
 /** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
 export function formatProgressLine(event: MetricEvent): string {
   const launched = event.metadata["launched_subagents"];
@@ -131,13 +145,16 @@ async function main(argv: string[]): Promise<number> {
   const { metrics_events, ...assessmentOut } = assessment;
   const output = JSON.stringify(assessmentOut, null, 2);
   const out = values.out;
-  if (out) {
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, output + "\n", { encoding: "utf-8" });
+  const dest = reportDestination(values.progress, out);
+  if (dest === "file") {
+    mkdirSync(dirname(out!), { recursive: true });
+    writeFileSync(out!, output + "\n", { encoding: "utf-8" });
     const events = (metrics_events ?? []) as MetricEvent[];
     if (events.length > 0) {
-      writeRunMetrics(out, events, assessment.metrics as RunMetricsSummary);
+      writeRunMetrics(out!, events, assessment.metrics as RunMetricsSummary);
     }
+  } else if (dest === "stderr") {
+    process.stderr.write(output + "\n");
   } else {
     process.stdout.write(output + "\n");
   }
