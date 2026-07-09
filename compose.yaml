@@ -1,0 +1,24 @@
+services:
+  graphql:
+    build: ./services/graph
+    environment:
+      GRAPH_SERVICE_DB: /data/graph.sqlite
+    volumes:
+      - "${GRAPH_DB:-../occupancy-engine/data/indexes/graph.sqlite}:/data/graph.sqlite:ro"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,json; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/graphql', data=json.dumps({'query':'{ __typename }'}).encode(), headers={'content-type':'application/json'}))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  agent:
+    build: .
+    depends_on:
+      graphql:
+        condition: service_healthy
+    environment:
+      GRAPHQL_URL: http://graphql:8000/graphql
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    profiles: ["tools"]

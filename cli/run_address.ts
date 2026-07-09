@@ -8,6 +8,26 @@ import { investigate_address } from "../src/agents/orchestrator.ts";
 import type { MetricEvent, RunMetricsSummary } from "../src/observability/models.ts";
 import { writeRunMetrics } from "../src/observability/writers.ts";
 
+export function resolveGraphqlUrl(flag: string | undefined, env: string | undefined): string | undefined {
+  return flag ?? env ?? undefined;
+}
+
+/** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
+export function formatProgressLine(event: MetricEvent): string {
+  const launched = event.metadata["launched_subagents"];
+  return JSON.stringify({
+    progress: {
+      event_type: event.event_type,
+      phase: event.phase,
+      agent_id: event.agent_id,
+      heuristic_id: event.heuristic_id,
+      name: event.name,
+      status: event.status,
+      ...(typeof launched === "number" ? { count: launched } : {}),
+    },
+  });
+}
+
 async function main(argv: string[]): Promise<number> {
   loadDotenv();
   const { values } = parseArgs({
@@ -36,20 +56,27 @@ async function main(argv: string[]): Promise<number> {
       "metrics-debug-payloads": { type: "boolean", default: false },
       "batch-id": { type: "string" },
       "trace-id": { type: "string" },
+      progress: { type: "boolean", default: false },
       out: { type: "string" },
     },
     allowPositionals: false,
   });
 
-  if (!values.address || !values["graphql-url"]) {
-    process.stderr.write("--address and --graphql-url are required\n");
+  const graphqlUrl = resolveGraphqlUrl(values["graphql-url"], process.env.GRAPHQL_URL);
+
+  if (!values.address) {
+    process.stderr.write("--address is required\n");
+    return 2;
+  }
+  if (!graphqlUrl) {
+    process.stderr.write("--graphql-url is required (or set GRAPHQL_URL)\n");
     return 2;
   }
 
   const request = AgentInvestigationRequestSchema.parse({
     address: values.address,
     zip: values.zip,
-    graphql_url: values["graphql-url"],
+    graphql_url: graphqlUrl,
     provider: values.provider,
     model: values.model ?? null,
     base_url: values["base-url"] ?? null,
@@ -71,9 +98,19 @@ async function main(argv: string[]): Promise<number> {
     trace_id: values["trace-id"] ?? null,
   });
 
+  // --progress: stream one NDJSON line per metric event to stdout so a parent
+  // process can render live per-agent progress. The report still goes to --out.
+  const hooks = values.progress
+    ? {
+        on_metric_event: (event: MetricEvent) => {
+          process.stdout.write(formatProgressLine(event) + "\n");
+        },
+      }
+    : {};
+
   let assessment: any;
   try {
-    assessment = await investigate_address(request);
+    assessment = await investigate_address(request, null, hooks);
   } catch (exc) {
     process.stderr.write(`agent investigation failed: ${(exc as Error).message ?? exc}\n`);
     return 1;
@@ -96,4 +133,6 @@ async function main(argv: string[]): Promise<number> {
   return 0;
 }
 
-main(process.argv.slice(2)).then((code) => process.exit(code));
+if (import.meta.main) {
+  main(process.argv.slice(2)).then((code) => process.exit(code));
+}

@@ -1,0 +1,3 @@
+[submodule "services/graph"]
+	path = services/graph
+	url = git@github.com:aayan-alam-carbonteq/occupancy-graph-service.git
