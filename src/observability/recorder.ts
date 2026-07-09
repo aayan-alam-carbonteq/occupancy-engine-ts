@@ -173,7 +173,7 @@ export class MetricsRecorder {
       errorMessage = errorMessageOf(exc);
       throw exc;
     } finally {
-      this.record_event("span", {
+      this.record_event("span_end", {
         phase,
         name: opts.name ?? "",
         agent_id: opts.agent_id ?? "",
@@ -331,7 +331,7 @@ export class MetricsRecorder {
       if (event.heuristic_id) {
         summary.heuristic_counts[event.heuristic_id] = (summary.heuristic_counts[event.heuristic_id] ?? 0) + 1;
       }
-      if (event.event_type === "span" && event.phase === "investigation") {
+      if (event.event_type === "span_end" && event.phase === "investigation") {
         summary.latency_ms = event.latency_ms;
       }
       if (event.event_type === "llm_call") {

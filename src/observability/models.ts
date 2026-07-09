@@ -3,7 +3,7 @@
 // input), so they are plain TS types with default factories rather than zod schemas.
 
 export type MetricEventType =
-  | "span"
+  | "span_end"
   | "span_start"
   | "llm_call"
   | "tool_call"

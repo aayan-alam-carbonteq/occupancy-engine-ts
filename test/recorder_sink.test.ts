@@ -28,10 +28,10 @@ describe("MetricsRecorder on_event sink", () => {
     await recorder.span("investigation", { agent_id: "agent-a" }, async () => "ok");
     recorder.record_counter("packets", {});
 
-    expect(seen.map((e) => e.event_type)).toEqual(["span_start", "span", "counter"]);
+    expect(seen.map((e) => e.event_type)).toEqual(["span_start", "span_end", "counter"]);
     expect(seen[0]?.agent_id).toBe("agent-a");
     // Sink-only span_start never enters persisted run metrics.
-    expect(recorder.events().map((e) => e.event_type)).toEqual(["span", "counter"]);
+    expect(recorder.events().map((e) => e.event_type)).toEqual(["span_end", "counter"]);
   });
 
   it("emits the span_start bracket before the span body runs", async () => {
