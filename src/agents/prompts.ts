@@ -4,6 +4,8 @@
 // are tuned. Do not rewrap or paraphrase them — the builders only control how VALUES are rendered
 // into the surrounding text. Inputs are plain objects modelled as `Record<string, any>`.
 
+import { CASE_ARCHETYPE_VALUES, VERDICT_BAND } from "./models.ts";
+
 type Dict = Record<string, any>;
 
 function isDict(value: any): boolean {
@@ -18,6 +20,13 @@ function codePointCompare(a: string, b: string): number {
 // ---------------------------------------------------------------------------
 // Module constants.
 // ---------------------------------------------------------------------------
+
+// Toggled by OE_SYNTH_AUGMENT so the synthesis reasoning augmentation can be benchmarked
+// (e.g. the flash-lite data-vs-reasoning A/B) without CLI plumbing, mirroring OE_PROMPT_CACHE
+// in subagents.ts. Off by default: nothing changes for any config until it is explicitly enabled.
+const _SYNTH_AUGMENT_ENABLED = ["1", "true", "yes", "on"].includes(
+  (process.env.OE_SYNTH_AUGMENT ?? "").trim().toLowerCase(),
+);
 
 export const GRAPHQL_PRIMER =
   "Use named read-only query operations with variables. Address ids are Int; person ids are String. " +
@@ -771,6 +780,60 @@ function _ref_text(ref: Dict): string {
   return `${ref["source"] || "unknown"}:${ref["rowid"] || ref["record_id"] || "n/a"} - ${ref["summary"] ?? ""}`;
 }
 
+/**
+ * Extra packet-brief instructions that force explicit per-dimension conclusions
+ * (and, for the synthesis packet, a committed case archetype + verdict band).
+ *
+ * Gated by OE_SYNTH_AUGMENT (off by default). Motivation: weak models such as
+ * gemini-flash-lite fetch the right evidence but under-enumerate — they collapse the
+ * graded output_fields into one terse paragraph and hedge to 'inconclusive' instead of
+ * naming an archetype. The same model already names the correct archetype in the
+ * adjudicator, whose prompt carries the vocabulary; this ports that vocabulary + the
+ * escalation rules into the packet subagent the judge grades.
+ */
+function _reasoning_augmentation_lines(heuristic: Dict): string[] {
+  if (!_SYNTH_AUGMENT_ENABLED) {
+    return [];
+  }
+  const output_fields = (heuristic["output_fields"] ?? []) as any[];
+  const lines: string[] = [];
+  if (output_fields.length > 0) {
+    lines.push(
+      "Required explicit conclusions (this overrides the general 'be concise / one" +
+        " paragraph' guidance for this packet): your submitted finding MUST state an" +
+        " explicit one-line conclusion for EACH of these dimensions: " +
+        output_fields.map((f) => String(f)).join(", ") + ".",
+      'State every dimension even when the answer is "none", "low", or "not' +
+        ' present" -- a dimension left implicit or omitted is graded as missing, so' +
+        " enumeration here is required, not padding.",
+      "Where a dimension is a count or a set (e.g. distinct non-owner names), state" +
+        ' the explicit count and list rather than saying "multiple".',
+    );
+  }
+  if (heuristic["id"] === "case_quality_and_synthesis") {
+    lines.push(
+      "Final case label (REQUIRED -- commit, do not hedge): choose exactly ONE" +
+        " case_archetype from {" + CASE_ARCHETYPE_VALUES.join(", ") + "} and exactly ONE" +
+        " verdict_band from {" + VERDICT_BAND.join(", ") + "}. State both explicitly" +
+        " in the finding and give the one-line reason each was chosen over the" +
+        " next-closest label.",
+      "Escalate to clear_absentee_rental only when absentee-owner evidence is paired" +
+        " with unrelated non-owner occupancy from higher-reliability sources, or with" +
+        " loan/rental-tenure evidence.",
+      "Use non_rental_absentee_owner when owner-absence or owner-elsewhere evidence is" +
+        " plausible but rental-use evidence is absent, utility-only, trace-only, stale," +
+        " or too weak after source-reliability discounts.",
+      "Use family_household_rental only when same-surname/family context is paired with" +
+        " non-owner loan-renter or non-owner drive evidence at the subject.",
+      "Do NOT answer 'inconclusive' or omit the archetype when you have obtained the" +
+        " underlying rows: a mixed or weak picture still maps to an archetype" +
+        " (mixed_evidence, low_evidence_owner_occupied, ambiguous_nonowner_occupancy)." +
+        " Reserve inconclusive strictly for genuine data-absence.",
+    );
+  }
+  return lines;
+}
+
 function _heuristic_brief(heuristic: Dict): string {
   const category: string = heuristic["category"] || "risk";
   const score = Math.trunc(Number(heuristic["score"] ?? 0));
@@ -853,6 +916,7 @@ function _heuristic_brief(heuristic: Dict): string {
       " relationship-to-owner context, owner-presence context, rental-market context," +
       " absentee-owner context, staleness, ambiguity, and recommended case weight.",
   );
+  lines.push(..._reasoning_augmentation_lines(heuristic));
   return lines.map((line) => `- ${line}`).join("\n");
 }
 
