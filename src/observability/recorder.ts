@@ -125,6 +125,7 @@ export class MetricsRecorder {
   enabled: boolean;
   debug_payloads: boolean;
   private readonly _events: MetricEvent[] = [];
+  private _seq = 0;
   private readonly _seen_llm_run_ids = new Set<string>();
   private readonly _on_event: ((event: MetricEvent) => void) | null;
 
@@ -288,6 +289,10 @@ export class MetricsRecorder {
 
   /** Notify the live sink; a faulty sink must never break the investigation. */
   private _emit(event: MetricEvent): void {
+    // Monotonic per-run ordering key. Assigned here — the one method every span-open
+    // and every record_event passes through — before the sink guard, so persisted
+    // events carry seq even when no live sink is attached.
+    event.seq = ++this._seq;
     if (!this._on_event) {
       return;
     }
