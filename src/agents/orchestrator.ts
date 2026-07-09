@@ -292,10 +292,16 @@ export class AgentOrchestrator {
     );
     const heuristics = run_plans.map((plan) => heuristic_by_id.get(plan.heuristic_id)!);
     context.selected_heuristic_ids = run_plans.map((plan) => plan.heuristic_id);
+    // The streamed worker unit is the bucket (one heuristic_worker span per bucket), so the
+    // up-front total the UI counts against is buckets.length, not heuristics.length.
+    const buckets = _bucket_by_group(heuristics);
     const results = await recorder.span(
       "heuristic_workers",
-      { agent_id: "orchestrator", metadata: { launched_subagents: heuristics.length } },
-      async () => await this._run_subagents(heuristics, context, request, trace, run_plans),
+      {
+        agent_id: "orchestrator",
+        metadata: { launched_subagents: heuristics.length, workers_total: buckets.length },
+      },
+      async () => await this._run_subagents(heuristics, context, request, trace, run_plans, buckets),
     );
     const scoring = await recorder.span("scoring", { agent_id: "orchestrator" }, () => {
       const conflicts = detect_conflicts(results);
@@ -317,6 +323,7 @@ export class AgentOrchestrator {
     const agent_metrics = _agent_metrics({
       candidate_count,
       gated_count: candidate_heuristics.length,
+      workers_total: buckets.length,
       plan: investigation_plan,
       results,
       report,
@@ -466,6 +473,7 @@ export class AgentOrchestrator {
     request: AgentInvestigationRequest,
     trace: InvestigationTrace,
     plans: HeuristicPlan[] | null = null,
+    buckets: Record<string, any>[][] | null = null,
   ): Promise<HeuristicAgentResult[]> {
     const semaphore = new Semaphore(this.max_concurrency);
     const query_cache = new QueryCache();
@@ -486,7 +494,11 @@ export class AgentOrchestrator {
       };
     };
 
-    const run_bucket = async (bucket: Record<string, any>[]): Promise<HeuristicAgentResult[]> => {
+    const run_bucket = async (
+      bucket: Record<string, any>[],
+      worker_index: number,
+      workers_total: number,
+    ): Promise<HeuristicAgentResult[]> => {
       const ids = bucket.map((h) => String(h["id"]));
       const solo = bucket.length === 1;
       const firstId = ids[0]!;
@@ -508,7 +520,7 @@ export class AgentOrchestrator {
           {
             agent_id: worker_id,
             heuristic_id: solo ? firstId : ids.join("+"),
-            metadata: { group_size: bucket.length, heuristic_ids: ids },
+            metadata: _worker_span_metadata(bucket, worker_index, workers_total),
           },
           async () => await _dispatch_bucket(this.subagent, agent_inputs, graphql),
         );
@@ -544,8 +556,11 @@ export class AgentOrchestrator {
       }
     };
 
-    const buckets = _bucket_by_group(heuristics);
-    const bucket_results = await Promise.all(buckets.map((bucket) => run_bucket(bucket)));
+    const resolved_buckets = buckets ?? _bucket_by_group(heuristics);
+    const workers_total = resolved_buckets.length;
+    const bucket_results = await Promise.all(
+      resolved_buckets.map((bucket, worker_index) => run_bucket(bucket, worker_index, workers_total)),
+    );
     const by_id = new Map<string, HeuristicAgentResult>();
     for (const results of bucket_results) {
       for (const result of results) {
@@ -840,6 +855,23 @@ function _default_plan_for_heuristic(
 // ── Bucketing + dispatch ──
 
 /**
+ * Span metadata for one heuristic_worker (bucket): its ids/size plus the fixed bucket total
+ * and this worker's 0-based index. workers_total + worker_index reach the --progress wire.
+ */
+export function _worker_span_metadata(
+  bucket: Record<string, any>[],
+  worker_index: number,
+  workers_total: number,
+): Record<string, unknown> {
+  return {
+    group_size: bucket.length,
+    heuristic_ids: bucket.map((h) => String(h["id"])),
+    workers_total,
+    worker_index,
+  };
+}
+
+/**
  * Bucket running heuristics by their packet group, preserving first-seen order.
  *
  * Heuristics with no group (group unset or absent) each become a singleton bucket, so a solo packet
@@ -1105,16 +1137,18 @@ function _compact_evidence_reference(ref: EvidenceReference, include_data: boole
 function _agent_metrics(opts: {
   candidate_count: number;
   gated_count: number;
+  workers_total: number;
   plan: CaseInvestigationPlan;
   results: HeuristicAgentResult[];
   report: string;
 }): Record<string, any> {
-  const { candidate_count, gated_count, plan, results, report } = opts;
+  const { candidate_count, gated_count, workers_total, plan, results, report } = opts;
   return {
     candidate_packets: candidate_count,
     gated_packets: gated_count,
     skipped_packets: plan.skipped.length,
     launched_subagents: results.length,
+    workers_total,
     graphql_query_count: results.reduce((acc, result) => acc + result.graphql_queries.length, 0),
     tool_error_count: results.reduce((acc, result) => acc + result.tool_errors.length, 0),
     validation_error_count: results.reduce((acc, result) => acc + result.validation_errors.length, 0),
