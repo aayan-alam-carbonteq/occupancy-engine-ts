@@ -142,6 +142,35 @@ describe("proseRedactEnabled", () => {
   });
 });
 
+describe("engine contract vocabulary is never eaten", () => {
+  test("packet ids, output_fields and result field names survive verbatim", async () => {
+    const { PACKETS } = await import("../src/heuristics/packets.ts");
+    const packetIds = PACKETS.map((p) => p.id);
+    const outputFields = PACKETS.flatMap((p) => p.output_fields);
+    const contract = [
+      "evidence_for",
+      "evidence_against",
+      "evidence_refs",
+      "missing_evidence",
+      "needs_second_pass",
+      "score_adjustments",
+    ];
+    for (const token of [...packetIds, ...outputFields, ...contract]) {
+      expect(detect_leaks(token)).toEqual([]);
+      expect(redact_prose(token)).toBe(token);
+    }
+  });
+
+  test("error diagnostics keep their packet id", () => {
+    const msg = "Heuristic agent exceeded turn budget: portfolio_and_primary_comparison";
+    expect(redact_prose(msg)).toBe(msg);
+  });
+
+  test("but the real data surface is still redacted", () => {
+    expect(detect_leaks("utilityRecords own_rent ownerrescount LoanRecord").length).toBe(4);
+  });
+});
+
 describe("controlled vocabulary is not a leak", () => {
   test("engine verdict/archetype/status labels are ignored", () => {
     const s =

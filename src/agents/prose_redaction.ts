@@ -25,6 +25,8 @@ import {
   SIGNAL_STRENGTH,
   VERDICT_BAND,
 } from "./models.ts";
+import { heuristic_ids, reasoning_path_ids } from "../heuristics/atomic_eval.ts";
+import { PACKETS } from "../heuristics/packets.ts";
 
 // Exact schema/column tokens → the human phrase they should read as. Keys are lowercased; matching
 // lowercases the candidate token before lookup.
@@ -91,12 +93,36 @@ export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
 
 const CATCH_ALL_PHRASE = "an internal record field";
 
-// The engine's own controlled OUTPUT vocabulary — verdict bands, case archetypes, and the
-// status/interpretation enums. These are classification LABELS the pipeline emits (build_report
-// embeds verdict_band/case_archetype verbatim), NOT underlying data-surface identifiers, so they
-// must never be counted as leaks or rewritten. Sourced from the enum arrays so it stays in sync.
+// The engine's own CONTRACT vocabulary. The scrubber exists to hide the underlying DATA SURFACE
+// (GraphQL schema field/type names, DB column names) — it must never eat the engine's own words.
+// That covers four families, all of which legitimately appear in prose and diagnostics:
+//   1. classification labels (verdict bands, case archetypes, status/interpretation enums) —
+//      build_report embeds verdict_band/case_archetype verbatim;
+//   2. packet + atomic-heuristic + reasoning-path ids — these appear in error text
+//      ("exceeded turn budget: portfolio_and_primary_comparison");
+//   3. output_fields — the graded dimensions the model is explicitly told to enumerate by name,
+//      so redacting them would destroy the very coverage the judge scores;
+//   4. our own result/adjudication field names (evidence_for, missing_evidence, ...) — naming
+//      them reveals nothing about the backing data.
+// Sourced from the catalog/enums so it stays in sync as packets and fields change.
+const ENGINE_CONTRACT_FIELDS: readonly string[] = [
+  "heuristic_id", "heuristic_ids", "status", "direction", "score", "local_score", "confidence",
+  "finding", "interpretation", "evidence_for", "evidence_against", "evidence_refs",
+  "missing_evidence", "graphql_queries", "tool_errors", "validation_errors",
+  "query_repair_attempts", "raw_model_failures", "caveats", "needs_second_pass",
+  "raw_score", "calibrated_score", "clarity_score", "verdict_band", "case_archetype",
+  "score_adjustments", "reasoning_summary", "why_not_higher", "why_not_lower",
+  "expected_sources", "known_data_gaps", "global_case_questions", "input_sources",
+  "output_fields", "context_scope", "required_evidence_packs", "scoring_guidance",
+  "agent_guidance", "source_counts", "property_types", "data_gaps", "evidence_map",
+  "signal_strength", "signal_directness", "relationship_to_owner", "owner_presence_context",
+  "rental_market_context", "absentee_owner_context", "staleness_risk", "ambiguity_risk",
+  "recommended_weight", "prose_leak_count",
+];
+
 const CONTROLLED_VOCABULARY: ReadonlySet<string> = new Set(
   [
+    // 1. classification labels
     ...HEURISTIC_STATUS,
     ...HEURISTIC_DIRECTION,
     ...CONFIDENCE,
@@ -111,6 +137,14 @@ const CONTROLLED_VOCABULARY: ReadonlySet<string> = new Set(
     ...AMBIGUITY_RISK,
     ...RECOMMENDED_WEIGHT,
     ...CASE_ARCHETYPE_VALUES,
+    // 2. packet / heuristic / reasoning-path ids
+    ...PACKETS.map((packet) => packet.id),
+    ...heuristic_ids(),
+    ...reasoning_path_ids(),
+    // 3. graded dimensions
+    ...PACKETS.flatMap((packet) => packet.output_fields),
+    // 4. our own contract field names
+    ...ENGINE_CONTRACT_FIELDS,
   ].map((value) => value.toLowerCase()),
 );
 
