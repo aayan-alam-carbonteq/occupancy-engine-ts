@@ -127,6 +127,15 @@ describe("proseRedactEnabled", () => {
   });
 });
 
+describe("controlled vocabulary is not a leak", () => {
+  test("engine verdict/archetype/status labels are ignored", () => {
+    const s =
+      "Case archetype: mixed_evidence. Verdict band: high_priority_review. Status: not_triggered.";
+    expect(detect_leaks(s)).toEqual([]);
+    expect(redact_prose(s)).toBe(s);
+  });
+});
+
 describe("integration: sanitized findings produce a leak-free report", () => {
   test("build_report over sanitized inputs has no identifier leaks", () => {
     const result = HeuristicAgentResultSchema.parse({

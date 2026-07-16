@@ -9,6 +9,23 @@
 // happen to also be column names ("residential", "condo", "tax", "loan") are ordinary English and
 // are left alone; rewriting them would mangle good prose and does not expose the data surface.
 
+import {
+  ABSENTEE_OWNER_CONTEXT,
+  AMBIGUITY_RISK,
+  CASE_ARCHETYPE_VALUES,
+  CONFIDENCE,
+  HEURISTIC_DIRECTION,
+  HEURISTIC_STATUS,
+  OWNER_PRESENCE_CONTEXT,
+  RECOMMENDED_WEIGHT,
+  RELATIONSHIP_TO_OWNER,
+  RENTAL_MARKET_CONTEXT,
+  RISK_LEVEL,
+  SIGNAL_DIRECTNESS,
+  SIGNAL_STRENGTH,
+  VERDICT_BAND,
+} from "./models.ts";
+
 // Exact schema/column tokens → the human phrase they should read as. Keys are lowercased; matching
 // lowercases the candidate token before lookup.
 export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
@@ -74,6 +91,29 @@ export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
 
 const CATCH_ALL_PHRASE = "an internal record field";
 
+// The engine's own controlled OUTPUT vocabulary — verdict bands, case archetypes, and the
+// status/interpretation enums. These are classification LABELS the pipeline emits (build_report
+// embeds verdict_band/case_archetype verbatim), NOT underlying data-surface identifiers, so they
+// must never be counted as leaks or rewritten. Sourced from the enum arrays so it stays in sync.
+const CONTROLLED_VOCABULARY: ReadonlySet<string> = new Set(
+  [
+    ...HEURISTIC_STATUS,
+    ...HEURISTIC_DIRECTION,
+    ...CONFIDENCE,
+    ...VERDICT_BAND,
+    ...SIGNAL_STRENGTH,
+    ...SIGNAL_DIRECTNESS,
+    ...RELATIONSHIP_TO_OWNER,
+    ...OWNER_PRESENCE_CONTEXT,
+    ...RENTAL_MARKET_CONTEXT,
+    ...ABSENTEE_OWNER_CONTEXT,
+    ...RISK_LEVEL,
+    ...AMBIGUITY_RISK,
+    ...RECOMMENDED_WEIGHT,
+    ...CASE_ARCHETYPE_VALUES,
+  ].map((value) => value.toLowerCase()),
+);
+
 // camelCase (a lowercase run then an uppercase), e.g. utilityRecords, ownRent, normAddress.
 const CAMEL_RE = /^[a-z]+[A-Z][A-Za-z0-9]*$/;
 // snake_case, e.g. own_rent, dob_year, some_unknown_field. Any case — the underscore is the signal.
@@ -93,7 +133,11 @@ function isIdentifierToken(token: string): boolean {
   if (PROTOTYPE_MEMBERS.has(token)) {
     return false;
   }
-  if (Object.hasOwn(SCHEMA_TOKEN_PHRASES, token.toLowerCase())) {
+  const lower = token.toLowerCase();
+  if (CONTROLLED_VOCABULARY.has(lower)) {
+    return false;
+  }
+  if (Object.hasOwn(SCHEMA_TOKEN_PHRASES, lower)) {
     return true;
   }
   return CAMEL_RE.test(token) || SNAKE_RE.test(token);
