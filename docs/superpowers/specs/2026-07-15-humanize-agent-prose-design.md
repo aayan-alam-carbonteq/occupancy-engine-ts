@@ -273,6 +273,10 @@ regression and investigate before shipping. Once validated, flip the flag defaul
 - **Prototype-safety.** Map membership uses `Object.hasOwn` and an exact-case
   `Object.prototype` member exclusion, so ordinary words like "constructor" are never
   mangled or false-flagged.
+- **`score_adjustments[].reason` covered (added after final review).** The adjudicator's
+  per-adjustment free-text `reason` is a user-facing prose surface; it is named in the
+  register, redacted by `sanitize_adjudication_prose`, and counted in `prose_leak_count`
+  alongside `reasoning_summary` / `why_not_*`.
 
 ### Follow-up decision (not implemented)
 
