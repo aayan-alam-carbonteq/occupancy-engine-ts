@@ -61,6 +61,7 @@ import {
   sanitize_adjudication_prose,
   sanitize_result_prose,
 } from "./prose_redaction.ts";
+import type { MetricEvent } from "../observability/models.ts";
 
 const PREFLIGHT_QUERY = `
 query AgentAddressPreflight($query: String!, $zip: String) {
@@ -176,6 +177,7 @@ export class AgentOrchestrator {
   master_llm: any | null;
   max_concurrency: number;
   agent_timeout_seconds: number;
+  on_metric_event: ((event: MetricEvent) => void) | null;
 
   constructor(opts: {
     graphql: GraphQLHttpTool;
@@ -183,12 +185,14 @@ export class AgentOrchestrator {
     master_llm?: any | null;
     max_concurrency?: number;
     agent_timeout_seconds?: number;
+    on_metric_event?: (event: MetricEvent) => void;
   }) {
     this.graphql = opts.graphql;
     this.subagent = opts.subagent;
     this.master_llm = opts.master_llm ?? null;
     this.max_concurrency = opts.max_concurrency ?? 8;
     this.agent_timeout_seconds = opts.agent_timeout_seconds ?? 120.0;
+    this.on_metric_event = opts.on_metric_event ?? null;
   }
 
   async investigate(request: AgentInvestigationRequest): Promise<OccupancyAgentAssessment> {
@@ -206,7 +210,11 @@ export class AgentOrchestrator {
         prompt_profile: request.prompt_profile,
         include_shortcuts: request.include_shortcuts,
       },
-      { enabled: request.metrics_enabled, debug_payloads: request.metrics_debug_payloads },
+      {
+        enabled: request.metrics_enabled,
+        debug_payloads: request.metrics_debug_payloads,
+        on_event: this.on_metric_event ?? undefined,
+      },
     );
 
     const run_investigation = async (_: Record<string, any>): Promise<OccupancyAgentAssessment> => {
@@ -290,10 +298,16 @@ export class AgentOrchestrator {
     );
     const heuristics = run_plans.map((plan) => heuristic_by_id.get(plan.heuristic_id)!);
     context.selected_heuristic_ids = run_plans.map((plan) => plan.heuristic_id);
+    // The streamed worker unit is the bucket (one heuristic_worker span per bucket), so the
+    // up-front total the UI counts against is buckets.length, not heuristics.length.
+    const buckets = _bucket_by_group(heuristics);
     const results = await recorder.span(
       "heuristic_workers",
-      { agent_id: "orchestrator", metadata: { launched_subagents: heuristics.length } },
-      async () => await this._run_subagents(heuristics, context, request, trace, run_plans),
+      {
+        agent_id: "orchestrator",
+        metadata: { launched_subagents: heuristics.length, workers_total: buckets.length },
+      },
+      async () => await this._run_subagents(heuristics, context, request, trace, run_plans, buckets),
     );
     const scoring = await recorder.span("scoring", { agent_id: "orchestrator" }, () => {
       const conflicts = detect_conflicts(results);
@@ -322,6 +336,7 @@ export class AgentOrchestrator {
     const agent_metrics = _agent_metrics({
       candidate_count,
       gated_count: candidate_heuristics.length,
+      workers_total: buckets.length,
       plan: investigation_plan,
       results: finalResults,
       adjudication: finalAdjudication,
@@ -472,6 +487,7 @@ export class AgentOrchestrator {
     request: AgentInvestigationRequest,
     trace: InvestigationTrace,
     plans: HeuristicPlan[] | null = null,
+    buckets: Record<string, any>[][] | null = null,
   ): Promise<HeuristicAgentResult[]> {
     const semaphore = new Semaphore(this.max_concurrency);
     const query_cache = new QueryCache();
@@ -492,7 +508,11 @@ export class AgentOrchestrator {
       };
     };
 
-    const run_bucket = async (bucket: Record<string, any>[]): Promise<HeuristicAgentResult[]> => {
+    const run_bucket = async (
+      bucket: Record<string, any>[],
+      worker_index: number,
+      workers_total: number,
+    ): Promise<HeuristicAgentResult[]> => {
       const ids = bucket.map((h) => String(h["id"]));
       const solo = bucket.length === 1;
       const firstId = ids[0]!;
@@ -514,7 +534,7 @@ export class AgentOrchestrator {
           {
             agent_id: worker_id,
             heuristic_id: solo ? firstId : ids.join("+"),
-            metadata: { group_size: bucket.length, heuristic_ids: ids },
+            metadata: _worker_span_metadata(bucket, worker_index, workers_total),
           },
           async () => await _dispatch_bucket(this.subagent, agent_inputs, graphql),
         );
@@ -550,8 +570,11 @@ export class AgentOrchestrator {
       }
     };
 
-    const buckets = _bucket_by_group(heuristics);
-    const bucket_results = await Promise.all(buckets.map((bucket) => run_bucket(bucket)));
+    const resolved_buckets = buckets ?? _bucket_by_group(heuristics);
+    const workers_total = resolved_buckets.length;
+    const bucket_results = await Promise.all(
+      resolved_buckets.map((bucket, worker_index) => run_bucket(bucket, worker_index, workers_total)),
+    );
     const by_id = new Map<string, HeuristicAgentResult>();
     for (const results of bucket_results) {
       for (const result of results) {
@@ -662,6 +685,7 @@ export class AgentOrchestrator {
 export async function investigate_address(
   request: AgentInvestigationRequest,
   subagent: HeuristicSubagent | null = null,
+  hooks: { on_metric_event?: (event: MetricEvent) => void } = {},
 ): Promise<OccupancyAgentAssessment> {
   const graphql = new GraphQLHttpTool(request.graphql_url, {
     timeout_seconds: request.graphql_timeout_seconds,
@@ -689,6 +713,7 @@ export async function investigate_address(
     master_llm,
     max_concurrency: request.max_concurrency,
     agent_timeout_seconds: request.agent_timeout_seconds,
+    on_metric_event: hooks.on_metric_event,
   });
   return await orchestrator.investigate(request);
 }
@@ -842,6 +867,23 @@ function _default_plan_for_heuristic(
 }
 
 // ── Bucketing + dispatch ──
+
+/**
+ * Span metadata for one heuristic_worker (bucket): its ids/size plus the fixed bucket total
+ * and this worker's 0-based index. workers_total + worker_index reach the --progress wire.
+ */
+export function _worker_span_metadata(
+  bucket: Record<string, any>[],
+  worker_index: number,
+  workers_total: number,
+): Record<string, unknown> {
+  return {
+    group_size: bucket.length,
+    heuristic_ids: bucket.map((h) => String(h["id"])),
+    workers_total,
+    worker_index,
+  };
+}
 
 /**
  * Bucket running heuristics by their packet group, preserving first-seen order.
@@ -1109,12 +1151,13 @@ function _compact_evidence_reference(ref: EvidenceReference, include_data: boole
 function _agent_metrics(opts: {
   candidate_count: number;
   gated_count: number;
+  workers_total: number;
   plan: CaseInvestigationPlan;
   results: HeuristicAgentResult[];
   adjudication: CaseAdjudication;
   report: string;
 }): Record<string, any> {
-  const { candidate_count, gated_count, plan, results, adjudication, report } = opts;
+  const { candidate_count, gated_count, workers_total, plan, results, adjudication, report } = opts;
   // Always measured (both flags on and off) so the A/B can read leakage before vs after.
   const prose_texts = [
     ...results.flatMap((r) => [r.finding, ...r.caveats, ...r.missing_evidence]),
@@ -1129,6 +1172,7 @@ function _agent_metrics(opts: {
     gated_packets: gated_count,
     skipped_packets: plan.skipped.length,
     launched_subagents: results.length,
+    workers_total,
     graphql_query_count: results.reduce((acc, result) => acc + result.graphql_queries.length, 0),
     tool_error_count: results.reduce((acc, result) => acc + result.tool_errors.length, 0),
     validation_error_count: results.reduce((acc, result) => acc + result.validation_errors.length, 0),

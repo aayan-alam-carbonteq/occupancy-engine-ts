@@ -125,12 +125,18 @@ export class MetricsRecorder {
   enabled: boolean;
   debug_payloads: boolean;
   private readonly _events: MetricEvent[] = [];
+  private _seq = 0;
   private readonly _seen_llm_run_ids = new Set<string>();
+  private readonly _on_event: ((event: MetricEvent) => void) | null;
 
-  constructor(context: RunMetricsContext, opts: { enabled?: boolean; debug_payloads?: boolean } = {}) {
+  constructor(
+    context: RunMetricsContext,
+    opts: { enabled?: boolean; debug_payloads?: boolean; on_event?: (event: MetricEvent) => void } = {},
+  ) {
     this.context = context;
     this.enabled = opts.enabled ?? true;
     this.debug_payloads = opts.debug_payloads ?? false;
+    this._on_event = opts.on_event ?? null;
   }
 
   async span<T>(phase: string, opts: SpanOptions, fn: (spanId: string) => T | Promise<T>): Promise<T> {
@@ -141,6 +147,21 @@ export class MetricsRecorder {
     const parentSpanId = spanStorage.getStore() ?? "";
     const startedAt = metricEventNow();
     const start = performance.now();
+    // Sink-only lifecycle bracket: live consumers need to know the phase began,
+    // but persisted run metrics stay one span event per phase.
+    this._emit(
+      this._build_event("span_start", {
+        phase,
+        name: opts.name ?? "",
+        agent_id: opts.agent_id ?? "",
+        heuristic_id: opts.heuristic_id ?? "",
+        span_id: spanId,
+        parent_span_id: parentSpanId,
+        started_at: startedAt,
+        ended_at: startedAt,
+        metadata: opts.metadata ?? {},
+      }),
+    );
     let status = "ok";
     let errorType = "";
     let errorMessage = "";
@@ -152,7 +173,7 @@ export class MetricsRecorder {
       errorMessage = errorMessageOf(exc);
       throw exc;
     } finally {
-      this.record_event("span", {
+      this.record_event("span_end", {
         phase,
         name: opts.name ?? "",
         agent_id: opts.agent_id ?? "",
@@ -238,8 +259,15 @@ export class MetricsRecorder {
     if (!this.enabled) {
       return;
     }
+    const event = this._build_event(event_type, fields);
+    this._events.push(event);
+    this._emit(event);
+  }
+
+  /** Build a fully-populated event from run context + overrides (no side effects). */
+  private _build_event(event_type: MetricEventType, fields: Partial<MetricEvent>): MetricEvent {
     const { parent_span_id, started_at, ended_at, ...rest } = fields;
-    const event = makeMetricEvent({
+    return makeMetricEvent({
       event_id: uuidHex(),
       event_type,
       run_id: this.context.run_id,
@@ -257,7 +285,22 @@ export class MetricsRecorder {
       ended_at: ended_at ?? metricEventNow(),
       ...rest,
     });
-    this._events.push(event);
+  }
+
+  /** Notify the live sink; a faulty sink must never break the investigation. */
+  private _emit(event: MetricEvent): void {
+    // Monotonic per-run ordering key. Assigned here — the one method every span-open
+    // and every record_event passes through — before the sink guard, so persisted
+    // events carry seq even when no live sink is attached.
+    event.seq = ++this._seq;
+    if (!this._on_event) {
+      return;
+    }
+    try {
+      this._on_event(event);
+    } catch {
+      // swallow sink errors
+    }
   }
 
   events(): MetricEvent[] {
@@ -288,7 +331,7 @@ export class MetricsRecorder {
       if (event.heuristic_id) {
         summary.heuristic_counts[event.heuristic_id] = (summary.heuristic_counts[event.heuristic_id] ?? 0) + 1;
       }
-      if (event.event_type === "span" && event.phase === "investigation") {
+      if (event.event_type === "span_end" && event.phase === "investigation") {
         summary.latency_ms = event.latency_ms;
       }
       if (event.event_type === "llm_call") {

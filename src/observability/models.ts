@@ -3,7 +3,8 @@
 // input), so they are plain TS types with default factories rather than zod schemas.
 
 export type MetricEventType =
-  | "span"
+  | "span_end"
+  | "span_start"
   | "llm_call"
   | "tool_call"
   | "graphql_call"
@@ -60,6 +61,7 @@ export function makeCostEstimate(partial: Partial<CostEstimate> = {}): CostEstim
 
 export interface MetricEvent {
   event_id: string;
+  seq: number;
   event_type: MetricEventType;
   run_id: string;
   batch_id: string;
@@ -98,6 +100,7 @@ export function metricEventNow(): string {
 
 export function makeMetricEvent(partial: Partial<MetricEvent> & Pick<MetricEvent, "event_id" | "event_type" | "run_id">): MetricEvent {
   return {
+    seq: 0,
     batch_id: "",
     investigation_id: "",
     address_key: "",

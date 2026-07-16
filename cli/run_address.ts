@@ -12,6 +12,47 @@ export function resolveGraphqlUrl(flag: string | undefined, env: string | undefi
   return flag ?? env ?? undefined;
 }
 
+/**
+ * Where the final report JSON goes. When --progress is on, stdout is reserved for the
+ * NDJSON stream, so the report goes to --out (file) or, if absent, to stderr — never stdout.
+ */
+export function reportDestination(
+  progress: boolean,
+  out: string | undefined,
+): "file" | "stdout" | "stderr" {
+  if (out) {
+    return "file";
+  }
+  return progress ? "stderr" : "stdout";
+}
+
+/** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
+export function formatProgressLine(event: MetricEvent): string {
+  const launched = event.metadata["launched_subagents"];
+  const workersTotal = event.metadata["workers_total"];
+  const workerIndex = event.metadata["worker_index"];
+  // span_start times the open; every other event type times its completion.
+  const ts = event.event_type === "span_start" ? event.started_at : event.ended_at;
+  return JSON.stringify({
+    progress: {
+      seq: event.seq,
+      event_id: event.event_id,
+      span_id: event.span_id,
+      parent_span_id: event.parent_span_id || null,
+      ts,
+      event_type: event.event_type,
+      phase: event.phase,
+      agent_id: event.agent_id,
+      heuristic_id: event.heuristic_id,
+      name: event.name,
+      workers_total: typeof workersTotal === "number" ? workersTotal : null,
+      worker_index: typeof workerIndex === "number" ? workerIndex : null,
+      status: event.status,
+      ...(typeof launched === "number" ? { count: launched } : {}),
+    },
+  });
+}
+
 async function main(argv: string[]): Promise<number> {
   loadDotenv();
   const { values } = parseArgs({
@@ -40,6 +81,7 @@ async function main(argv: string[]): Promise<number> {
       "metrics-debug-payloads": { type: "boolean", default: false },
       "batch-id": { type: "string" },
       "trace-id": { type: "string" },
+      progress: { type: "boolean", default: false },
       out: { type: "string" },
     },
     allowPositionals: false,
@@ -81,9 +123,19 @@ async function main(argv: string[]): Promise<number> {
     trace_id: values["trace-id"] ?? null,
   });
 
+  // --progress: stream one NDJSON line per metric event to stdout so a parent
+  // process can render live per-agent progress. The report still goes to --out.
+  const hooks = values.progress
+    ? {
+        on_metric_event: (event: MetricEvent) => {
+          process.stdout.write(formatProgressLine(event) + "\n");
+        },
+      }
+    : {};
+
   let assessment: any;
   try {
-    assessment = await investigate_address(request);
+    assessment = await investigate_address(request, null, hooks);
   } catch (exc) {
     process.stderr.write(`agent investigation failed: ${(exc as Error).message ?? exc}\n`);
     return 1;
@@ -93,13 +145,16 @@ async function main(argv: string[]): Promise<number> {
   const { metrics_events, ...assessmentOut } = assessment;
   const output = JSON.stringify(assessmentOut, null, 2);
   const out = values.out;
-  if (out) {
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, output + "\n", { encoding: "utf-8" });
+  const dest = reportDestination(values.progress, out);
+  if (dest === "file") {
+    mkdirSync(dirname(out!), { recursive: true });
+    writeFileSync(out!, output + "\n", { encoding: "utf-8" });
     const events = (metrics_events ?? []) as MetricEvent[];
     if (events.length > 0) {
-      writeRunMetrics(out, events, assessment.metrics as RunMetricsSummary);
+      writeRunMetrics(out!, events, assessment.metrics as RunMetricsSummary);
     }
+  } else if (dest === "stderr") {
+    process.stderr.write(output + "\n");
   } else {
     process.stdout.write(output + "\n");
   }
