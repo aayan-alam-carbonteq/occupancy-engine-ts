@@ -28,6 +28,47 @@ const _SYNTH_AUGMENT_ENABLED = ["1", "true", "yes", "on"].includes(
   (process.env.OE_SYNTH_AUGMENT ?? "").trim().toLowerCase(),
 );
 
+// Gated by OE_PROSE_REGISTER so the human-readable writing register can be A/B'd against baseline
+// without CLI plumbing (mirrors OE_SYNTH_AUGMENT). Off by default: prompts are unchanged until enabled.
+const _PROSE_REGISTER_ENABLED = ["1", "true", "yes", "on"].includes(
+  (process.env.OE_PROSE_REGISTER ?? "").trim().toLowerCase(),
+);
+
+// Plain-language names for each source, shared with the reader in the register so the model has
+// consistent replacement language for internal record types.
+const SOURCE_HUMAN_PHRASES: Record<string, string> = {
+  tax: "property-tax record",
+  base: "identity/residence record",
+  utility: "utility service record",
+  drive: "driver's-license record",
+  voter: "voter-registration record",
+  auto: "vehicle-registration record",
+  loan: "mortgage/loan application record",
+  trace: "address-history record",
+  criminal: "criminal record",
+};
+
+// The register instructions themselves (unconditional; the gate lives in _prose_register_lines).
+// `fields` names the prose fields this agent submits, e.g. "finding, caveats, missing_evidence".
+export function buildProseRegisterLines(fields: string): string[] {
+  const glossary = Object.entries(SOURCE_HUMAN_PHRASES)
+    .map(([code, phrase]) => `${code} → ${phrase}`)
+    .join("; ");
+  return [
+    `Writing register (applies to every prose field you submit: ${fields}):`,
+    "- Write for a non-technical risk decision-maker in plain, professional English. No data-engineering jargon.",
+    "- Do NOT name internal data structures in prose: no database table names, GraphQL field names, source-bucket codes, or column names. Describe the KIND of record in plain language instead.",
+    `- Use these plain-language record names: ${glossary}.`,
+    '- Do NOT quote raw stored values or column=value pairs. Translate them to meaning (e.g. not "own_rent=0" but "the mortgage application lists the occupant as a renter"; not "ownerrescount=3" but "the owner is linked to three properties").',
+    "- Keep citing precisely in the STRUCTURED fields (evidence_for, evidence_against, evidence_refs) using source/table/rowid — those are machine anchors, excluded from what the user sees. Cite precisely there; narrate cleanly in the prose.",
+    "- This changes wording only, never substance: still explicitly state a conclusion for every required dimension and sub-signal. Humanizing must NOT drop, merge, or hedge any dimension.",
+  ];
+}
+
+export function _prose_register_lines(fields: string): string[] {
+  return _PROSE_REGISTER_ENABLED ? buildProseRegisterLines(fields) : [];
+}
+
 export const GRAPHQL_PRIMER =
   "Use named read-only query operations with variables. Address ids are Int; person ids are String. " +
   "Prefer neutral entity associations first: resolveAddress, Address.personAssociations, " +
@@ -171,6 +212,7 @@ export function heuristic_user_prompt(
       "- Use not_triggered only when local evidence contradicts or reasonably disproves the signal.",
       "- Use inconclusive when data availability, query failure, identity ambiguity, staleness, or conflicting evidence prevents a defensible triggered/not_triggered conclusion.",
       "- Use score 0 for inconclusive.",
+      ..._prose_register_lines("finding, caveats, missing_evidence"),
     ].join("\n");
   }
   let lines = [
@@ -217,6 +259,7 @@ export function heuristic_user_prompt(
       "Use score 0 for inconclusive.",
       "Separate supporting rows in evidence_for, contradicting/mitigating rows in evidence_against,",
       "and unavailable or insufficient facts in missing_evidence.",
+      ..._prose_register_lines("finding, caveats, missing_evidence"),
     ])
     .join("\n");
 }
@@ -316,6 +359,7 @@ export function grouped_heuristic_user_prompt(
     "- Distribute retrieval and analysis effort EQUALLY across the assigned heuristics. Do not thoroughly investigate the first and skim later ones — fetch each heuristic's own sources and give every packet the same depth.",
     "- finding: ONE concise paragraph per packet stating the conclusion, the key reasoning, and the per-sub-signal outcomes. Do not pad or repeat.",
     "- Use inconclusive (score 0) when data availability, query failure, identity ambiguity, or conflicting evidence prevents a defensible conclusion for that packet.",
+    ..._prose_register_lines("finding, caveats, missing_evidence"),
   ].join("\n");
 }
 
@@ -507,6 +551,7 @@ export function master_adjudication_user_prompt(
     "- Submit using submit_case_adjudication. Include keys: raw_score, calibrated_score,",
     "  clarity_score, verdict_band, case_archetype, score_adjustments, reasoning_summary,",
     "  why_not_higher, why_not_lower.",
+    ..._prose_register_lines("reasoning_summary, why_not_higher, why_not_lower"),
   ].join("\n");
 }
 
