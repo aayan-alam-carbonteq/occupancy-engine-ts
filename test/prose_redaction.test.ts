@@ -119,6 +119,21 @@ describe("sanitize_adjudication_prose", () => {
     expect(count_prose_leaks([out.reasoning_summary, ...out.why_not_higher, ...out.why_not_lower])).toBe(0);
     expect(out.verdict_band).toBe("review");
   });
+
+  test("also cleans score_adjustments reasons and preserves their other fields", () => {
+    const adj = {
+      reasoning_summary: "clean summary",
+      why_not_higher: [],
+      why_not_lower: [],
+      score_adjustments: [
+        { heuristic_ids: ["loan_tenure"], delta: -2, reason: "own_rent=0 conflicts with utilityRecords" },
+      ],
+    };
+    const out = sanitize_adjudication_prose(adj);
+    expect(count_prose_leaks([out.score_adjustments[0]!.reason])).toBe(0);
+    expect(out.score_adjustments[0]!.delta).toBe(-2);
+    expect(out.score_adjustments[0]!.heuristic_ids).toEqual(["loan_tenure"]);
+  });
 });
 
 describe("proseRedactEnabled", () => {

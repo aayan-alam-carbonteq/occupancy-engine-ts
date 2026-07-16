@@ -1121,6 +1121,7 @@ function _agent_metrics(opts: {
     adjudication.reasoning_summary,
     ...adjudication.why_not_higher,
     ...adjudication.why_not_lower,
+    ...adjudication.score_adjustments.map((sa) => sa.reason),
     report,
   ];
   return {

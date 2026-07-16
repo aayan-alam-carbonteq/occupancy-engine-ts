@@ -551,7 +551,7 @@ export function master_adjudication_user_prompt(
     "- Submit using submit_case_adjudication. Include keys: raw_score, calibrated_score,",
     "  clarity_score, verdict_band, case_archetype, score_adjustments, reasoning_summary,",
     "  why_not_higher, why_not_lower.",
-    ..._prose_register_lines("reasoning_summary, why_not_higher, why_not_lower"),
+    ..._prose_register_lines("reasoning_summary, why_not_higher, why_not_lower, and each score_adjustments reason"),
   ].join("\n");
 }
 

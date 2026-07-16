@@ -215,6 +215,7 @@ interface AdjudicationProse {
   reasoning_summary: string;
   why_not_higher: string[];
   why_not_lower: string[];
+  score_adjustments?: readonly { reason: string; [key: string]: unknown }[];
 }
 
 /** Return a copy with the human-facing prose fields redacted; all other fields are preserved. */
@@ -231,10 +232,20 @@ export function sanitize_result_prose<T extends ResultProse>(result: T): T {
 
 /** Return a copy with the adjudicator's prose fields redacted; all other fields are preserved. */
 export function sanitize_adjudication_prose<T extends AdjudicationProse>(adjudication: T): T {
-  return {
+  const out = {
     ...adjudication,
     reasoning_summary: redact_prose(adjudication.reasoning_summary),
     why_not_higher: adjudication.why_not_higher.map(redact_prose),
     why_not_lower: adjudication.why_not_lower.map(redact_prose),
+  };
+  if (!Array.isArray(adjudication.score_adjustments)) {
+    return out as T;
+  }
+  return {
+    ...out,
+    score_adjustments: adjudication.score_adjustments.map((sa) => ({
+      ...sa,
+      reason: redact_prose(sa.reason),
+    })),
   } as T;
 }
