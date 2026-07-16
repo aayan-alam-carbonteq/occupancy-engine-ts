@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": ["src/**", "cli/**", "test/**", "scripts/**"]
+  },
+  "assist": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": "off",
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noAssignInExpressions": "off"
+      },
+      "complexity": {
+        "noBannedTypes": "off",
+        "useLiteralKeys": "off"
+      }
+    }
+  },
+  "formatter": { "enabled": false }
+}

@@ -1,6 +1,7 @@
 {
   "name": "occupancy-engine-ts",
   "version": "0.1.0",
+  "packageManager": "bun@1.3.10",
   "description": "TypeScript port of the occupancy-engine agent pipeline (agents + heuristics + observability + judge). Talks to the existing Python GraphQL server over HTTP.",
   "type": "module",
   "module": "src/index.ts",
@@ -8,6 +9,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "e2e": "bun test test/e2e",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "verify": "bun run typecheck && bun run lint && bun test",
     "run-address": "bun run cli/run_address.ts",
     "run-batch": "bun run cli/run_investigation_batch.ts"
   },
@@ -23,6 +28,7 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
     "@types/bun": "latest",
     "typescript": "^5.6.0"
   }

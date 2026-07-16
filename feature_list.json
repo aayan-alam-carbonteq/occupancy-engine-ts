@@ -1,0 +1,101 @@
+[
+  {
+    "id": "agents-orchestrator",
+    "priority": 1,
+    "area": "agents",
+    "title": "Investigation orchestrator (preflight, gating, grouping, adjudication, report)",
+    "user_visible_behavior": "investigate_address(request) returns a full OccupancyAgentAssessment for an address.",
+    "status": "passing",
+    "verification": "bun run verify; deterministic E2E in test/e2e drives the real orchestrator with fixtures.",
+    "evidence": "Byte-identical deterministic parity vs Python on '1104 SPRING RUN RD'; typecheck+tests green; E2E-1/E2E-2 pass.",
+    "notes": "Faithful port of occupancy-engine agents."
+  },
+  {
+    "id": "heuristics-engine",
+    "priority": 2,
+    "area": "heuristics",
+    "title": "Atomic heuristics gating + evaluation + synthesis",
+    "user_visible_behavior": "Deterministic packet gating and evidence evaluation over address evidence.",
+    "status": "passing",
+    "verification": "bun run verify.",
+    "evidence": "Parity verification vs Python heuristics; typecheck+tests green.",
+    "notes": "src/heuristics/*."
+  },
+  {
+    "id": "agent-toolsets",
+    "priority": 3,
+    "area": "agents",
+    "title": "GraphQL + typed toolsets for subagents",
+    "user_visible_behavior": "Subagents fetch evidence via typed/raw GraphQL tools.",
+    "status": "passing",
+    "verification": "bun run verify; exercised by E2E-2.",
+    "evidence": "Parity verification; typecheck+tests green.",
+    "notes": "src/agents/toolsets/*."
+  },
+  {
+    "id": "observability",
+    "priority": 4,
+    "area": "observability",
+    "title": "Metrics recorder + usage/pricing + sidecar writers",
+    "user_visible_behavior": "Per-run latency/cost/token/cache/error metrics recorded to sidecars.",
+    "status": "passing",
+    "verification": "bun test test/observability.test.ts.",
+    "evidence": "test/observability.test.ts passes; parity vs Python pricing/usage.",
+    "notes": "src/observability/*."
+  },
+  {
+    "id": "single-address-cli",
+    "priority": 5,
+    "area": "cli",
+    "title": "cli/run_address.ts single-address runner",
+    "user_visible_behavior": "bun run run-address --address ... --graphql-url ... prints an assessment JSON.",
+    "status": "passing",
+    "verification": "Live run against the Python GraphQL server on :8000.",
+    "evidence": "Deterministic-parity live run vs Python on '1104 SPRING RUN RD'.",
+    "notes": "Needs the Python server; not in the offline verify loop."
+  },
+  {
+    "id": "agent-harness",
+    "priority": 6,
+    "area": "harness",
+    "title": "Development harness (instruction/state/feature/feedback/bootstrap)",
+    "user_visible_behavior": "AGENTS.md rules, PROGRESS.md continuity, feature list, init.sh, and a deterministic E2E suite.",
+    "status": "passing",
+    "verification": "bun run verify green; ./init.sh clean; E2E-1 + E2E-2 pass with no network/API.",
+    "evidence": "bun run verify green (19 pass, 0 fail); env -u ANTHROPIC_API_KEY bun test test/e2e passes (2 pass, no key); ./init.sh clean.",
+    "notes": "This plan. Set to passing only when E2E-1/E2E-2 pass and verify is green."
+  },
+  {
+    "id": "batch-cli",
+    "priority": 7,
+    "area": "cli",
+    "title": "cli/run_investigation_batch.ts batch runner",
+    "user_visible_behavior": "Run a cohort CSV of addresses and write per-run outputs.",
+    "status": "not_started",
+    "verification": "TBD when built.",
+    "evidence": "",
+    "notes": "Referenced by package.json run-batch but not yet ported."
+  },
+  {
+    "id": "judge-package",
+    "priority": 8,
+    "area": "judge",
+    "title": "Coverage judge (score assessments vs ground-truth)",
+    "user_visible_behavior": "Judge a batch of assessments and emit data/reasoning coverage.",
+    "status": "not_started",
+    "verification": "TBD when built.",
+    "evidence": "",
+    "notes": "Python occupancy_engine.judge equivalent."
+  },
+  {
+    "id": "observability-summaries",
+    "priority": 9,
+    "area": "observability",
+    "title": "Batch CSV metric rollups",
+    "user_visible_behavior": "Aggregate per-run metrics into a batch summary CSV.",
+    "status": "not_started",
+    "verification": "TBD when built.",
+    "evidence": "",
+    "notes": "Deferred follow-up."
+  }
+]
