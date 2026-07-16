@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { detect_leaks, redact_prose } from "../src/agents/prose_redaction.ts";
+import {
+  count_prose_leaks,
+  proseRedactEnabled,
+  sanitize_adjudication_prose,
+  sanitize_result_prose,
+} from "../src/agents/prose_redaction.ts";
 
 describe("redact_prose", () => {
   test("rewrites a camelCase schema field to a human phrase", () => {
@@ -71,5 +77,50 @@ describe("redact_prose / detect_leaks — hardening", () => {
   test("never mangles owner names or bare type words", () => {
     const clean = "The owner is John McDonald and the person at the property is a renter.";
     expect(redact_prose(clean)).toBe(clean);
+  });
+});
+
+describe("count_prose_leaks", () => {
+  test("sums leaks across many strings", () => {
+    expect(count_prose_leaks(["utilityRecords here", "and own_rent", "clean text"])).toBe(2);
+  });
+});
+
+describe("sanitize_result_prose", () => {
+  test("cleans prose fields and leaves everything else untouched", () => {
+    const result = {
+      finding: "The loanRecords show own_rent=0.",
+      caveats: ["ownerrescount=3 for this owner"],
+      missing_evidence: ["taxProperties absent"],
+      status: "triggered",
+      score: 2,
+      evidence_for: [{ source: "loan", rowid: 1 }],
+    };
+    const out = sanitize_result_prose(result);
+    expect(count_prose_leaks([out.finding, ...out.caveats, ...out.missing_evidence])).toBe(0);
+    // Untouched:
+    expect(out.status).toBe("triggered");
+    expect(out.score).toBe(2);
+    expect(out.evidence_for).toEqual([{ source: "loan", rowid: 1 }]);
+  });
+});
+
+describe("sanitize_adjudication_prose", () => {
+  test("cleans reasoning_summary and why_not_* arrays", () => {
+    const adj = {
+      reasoning_summary: "driveRecords indicate presence.",
+      why_not_higher: ["own_rent=0"],
+      why_not_lower: [],
+      verdict_band: "review",
+    };
+    const out = sanitize_adjudication_prose(adj);
+    expect(count_prose_leaks([out.reasoning_summary, ...out.why_not_higher, ...out.why_not_lower])).toBe(0);
+    expect(out.verdict_band).toBe("review");
+  });
+});
+
+describe("proseRedactEnabled", () => {
+  test("is off by default", () => {
+    expect(proseRedactEnabled()).toBe(false);
   });
 });

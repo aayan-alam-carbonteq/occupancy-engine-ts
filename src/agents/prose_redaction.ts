@@ -139,3 +139,58 @@ export function redact_prose(text: string): string {
     isIdentifierToken(token) ? phraseFor(token) : token,
   );
 }
+
+// Gated so nothing changes until explicitly enabled (mirrors OE_SYNTH_AUGMENT / OE_PROMPT_CACHE).
+const _REDACT_ENABLED = ["1", "true", "yes", "on"].includes(
+  (process.env.OE_PROSE_REDACT ?? "").trim().toLowerCase(),
+);
+
+export function proseRedactEnabled(): boolean {
+  return _REDACT_ENABLED;
+}
+
+/** Total identifier leaks across all strings (used for the always-on prose_leak_count metric). */
+export function count_prose_leaks(texts: Iterable<string>): number {
+  let total = 0;
+  for (const text of texts) {
+    total += detect_leaks(text).length;
+  }
+  return total;
+}
+
+// Structural shapes — kept local so this module needs no dependency on models.ts and stays
+// trivially testable with plain objects. The generic <T extends ...> preserves the caller's full
+// type (the orchestrator passes HeuristicAgentResult / CaseAdjudication and gets them back).
+interface ResultProse {
+  finding: string;
+  caveats: string[];
+  missing_evidence: string[];
+}
+
+interface AdjudicationProse {
+  reasoning_summary: string;
+  why_not_higher: string[];
+  why_not_lower: string[];
+}
+
+/** Return a copy with the human-facing prose fields redacted; all other fields are preserved. */
+export function sanitize_result_prose<T extends ResultProse>(result: T): T {
+  // `as T`: we only overwrite same-typed prose fields, so the object stays a valid T. The cast
+  // avoids TS's generic-spread widening error without loosening the public signature.
+  return {
+    ...result,
+    finding: redact_prose(result.finding),
+    caveats: result.caveats.map(redact_prose),
+    missing_evidence: result.missing_evidence.map(redact_prose),
+  } as T;
+}
+
+/** Return a copy with the adjudicator's prose fields redacted; all other fields are preserved. */
+export function sanitize_adjudication_prose<T extends AdjudicationProse>(adjudication: T): T {
+  return {
+    ...adjudication,
+    reasoning_summary: redact_prose(adjudication.reasoning_summary),
+    why_not_higher: adjudication.why_not_higher.map(redact_prose),
+    why_not_lower: adjudication.why_not_lower.map(redact_prose),
+  } as T;
+}
