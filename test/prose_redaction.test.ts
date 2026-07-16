@@ -45,3 +45,31 @@ describe("detect_leaks", () => {
     expect(detect_leaks("a plain english sentence about a house")).toEqual([]);
   });
 });
+
+describe("redact_prose / detect_leaks — hardening", () => {
+  test("does not treat Object.prototype members as identifiers", () => {
+    const clean = "The original constructor finished the build.";
+    expect(redact_prose(clean)).toBe(clean);
+    expect(detect_leaks("Review the toString output before filing.")).toEqual([]);
+    expect(detect_leaks("The lender will hasOwnProperty this account.")).toEqual([]);
+  });
+
+  test("catches singular / PascalCase GraphQL type names shown to the model", () => {
+    const out = redact_prose("The LoanRecord shows a recent origination.");
+    expect(out).not.toContain("LoanRecord");
+    expect(out).toContain("mortgage/loan application record");
+    expect(detect_leaks("SourceRecordConnection returned zero nodes.")).toEqual([
+      "SourceRecordConnection",
+    ]);
+  });
+
+  test("catches unmapped snake_case regardless of case", () => {
+    expect(detect_leaks("The Some_Unknown_Field was present.")).toEqual(["Some_Unknown_Field"]);
+    expect(detect_leaks("SOME_UNKNOWN_FIELD was present.")).toEqual(["SOME_UNKNOWN_FIELD"]);
+  });
+
+  test("never mangles owner names or bare type words", () => {
+    const clean = "The owner is John McDonald and the person at the property is a renter.";
+    expect(redact_prose(clean)).toBe(clean);
+  });
+});

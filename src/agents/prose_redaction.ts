@@ -1,9 +1,8 @@
-// Deterministic prose redaction: a SECURITY BACKSTOP that guarantees no internal data-surface
-// identifier (GraphQL field/table names, DB column names) survives in the human-facing prose
-// fields. It is NOT a beautifier — it substitutes identifier-shaped tokens for neutral human
-// phrases (never deletes clauses), so it is coverage-neutral by construction. The primary
-// readability lever is the prompt "writing register" (see prompts.ts, OE_PROSE_REGISTER); this
-// module is the hard guarantee behind OE_PROSE_REDACT.
+// Deterministic prose redaction: a SECURITY BACKSTOP against internal data-surface identifiers
+// (GraphQL field/type names, DB column names) surviving in the human-facing prose fields. It
+// recognizes the enumerated schema identifiers plus any camelCase / snake_case identifier shape;
+// bare dictionary words (Person, Property, residential, tax, loan) are left untouched so ordinary
+// prose — including owner names like "McDonald" — is never mangled.
 //
 // Design note: only IDENTIFIER-SHAPED tokens are treated as sensitive — camelCase, snake_case, or
 // an explicitly enumerated concatenated identifier (e.g. "ownername"). Bare dictionary words that
@@ -52,29 +51,57 @@ export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
   forecloserecorddate: "foreclosure record date",
   rowid: "record reference",
   recordid: "record reference",
+  // singular / PascalCase GraphQL type names (the model sees these via describe_schema)
+  taxrecord: "property-tax record",
+  baserecord: "residence record",
+  driverecord: "driver's-license record",
+  voterrecord: "voter-registration record",
+  autorecord: "vehicle-registration record",
+  loanrecord: "mortgage/loan application record",
+  tracerecord: "address-history record",
+  utilityrecord: "utility service record",
+  personaddressassociation: "person-address association",
+  propertyaddressassociation: "property-address association",
+  propertypersonassociation: "property-person association",
+  personorganizationassociation: "person-organization association",
+  addressconnection: "address record set",
+  personconnection: "person record set",
+  sourcerecordconnection: "source record set",
+  personaddressassociationconnection: "person-address association set",
+  propertyaddressassociationconnection: "property-address association set",
+  propertypersonassociationconnection: "property-person association set",
 };
 
 const CATCH_ALL_PHRASE = "an internal record field";
 
 // camelCase (a lowercase run then an uppercase), e.g. utilityRecords, ownRent, normAddress.
 const CAMEL_RE = /^[a-z]+[A-Z][A-Za-z0-9]*$/;
-// snake_case, e.g. own_rent, dob_year, some_unknown_field.
-const SNAKE_RE = /^[a-z0-9]+_[a-z0-9_]+$/;
+// snake_case, e.g. own_rent, dob_year, some_unknown_field. Any case — the underscore is the signal.
+const SNAKE_RE = /^[A-Za-z0-9]+_[A-Za-z0-9_]+$/;
 // A word-like token (letters/digits/underscore). Punctuation and whitespace are boundaries.
 const TOKEN_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
 // "identifier = value" / "identifier=value". Value stops before whitespace or sentence punctuation.
 const ASSIGN_RE = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s,;.)]+)/g;
 
+// Object.prototype member names (constructor, toString, hasOwnProperty, valueOf, …). Several are
+// camelCase-shaped (toString, hasOwnProperty) and would otherwise trip CAMEL_RE; "constructor"
+// additionally resolves through the prototype chain. They are ordinary English in prose ("the
+// original constructor", "the toString output"), never data-surface leaks — exclude them outright.
+const PROTOTYPE_MEMBERS = new Set(Object.getOwnPropertyNames(Object.prototype));
+
 function isIdentifierToken(token: string): boolean {
-  if (token.toLowerCase() in SCHEMA_TOKEN_PHRASES) {
+  if (PROTOTYPE_MEMBERS.has(token)) {
+    return false;
+  }
+  if (Object.hasOwn(SCHEMA_TOKEN_PHRASES, token.toLowerCase())) {
     return true;
   }
   return CAMEL_RE.test(token) || SNAKE_RE.test(token);
 }
 
 function phraseFor(token: string): string {
-  const mapped = SCHEMA_TOKEN_PHRASES[token.toLowerCase()];
-  return mapped ?? CATCH_ALL_PHRASE;
+  const key = token.toLowerCase();
+  return Object.hasOwn(SCHEMA_TOKEN_PHRASES, key) ? SCHEMA_TOKEN_PHRASES[key]! : CATCH_ALL_PHRASE;
 }
 
 /** Distinct identifier-shaped tokens still present in `text` (first-seen order, case-insensitive). */
