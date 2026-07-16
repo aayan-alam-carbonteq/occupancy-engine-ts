@@ -224,3 +224,60 @@ to on (or keep the flags for continued A/B).
 - (a) Exact human phrasing in the glossary.
 - (b) Coverage tolerance band for the ship gate (default above).
 - (c) Flag names (`OE_PROSE_REGISTER` / `OE_PROSE_REDACT`).
+
+## Experiment runbook (gated A/B)
+
+Both flags default off; enable with any of `1|true|yes|on`. Run each arm on the fixed
+case set at temperature 0, repeated a few times to separate signal from LLM noise. For
+each run capture: (1) the external `judge/` package dimension-coverage score,
+(2) `verdict_band` + `case_archetype` per case, and (3) `agent_metrics.prose_leak_count`
+(now emitted on every run).
+
+```bash
+# Arm A — Baseline (reference coverage, verdicts, baseline leak count)
+bun run cli/run_address.ts "<ADDRESS>" --zip <ZIP>
+
+# Arm B — Redact-only (expect coverage ≈ A, verdicts identical, leak count → 0)
+OE_PROSE_REDACT=on bun run cli/run_address.ts "<ADDRESS>" --zip <ZIP>
+
+# Arm C — Full (ship gate: coverage within tolerance of A, verdicts unchanged, leaks 0)
+OE_PROSE_REGISTER=on OE_PROSE_REDACT=on bun run cli/run_address.ts "<ADDRESS>" --zip <ZIP>
+```
+
+`prose_leak_count` lives under `agent_metrics` in the emitted assessment JSON. Arm A is
+expected to be > 0 on a data-rich case (that is the baseline leak surface); Arm B and C
+should be 0. Requires the Python GraphQL server running and LLM credentials configured —
+this is a user-environment step, not part of the automated test suite.
+
+### Ship gate
+
+Aggregate coverage within tolerance of Arm A (default: no single packet loses a
+dimension; aggregate within ±1 dimension across the set) **AND** band/archetype match
+unchanged **AND** `prose_leak_count` 0. If Arm C moves band/archetype, treat as a
+regression and investigate before shipping. Once validated, flip the flag defaults to on
+(or keep them for continued A/B).
+
+## Implementation notes (as-built)
+
+- **Controlled-vocabulary allowlist (added during build).** `build_report` embeds the
+  engine's own `verdict_band` and `case_archetype` labels verbatim (e.g. `mixed_evidence`,
+  `high_priority_review`), which are snake_case and were therefore false-flagged by
+  `detect_leaks`. These are classification labels, not the underlying data surface, so
+  `prose_redaction.ts` allowlists the full controlled vocabulary (imported from the enum
+  arrays in `models.ts`): it is never counted as a leak nor rewritten. Without this the
+  `prose_leak_count == 0` gate is unreachable.
+- **PascalCase type names.** The redaction lexicon enumerates the singular/PascalCase
+  GraphQL type names shown to the model via `describe_schema` (`LoanRecord`,
+  `SourceRecordConnection`, …) as lowercased keys — a PascalCase *regex* was deliberately
+  avoided because it would mangle owner names like "McDonald".
+- **Prototype-safety.** Map membership uses `Object.hasOwn` and an exact-case
+  `Object.prototype` member exclusion, so ordinary words like "constructor" are never
+  mangled or false-flagged.
+
+### Follow-up decision (not implemented)
+
+`build_report` still prints `verdict_band` / `case_archetype` as raw enum labels
+("Case archetype: mixed_evidence"). The allowlist stops these from being flagged as leaks,
+but they are not human-readable prose. Options: (i) leave to the UI (enum → display-label
+mapping is standard frontend work); or (ii) humanize them in `build_report` behind the
+redact flag (to preserve the byte-identical default). Deferred pending a scope decision.
