@@ -55,6 +55,12 @@ import { make_toolset } from "./toolsets/index.ts";
 import { makeInvestigationTrace, runnableConfig, type InvestigationTrace } from "./tracing.ts";
 import { evaluate_packet_gates } from "../heuristics/index.ts";
 import { MetricsRecorder, currentRecorder, runWithRecorder } from "../observability/index.ts";
+import {
+  count_prose_leaks,
+  proseRedactEnabled,
+  sanitize_adjudication_prose,
+  sanitize_result_prose,
+} from "./prose_redaction.ts";
 
 const PREFLIGHT_QUERY = `
 query AgentAddressPreflight($query: String!, $zip: String) {
@@ -301,16 +307,24 @@ export class AgentOrchestrator {
       async () =>
         await this._adjudicate_case(context, scoring.score_breakdown, results, scoring.conflicts, request, trace),
     );
-    const caveats = [...new Set(results.flatMap((result) => result.caveats))].sort();
-    caveats.push(..._global_caveats(context, results));
+    // Finalization: humanize the human-facing prose (gated by OE_PROSE_REDACT) AFTER adjudication
+    // and BEFORE the report is assembled. Running it after adjudication keeps it a pure output
+    // filter that never perturbs the adjudicator's inputs (so the redact-only experiment arm is
+    // verdict-neutral); running it before build_report lets the derived report inherit clean text.
+    const finalResults = proseRedactEnabled() ? results.map((r) => sanitize_result_prose(r)) : results;
+    const finalAdjudication = proseRedactEnabled() ? sanitize_adjudication_prose(adjudication) : adjudication;
+
+    const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
+    caveats.push(..._global_caveats(context, finalResults));
     const report = await recorder.span("report_build", { agent_id: "orchestrator" }, () =>
-      build_report(adjudication, scoring.score_breakdown.final_score, results, scoring.conflicts),
+      build_report(finalAdjudication, scoring.score_breakdown.final_score, finalResults, scoring.conflicts),
     );
     const agent_metrics = _agent_metrics({
       candidate_count,
       gated_count: candidate_heuristics.length,
       plan: investigation_plan,
-      results,
+      results: finalResults,
+      adjudication: finalAdjudication,
       report,
     });
     const metrics_summary = recorder.summary();
@@ -329,9 +343,9 @@ export class AgentOrchestrator {
       },
       resolved_address: context,
       score_breakdown: scoring.score_breakdown,
-      adjudication,
+      adjudication: finalAdjudication,
       investigation_plan,
-      heuristics: results,
+      heuristics: finalResults,
       evidence_pack: scoring.evidence_pack,
       conflicts: scoring.conflicts,
       caveats: [...new Set(caveats)].sort(),
@@ -1097,9 +1111,18 @@ function _agent_metrics(opts: {
   gated_count: number;
   plan: CaseInvestigationPlan;
   results: HeuristicAgentResult[];
+  adjudication: CaseAdjudication;
   report: string;
 }): Record<string, any> {
-  const { candidate_count, gated_count, plan, results, report } = opts;
+  const { candidate_count, gated_count, plan, results, adjudication, report } = opts;
+  // Always measured (both flags on and off) so the A/B can read leakage before vs after.
+  const prose_texts = [
+    ...results.flatMap((r) => [r.finding, ...r.caveats, ...r.missing_evidence]),
+    adjudication.reasoning_summary,
+    ...adjudication.why_not_higher,
+    ...adjudication.why_not_lower,
+    report,
+  ];
   return {
     candidate_packets: candidate_count,
     gated_packets: gated_count,
@@ -1111,6 +1134,7 @@ function _agent_metrics(opts: {
     query_repair_attempts: results.reduce((acc, result) => acc + result.query_repair_attempts, 0),
     evidence_refs_count: results.reduce((acc, result) => acc + result.evidence_refs.length, 0),
     report_bytes_estimate: Buffer.byteLength(report, "utf8"),
+    prose_leak_count: count_prose_leaks(prose_texts),
   };
 }
 

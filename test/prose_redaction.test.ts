@@ -6,6 +6,8 @@ import {
   sanitize_adjudication_prose,
   sanitize_result_prose,
 } from "../src/agents/prose_redaction.ts";
+import { build_report } from "../src/agents/orchestrator.ts";
+import { CaseAdjudicationSchema, HeuristicAgentResultSchema } from "../src/agents/models.ts";
 
 describe("redact_prose", () => {
   test("rewrites a camelCase schema field to a human phrase", () => {
@@ -122,5 +124,34 @@ describe("sanitize_adjudication_prose", () => {
 describe("proseRedactEnabled", () => {
   test("is off by default", () => {
     expect(proseRedactEnabled()).toBe(false);
+  });
+});
+
+describe("integration: sanitized findings produce a leak-free report", () => {
+  test("build_report over sanitized inputs has no identifier leaks", () => {
+    const result = HeuristicAgentResultSchema.parse({
+      heuristic_id: "loan_tenure",
+      status: "triggered",
+      direction: "risk",
+      score: 2,
+      confidence: "medium",
+      finding: "The loanRecords show own_rent=0 for the occupant.",
+      evidence_for: [{ source: "loan", rowid: 1 }],
+    });
+    const adjudication = CaseAdjudicationSchema.parse({
+      raw_score: 2,
+      calibrated_score: 2,
+      clarity_score: 5,
+      verdict_band: "review",
+      case_archetype: "mixed_evidence",
+      reasoning_summary: "driveRecords indicate presence at the subject.",
+    });
+    const report = build_report(
+      sanitize_adjudication_prose(adjudication),
+      2,
+      [sanitize_result_prose(result)],
+      [],
+    );
+    expect(detect_leaks(report)).toHaveLength(0);
   });
 });
