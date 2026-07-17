@@ -4,12 +4,38 @@
 // are tuned. Do not rewrap or paraphrase them — the builders only control how VALUES are rendered
 // into the surrounding text. Inputs are plain objects modelled as `Record<string, any>`.
 
+import { EXTERNAL_EVIDENCE_SOURCES } from "../heuristics/policy.ts";
 import { CASE_ARCHETYPE_VALUES, VERDICT_BAND } from "./models.ts";
 
 type Dict = Record<string, any>;
 
 function isDict(value: any): boolean {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Set (not .includes) so the `as const` tuple type doesn't narrow the lookup argument.
+const EXTERNAL_SOURCE_SET: ReadonlySet<string> = new Set<string>(EXTERNAL_EVIDENCE_SOURCES);
+
+function _ref_source(ref: any): string {
+  return isDict(ref) ? String(ref["source"] ?? "") : "";
+}
+
+/**
+ * External refs first. refs.slice(0, 8) caps AFTER scope filtering, so an str_scan ref would
+ * otherwise compete with the graph sources for eight slots and could be silently crowded out —
+ * removing the citation a heuristic needs to mark itself `triggered`. Stable within each partition.
+ */
+function _external_refs_first(refs: any[]): any[] {
+  const external: any[] = [];
+  const graph: any[] = [];
+  for (const ref of refs) {
+    if (EXTERNAL_SOURCE_SET.has(_ref_source(ref))) {
+      external.push(ref);
+    } else {
+      graph.push(ref);
+    }
+  }
+  return [...external, ...graph];
 }
 
 // Compare strings by code point (default lexicographic order).
@@ -593,17 +619,23 @@ export function compact_evidence_map(
   source_scope: string[] | readonly string[] | null = null,
 ): Dict {
   const scope = new Set<string>((source_scope ?? []) as string[]);
+  // An empty scope means "no scope was supplied" (the master prompts), which sees everything.
+  const scoped = (source: string): boolean => scope.size === 0 || scope.has(source);
   let refs: any[] = evidence_map["evidence_refs"] ?? [];
   if (scope.size > 0) {
     refs = refs.filter((ref) => isDict(ref) && scope.has(String(ref["source"] ?? "")));
   }
+  refs = _external_refs_first(refs);
   return {
     address_id: evidence_map["address_id"],
     normalized_address: evidence_map["normalized_address"],
     zip5: evidence_map["zip5"],
     source_counts: evidence_map["source_counts"] ?? {},
+    // property_types is global (and is only ever context-sourced — see external_evidence_map.ts).
     property_types: evidence_map["property_types"] ?? [],
-    rental_market_summary: evidence_map["rental_market_summary"] ?? [],
+    // rental_market_summary is the listing channel and goes behind the gate. This split is the
+    // selective-exposure design in two lines.
+    rental_market_summary: scoped("str_scan") ? (evidence_map["rental_market_summary"] ?? []) : [],
     owner_summaries: evidence_map["owner_summaries"] ?? [],
     people_at_address: evidence_map["people_at_address"] ?? [],
     owner_presence_hints: evidence_map["owner_presence_hints"] ?? [],
