@@ -78,8 +78,20 @@ const SOURCE_HUMAN_PHRASES: Record<string, string> = {
 
 // The register instructions themselves (unconditional; the gate lives in _prose_register_lines).
 // `fields` names the prose fields this agent submits, e.g. "finding, caveats, missing_evidence".
-export function buildProseRegisterLines(fields: string): string[] {
+//
+// `source_scope` gates the EXTERNAL sources out of the glossary for packets that cannot see them.
+// Scope is authorization, and the glossary is prompt context like any other channel — without this
+// it broadcasts every source code to every packet, which is how `str_scan` reached
+// `owner_identity_and_mailing`. Only the external sources are gated: the graph-source entries stay
+// listed unconditionally so the register experiment's prompts are byte-identical to before. An
+// empty scope means the master prompts, which see everything.
+export function buildProseRegisterLines(
+  fields: string,
+  source_scope: string[] | readonly string[] | null = null,
+): string[] {
+  const scope = new Set<string>((source_scope ?? []) as string[]);
   const glossary = Object.entries(SOURCE_HUMAN_PHRASES)
+    .filter(([code]) => !EXTERNAL_SOURCE_SET.has(code) || scope.size === 0 || scope.has(code))
     .map(([code, phrase]) => `${code} → ${phrase}`)
     .join("; ");
   return [
@@ -93,8 +105,32 @@ export function buildProseRegisterLines(fields: string): string[] {
   ];
 }
 
-export function _prose_register_lines(fields: string): string[] {
-  return _PROSE_REGISTER_ENABLED ? buildProseRegisterLines(fields) : [];
+export function _prose_register_lines(
+  fields: string,
+  source_scope: string[] | readonly string[] | null = null,
+): string[] {
+  return _PROSE_REGISTER_ENABLED ? buildProseRegisterLines(fields, source_scope) : [];
+}
+
+/** A packet's declared source scope, context_scope winning over input_sources (the usual order). */
+export function _heuristic_scope(heuristic: Dict): string[] {
+  const context_scope = heuristic["context_scope"] as any[] | undefined;
+  const input_sources = heuristic["input_sources"] as any[] | undefined;
+  const sources = context_scope?.length ? context_scope : input_sources?.length ? input_sources : [];
+  return sources.map((source) => String(source));
+}
+
+/** The union of a bucket's scopes — grouped packets share one prompt, so they share one glossary. */
+export function _heuristics_scope(heuristics: Dict[]): string[] {
+  const seen: string[] = [];
+  for (const heuristic of heuristics) {
+    for (const source of _heuristic_scope(heuristic)) {
+      if (!seen.includes(source)) {
+        seen.push(source);
+      }
+    }
+  }
+  return seen;
 }
 
 export const GRAPHQL_PRIMER =
@@ -240,7 +276,7 @@ export function heuristic_user_prompt(
       "- Use not_triggered only when local evidence contradicts or reasonably disproves the signal.",
       "- Use inconclusive when data availability, query failure, identity ambiguity, staleness, or conflicting evidence prevents a defensible triggered/not_triggered conclusion.",
       "- Use score 0 for inconclusive.",
-      ..._prose_register_lines("finding, caveats, missing_evidence"),
+      ..._prose_register_lines("finding, caveats, missing_evidence", _heuristic_scope(heuristic)),
     ].join("\n");
   }
   let lines = [
@@ -287,7 +323,7 @@ export function heuristic_user_prompt(
       "Use score 0 for inconclusive.",
       "Separate supporting rows in evidence_for, contradicting/mitigating rows in evidence_against,",
       "and unavailable or insufficient facts in missing_evidence.",
-      ..._prose_register_lines("finding, caveats, missing_evidence"),
+      ..._prose_register_lines("finding, caveats, missing_evidence", _heuristic_scope(heuristic)),
     ])
     .join("\n");
 }
@@ -387,7 +423,9 @@ export function grouped_heuristic_user_prompt(
     "- Distribute retrieval and analysis effort EQUALLY across the assigned heuristics. Do not thoroughly investigate the first and skim later ones — fetch each heuristic's own sources and give every packet the same depth.",
     "- finding: ONE concise paragraph per packet stating the conclusion, the key reasoning, and the per-sub-signal outcomes. Do not pad or repeat.",
     "- Use inconclusive (score 0) when data availability, query failure, identity ambiguity, or conflicting evidence prevents a defensible conclusion for that packet.",
-    ..._prose_register_lines("finding, caveats, missing_evidence"),
+    // The bucket shares one prompt, so the glossary follows the bucket's UNION scope — same rule
+    // the shared evidence context already uses.
+    ..._prose_register_lines("finding, caveats, missing_evidence", _heuristics_scope(Array.from(heuristics))),
   ].join("\n");
 }
 
