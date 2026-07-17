@@ -1,29 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { AgentOrchestrator } from "../../src/agents/orchestrator.ts";
 import { GraphQLHttpTool } from "../../src/agents/graphql_tool.ts";
-import { AgentInvestigationRequestSchema, HeuristicAgentResultSchema } from "../../src/agents/models.ts";
-import { RetrievalHeuristicSubagent, type HeuristicSubagent } from "../../src/agents/subagents.ts";
+import { AgentInvestigationRequestSchema } from "../../src/agents/models.ts";
+import { RetrievalHeuristicSubagent } from "../../src/agents/subagents.ts";
 import { TypedToolset } from "../../src/agents/toolsets/typed_toolset.ts";
 import { FixtureGraphQLServer } from "../support/fixture_graphql.ts";
 import { loadPreflight1104 } from "../support/fixtures.ts";
 import { ScriptedChatModel } from "../support/scripted_llm.ts";
-
-// Fake subagent: returns a schema-valid not_triggered result echoing the packet id
-// (the orchestrator drops results whose id isn't in the requested set).
-class FakeSubagent implements HeuristicSubagent {
-  async run(agent_input: any, _graphql: any) {
-    const hid = String(agent_input.heuristic.id);
-    return HeuristicAgentResultSchema.parse({
-      heuristic_id: hid,
-      status: "not_triggered",
-      direction: "risk",
-      score: 0,
-      confidence: "low",
-      finding: `${hid} finding.`,
-      missing_evidence: ["No supporting rows in fixture."],
-    });
-  }
-}
+import { FakeSubagent } from "../support/subagents.ts";
 
 describe("E2E-1: orchestrator assembly (fixture GraphQL + fake subagent, no LLM)", () => {
   test("investigate() assembles a full assessment from the real preflight fixture", async () => {
