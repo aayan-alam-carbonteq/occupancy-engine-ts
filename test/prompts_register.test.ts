@@ -18,3 +18,12 @@ describe("_prose_register_lines (gated)", () => {
     expect(_prose_register_lines("finding, caveats, missing_evidence")).toEqual([]);
   });
 });
+
+describe("writing register glossary", () => {
+  test("names plain-language phrases for the external sources too", () => {
+    const glossary = buildProseRegisterLines("finding, caveats").join("\n");
+    expect(glossary).toContain("str_scan → short-term-rental listing match");
+    expect(glossary).toContain("property_facts → property listing record");
+    expect(glossary).toContain("tax → property-tax record"); // existing entries untouched
+  });
+});

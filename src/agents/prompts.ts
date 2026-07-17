@@ -72,6 +72,8 @@ const SOURCE_HUMAN_PHRASES: Record<string, string> = {
   loan: "mortgage/loan application record",
   trace: "address-history record",
   criminal: "criminal record",
+  str_scan: "short-term-rental listing match",
+  property_facts: "property listing record",
 };
 
 // The register instructions themselves (unconditional; the gate lives in _prose_register_lines).

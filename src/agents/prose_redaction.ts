@@ -120,6 +120,29 @@ const ENGINE_CONTRACT_FIELDS: readonly string[] = [
   "recommended_weight", "prose_leak_count",
 ];
 
+// External evidence VALUES are evidence CONTENT, not data-surface identifiers: this feature
+// deliberately routes platform names and listing-status values into findings, so redacting them
+// would leave every gate green while the feature silently said nothing. Excluded through the same
+// controlled-vocabulary mechanism as the families above rather than a second one.
+//
+// The SOURCE TOKENS str_scan / property_facts are deliberately NOT here: those are data-surface
+// names, the model should humanize them, and the register glossary gives it the phrase to use.
+const EXTERNAL_EVIDENCE_VOCABULARY: readonly string[] = [
+  // Platforms the STR scan reports. An open set by contract (StrListingSchema.platform is a plain
+  // string); these are the ones the scan surfaces today. A platform missing here is not redacted
+  // anyway unless its name is identifier-shaped — listing them states the intent.
+  "vrbo",
+  "airbnb",
+  "facebook",
+  "booking",
+  "realtor",
+  "redfin",
+  // Listing status values. These are snake_case, so SNAKE_RE flags them without this entry —
+  // this is the exclusion the survival test actually exercises.
+  "for_rent",
+  "for_sale",
+];
+
 const CONTROLLED_VOCABULARY: ReadonlySet<string> = new Set(
   [
     // 1. classification labels
@@ -145,6 +168,8 @@ const CONTROLLED_VOCABULARY: ReadonlySet<string> = new Set(
     ...PACKETS.flatMap((packet) => packet.output_fields),
     // 4. our own contract field names
     ...ENGINE_CONTRACT_FIELDS,
+    // 5. external evidence content (platform names, listing status values)
+    ...EXTERNAL_EVIDENCE_VOCABULARY,
   ].map((value) => value.toLowerCase()),
 );
 
