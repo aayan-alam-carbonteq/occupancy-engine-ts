@@ -7,7 +7,7 @@ import { TypedToolset } from "../../src/agents/toolsets/typed_toolset.ts";
 import { FixtureGraphQLServer } from "../support/fixture_graphql.ts";
 import { loadPreflight1104 } from "../support/fixtures.ts";
 import { ScriptedChatModel } from "../support/scripted_llm.ts";
-import { FakeSubagent } from "../support/subagents.ts";
+import { FakeSubagent, PromptRecordingSubagent } from "../support/subagents.ts";
 
 describe("E2E-1: orchestrator assembly (fixture GraphQL + fake subagent, no LLM)", () => {
   test("investigate() assembles a full assessment from the real preflight fixture", async () => {
@@ -74,6 +74,56 @@ describe("E2E-2: real subagent driven by scripted LLM (no API)", () => {
       expect(a.heuristics.length).toBe(1);
       expect(a.heuristics[0]!.heuristic_id).toBe("property_tax_context");
       expect(a.heuristics[0]!.status).not.toBe("error");
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("E2E-3: the parity guard — no payload, behavior unchanged", () => {
+  test("investigate() with no payload exposes no external evidence anywhere", async () => {
+    const server = new FixtureGraphQLServer(loadPreflight1104());
+    const subagent = new PromptRecordingSubagent();
+    try {
+      const orch = new AgentOrchestrator({ graphql: new GraphQLHttpTool(server.url), subagent });
+      const request = AgentInvestigationRequestSchema.parse({
+        address: "1104 SPRING RUN RD",
+        zip: "40514",
+        graphql_url: server.url,
+      });
+      expect(request.external_evidence).toBeNull(); // the absent payload IS the blind switch
+
+      const a = await orch.investigate(request);
+
+      // 1. everything stays exactly as empty as it is today
+      expect(a.resolved_address.property_types).toEqual([]);
+      expect(a.resolved_address.evidence_map.property_types).toEqual([]);
+      expect(a.resolved_address.evidence_map.rental_market_summary).toEqual([]);
+
+      // 2. no external source reaches any evidence surface
+      const sources = [
+        ...a.resolved_address.evidence_map.evidence_refs.map((r) => r.source),
+        ...a.evidence_pack.map((r) => r.source),
+      ];
+      expect(sources.some((s) => s === "str_scan" || s === "property_facts")).toBe(false);
+      expect(Object.keys(a.resolved_address.evidence_map.source_counts)).not.toContain("str_scan");
+
+      // 3. no external CONTENT reaches any rendered packet prompt.
+      //    Note: the bare token "str_scan" DOES appear in the exposed packets' "Context scope:" /
+      //    "Expected sources:" lines even blind — input_sources is static, and that is pinned by
+      //    the exposure map. What must never appear with no payload is the evidence itself.
+      expect(subagent.all()).not.toContain("Rental Market");
+      expect(subagent.all()).not.toContain("Short-term rental listing");
+      expect(subagent.all()).not.toContain("str_scan; platform=");
+      expect(subagent.all()).not.toContain("property_facts; source_provider=");
+      expect(subagent.all()).not.toContain("not a probability that the property is a rental");
+
+      // 4. and the assessment still assembles exactly as E2E-1 asserts
+      expect(a.resolved_address.selected).not.toBeNull();
+      expect(a.heuristics.length).toBeGreaterThan(0);
+      expect(a.heuristics.every((h: any) => h.status !== "error")).toBe(true);
+      expect(a.adjudication.verdict_band).toBeTruthy();
+      expect(a.report.length).toBeGreaterThan(0);
     } finally {
       server.close();
     }
