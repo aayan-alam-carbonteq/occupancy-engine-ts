@@ -734,6 +734,10 @@ export function render_context_sections(context: Dict): string {
   const emTypes = evidence_map["property_types"];
   const property_types = ctxTypes?.length ? ctxTypes : emTypes?.length ? emTypes : [];
   lines.push(..._section_items("Property Types", property_types));
+  // The listing channel. `empty = false` so an absent/withheld payload renders nothing at all,
+  // which keeps the blind configuration's prompt text exactly as it is today. The scope gate has
+  // already run in prompt_context/compact_evidence_map — this only renders what was authorized.
+  lines.push(..._section_items("Rental Market", evidence_map["rental_market_summary"] ?? [], false));
   lines.push(
     ..._section_items("Owners", _summary_items(evidence_map["owner_summaries"] ?? [], "owner_name", "summaries")),
   );
