@@ -42,6 +42,12 @@ import {
   type ScoreBreakdown,
   type VerdictBand,
 } from "./models.ts";
+import type { ExternalEvidence } from "./external_evidence.ts";
+import {
+  external_evidence_refs,
+  property_types_from_external,
+  rental_market_summary_lines,
+} from "./external_evidence_map.ts";
 import {
   MASTER_ADJUDICATION_SYSTEM_PROMPT,
   master_adjudication_user_prompt,
@@ -394,8 +400,16 @@ export class AgentOrchestrator {
     }
     const selected = _selected_candidate(address_data, candidates);
     const source_counts = _source_counts((address_data ?? {}) as Record<string, any>);
-    const property_types: string[] = [];
-    const evidence_map = _evidence_map((address_data ?? {}) as Record<string, any>, selected, source_counts, property_types);
+    // Absent payload => empty, exactly as today: the blind (benchmarking) configuration.
+    const external_evidence = request.external_evidence ?? null;
+    // CONTEXT-level only. evidence_map.property_types stays [] — see _evidence_map below.
+    const property_types = property_types_from_external(external_evidence);
+    const evidence_map = _evidence_map(
+      (address_data ?? {}) as Record<string, any>,
+      selected,
+      source_counts,
+      external_evidence,
+    );
     const ambiguous = selected === null || _is_ambiguous(candidates);
     return ResolvedAddressContextSchema.parse({
       input_address: request.address,
@@ -1258,13 +1272,19 @@ function _evidence_map(
   address_data: Record<string, any>,
   selected: AddressCandidate | null,
   source_counts: Record<string, number>,
-  property_types: string[],
+  external_evidence: ExternalEvidence | null = null,
 ): CaseEvidenceMap {
   const normalized_address = (selected ? selected.norm_address : address_data["normAddress"]) || "";
   const zip5 = (selected ? selected.zip5 : address_data["zip5"]) || "";
   const owners = _owner_summaries(address_data, normalized_address);
   const people = _people_at_address_summaries(address_data, owners);
-  const refs = _source_refs(address_data, "taxProperties", "tax", 5);
+  // External refs are built first so they lead the list: compact_evidence_map's refs.slice(0, 8)
+  // caps AFTER scope filtering, and the ordering is what keeps a citation a heuristic needs from
+  // being crowded out. (compact_evidence_map re-asserts the ordering; this is where they enter.)
+  const refs = [
+    ...external_evidence_refs(external_evidence),
+    ..._source_refs(address_data, "taxProperties", "tax", 5),
+  ];
   const owner_presence_hints = _owner_presence_hints(address_data, owners, normalized_address);
   const nonowner_hints = _nonowner_occupancy_hints(address_data, owners);
   const data_gaps = Object.entries(source_counts)
@@ -1285,8 +1305,11 @@ function _evidence_map(
     normalized_address,
     zip5,
     source_counts,
-    property_types,
-    rental_market_summary: [],
+    // Deliberately EMPTY even with a payload: adapters.ts copies this into AddressEvidence and
+    // _has_portfolio_hint flips a SCORING packet on "multi"/"portfolio". The property type reaches
+    // prompts via ResolvedAddressContext.property_types, which both prompt builders prefer.
+    property_types: [],
+    rental_market_summary: rental_market_summary_lines(external_evidence),
     owner_summaries: owners,
     people_at_address: people,
     owner_presence_hints,
