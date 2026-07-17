@@ -587,7 +587,15 @@ export function prompt_context(
   source_scope: string[] | readonly string[] | null = null,
 ): Dict {
   if (profile === "full") {
-    return context;
+    // Profile controls verbosity; scope controls authorization. The full profile still returns
+    // everything verbatim — except the external evidence fields, which stay behind the scope gate
+    // in BOTH profiles. An empty scope means the master prompts, which see everything.
+    const scope = new Set<string>((source_scope ?? []) as string[]);
+    const full_map = context["evidence_map"];
+    if (scope.size === 0 || !isDict(full_map)) {
+      return context;
+    }
+    return { ...context, evidence_map: scope_external_evidence(full_map, source_scope) };
   }
   const evidence_map = context["evidence_map"] ?? {};
   const selected = context["selected"];
@@ -612,6 +620,29 @@ export function prompt_context(
     compact["candidates"] = context["candidates"] ?? [];
   }
   return compact;
+}
+
+/**
+ * The external-evidence scope gate for the full profile: filters ONLY the external fields, leaving
+ * every graph field (and the ref cap, which the full profile does not apply) exactly as it is.
+ */
+export function scope_external_evidence(
+  evidence_map: Dict,
+  source_scope: string[] | readonly string[] | null = null,
+): Dict {
+  const scope = new Set<string>((source_scope ?? []) as string[]);
+  if (scope.size === 0) {
+    return evidence_map;
+  }
+  const refs: any[] = evidence_map["evidence_refs"] ?? [];
+  return {
+    ...evidence_map,
+    rental_market_summary: scope.has("str_scan") ? (evidence_map["rental_market_summary"] ?? []) : [],
+    evidence_refs: refs.filter((ref) => {
+      const source = _ref_source(ref);
+      return !EXTERNAL_SOURCE_SET.has(source) || scope.has(source);
+    }),
+  };
 }
 
 export function compact_evidence_map(

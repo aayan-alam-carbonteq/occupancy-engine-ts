@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { compact_evidence_map } from "../src/agents/prompts.ts";
+import { compact_evidence_map, prompt_context } from "../src/agents/prompts.ts";
 
 const LISTING_LINE =
   "Short-term rental listing found on vrbo: 3 bd / 2 ba / sleeps 6. Address match 92%.";
@@ -106,5 +106,61 @@ describe("compact_evidence_map: external evidence scope gating", () => {
     >;
     expect(refs[0]!["source"]).toBe("str_scan");
     expect(Object.hasOwn(refs[0]!, "data")).toBe(false);
+  });
+});
+
+function context(): Record<string, any> {
+  return {
+    input_address: "1104 SPRING RUN RD",
+    input_zip: "40514",
+    selected: { id: 1104, norm_address: "1104 SPRING RUN RD", zip5: "40514" },
+    candidates: [],
+    ambiguous: false,
+    source_counts: { tax: 2, base: 1 },
+    property_types: ["single_family"],
+    evidence_map: evidenceMap(),
+    schema_guide: "",
+  };
+}
+
+describe("prompt_context: profile is verbosity, scope is authorization", () => {
+  test("full profile WITHHOLDS rental_market_summary from an unscoped packet", () => {
+    expect(
+      prompt_context(context(), "full", ["tax", "base", "drive"])["evidence_map"][
+        "rental_market_summary"
+      ],
+    ).toEqual([]);
+  });
+
+  test("full profile withholds external refs but keeps graph refs verbatim and uncapped", () => {
+    const refs = prompt_context(context(), "full", ["tax", "base", "drive"])["evidence_map"][
+      "evidence_refs"
+    ] as Array<Record<string, unknown>>;
+    expect(refs.some((r) => r["source"] === "str_scan")).toBe(false);
+    expect(refs.some((r) => r["source"] === "property_facts")).toBe(false);
+    // full profile does not scope-filter graph refs and does not cap at 8 — unchanged.
+    expect(refs.filter((r) => r["source"] === "tax")).toHaveLength(8);
+    expect(refs[0]!["data"]).toBeDefined();
+  });
+
+  test("full profile GRANTS them to a scoped packet, one source at a time", () => {
+    const out = prompt_context(context(), "full", ["trace", "utility", "str_scan"]);
+    expect(out["evidence_map"]["rental_market_summary"]).toEqual([LISTING_LINE]);
+    const refs = out["evidence_map"]["evidence_refs"] as Array<Record<string, unknown>>;
+    expect(refs.some((r) => r["source"] === "str_scan")).toBe(true);
+    expect(refs.some((r) => r["source"] === "property_facts")).toBe(false);
+  });
+
+  test("full profile with no scope (the master prompts) is byte-for-byte untouched", () => {
+    const ctx = context();
+    expect(prompt_context(ctx, "full", null)).toBe(ctx);
+    expect(prompt_context(ctx, "full")).toBe(ctx);
+  });
+
+  test("full profile keeps every non-evidence-map key verbatim", () => {
+    const out = prompt_context(context(), "full", ["tax"]);
+    expect(out["schema_guide"]).toBe("");
+    expect(out["candidates"]).toEqual([]);
+    expect(out["property_types"]).toEqual(["single_family"]);
   });
 });
