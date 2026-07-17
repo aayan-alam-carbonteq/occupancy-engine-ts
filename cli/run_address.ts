@@ -1,8 +1,12 @@
 // Run the agent network for one address.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { loadDotenv } from "../src/env.ts";
+import {
+  type ExternalEvidence,
+  ExternalEvidenceSchema,
+} from "../src/agents/external_evidence.ts";
 import { AgentInvestigationRequestSchema } from "../src/agents/models.ts";
 import { investigate_address } from "../src/agents/orchestrator.ts";
 import type { MetricEvent, RunMetricsSummary } from "../src/observability/models.ts";
@@ -27,6 +31,36 @@ export function reportDestination(
 }
 
 /** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
+/**
+ * Read + validate the --evidence-file payload.
+ *
+ * Throws on a missing, unreadable, non-JSON or schema-violating file. The caller turns that into
+ * exit 2 — never a silent fallback to blind. An ABSENT flag is the blind configuration and is
+ * always fine; a flag that was meant to carry evidence and didn't must fail loudly, because a
+ * blind run's wrong answer is indistinguishable downstream from a legitimate clean result.
+ */
+export function readEvidenceFile(path: string): ExternalEvidence {
+  let raw: string;
+  try {
+    raw = readFileSync(path, { encoding: "utf-8" });
+  } catch (exc) {
+    throw new Error(`--evidence-file could not be read: ${path}: ${(exc as Error).message ?? exc}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (exc) {
+    throw new Error(`--evidence-file is not valid JSON: ${path}: ${(exc as Error).message ?? exc}`);
+  }
+  const result = ExternalEvidenceSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new Error(
+      `--evidence-file does not match the external evidence contract: ${path}: ${result.error.message}`,
+    );
+  }
+  return result.data;
+}
+
 export function formatProgressLine(event: MetricEvent): string {
   const launched = event.metadata["launched_subagents"];
   const workersTotal = event.metadata["workers_total"];
@@ -80,6 +114,7 @@ async function main(argv: string[]): Promise<number> {
       "include-shortcuts": { type: "boolean", default: false },
       "metrics-debug-payloads": { type: "boolean", default: false },
       "batch-id": { type: "string" },
+      "evidence-file": { type: "string" },
       "trace-id": { type: "string" },
       progress: { type: "boolean", default: false },
       out: { type: "string" },
@@ -98,10 +133,21 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
 
+  let externalEvidence: ExternalEvidence | null = null;
+  if (values["evidence-file"]) {
+    try {
+      externalEvidence = readEvidenceFile(values["evidence-file"]);
+    } catch (exc) {
+      process.stderr.write(`${(exc as Error).message ?? exc}\n`);
+      return 2;
+    }
+  }
+
   const request = AgentInvestigationRequestSchema.parse({
     address: values.address,
     zip: values.zip,
     graphql_url: graphqlUrl,
+    external_evidence: externalEvidence,
     provider: values.provider,
     model: values.model ?? null,
     base_url: values["base-url"] ?? null,
