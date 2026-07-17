@@ -26,6 +26,22 @@ package, observability/summaries.
 - **Known consequences (decisions of record, not bugs):** (1) `input_sources` is static, so exposed packets' prompts name `str_scan` in "Context scope"/"Expected sources" even blind — no evidence content leaks (E2E-3 asserts it). (2) The BUCKET is the unit of exposure: `_union_source_scope` means `owner_identity_and_mailing` sees `property_facts` and `legal_address_presence` sees `str_scan` via their bucket-mates; the collapse-critical exclusions (owner_identity <- str_scan, portfolio <- both) survive and are asserted. (3) `evidence_map.property_types` is deliberately empty — filling it would flip `_has_portfolio_hint` and move the score through a gate rather than through reasoning.
 - **Risks / OPEN ISSUE:** `OE_PROSE_REGISTER=on` **conflicts with the critical negative test**. Task 8 adds `str_scan`/`property_facts` to `SOURCE_HUMAN_PHRASES`, and `buildProseRegisterLines` renders that glossary — unscoped — into *every* prompt, so the bare tokens reach `owner_identity_and_mailing`. Verified that **only the tokens leak, never evidence content** (`vrbo`, `Short-term rental listing`, `1234567`, `source_provider=realtor` all absent), which is the same class as consequence (1) above, but broadcast to unexposed packets rather than just exposed ones. Under the flag: `OE_PROSE_REDACT=on OE_PROSE_REGISTER=on bun test` → 125 pass / 7 fail (5 exposure-marker failures + the 2 flag-is-off-by-default tests). The plan pins neither the glossary's scope-awareness nor an `OE_PROSE_REGISTER=1` gate, so this was **left unresolved rather than improvised**: fixing it means either scoping the glossary per packet or narrowing the guard's markers — an exposure-map/register decision that belongs upstream in the umbrella.
 - **Next best action:** resolve the `OE_PROSE_REGISTER` glossary-scope question upstream; then merge to `main`, bump the backend's engine submodule pointer and land backend B2-B4.
+- **Post-build fix (b0e3ef8): the register glossary was broadcasting the new source tokens.**
+  Task 8 added `str_scan`/`property_facts` to `SOURCE_HUMAN_PHRASES`, and `buildProseRegisterLines`
+  rendered the whole glossary **unscoped** into every prompt — so with `OE_PROSE_REGISTER` on (which
+  the gitignored `.env` sets, making it the default dev environment) the bare tokens reached
+  `owner_identity_and_mailing` and the critical negative test failed on 5 markers. Same bug class as
+  the full-profile hole this feature already fixed: a channel ignoring scope. Now gated by the
+  packet's own scope, or the bucket's union where packets share a prompt. **Only the external
+  sources are gated** — graph-source entries stay unconditional, so the in-flight register A/B's
+  prompts are byte-identical to before. Only vocabulary ever leaked, never evidence content; the
+  selective-exposure design held. Flags off: 132/0 unchanged. register on: 125/7 → 131/1. Both on:
+  125/7 → 130/2, where the residual 1-2 are tautological (they assert the flags are off, so enabling
+  one breaks them by construction) and predate this work.
+- **Landmine for anyone running gates here:** the gitignored `.env` sets `OE_PROSE_REGISTER=on` and
+  `OE_PROSE_REDACT=on`. Bun AUTO-LOADS `.env`, so `env -u` does not clear them. `bun run verify`
+  therefore shows 2 pre-existing failures out of the box on this branch. Use
+  `OE_PROSE_REDACT=off OE_PROSE_REGISTER=off bun run verify` for a true baseline.
 
 ### 2026-07-06 — E2E harness complete
 - **Goal:** Close the feedback loop with a deterministic E2E suite.
