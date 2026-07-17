@@ -66,11 +66,6 @@ export const FINAL_CASE_ARCHETYPES: readonly string[] = [
   "low_evidence_owner_occupied",
 ];
 
-export const WITHHELD_EXTERNAL_EVIDENCE_NOTE =
-  "Realtor, VRBO, rental listing, platform, and market-status fields are intentionally " +
-  "excluded from canonical heuristics. They may be used as evaluation labels, " +
-  "but not as agent-visible input evidence for internal-only occupancy benchmarking.";
-
 export const DEFAULT_OUTPUT_FIELDS: readonly string[] = [
   "status",
   "matched_refs",

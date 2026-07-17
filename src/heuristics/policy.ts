@@ -12,6 +12,18 @@ export const SUBSTANTIVE_SOURCES: readonly string[] = [
   "utility",
 ];
 
+// Injected per-run via --evidence-file and exposed only to the packets that name them. Kept here,
+// beside SUBSTANTIVE_SOURCES, so the "deliberately not substantive" relationship is visible in one
+// file instead of being an invariant split across two.
+export const EXTERNAL_EVIDENCE_SOURCES = ["str_scan", "property_facts"] as const;
+
+export const EXTERNAL_EVIDENCE_NOTE =
+  "External evidence (STR scan results, property listing facts) is injected per-run via " +
+  "--evidence-file and is absent by default: with no payload the engine reasons only from " +
+  "the public-records graph, which is the benchmarking configuration. When present it is " +
+  "exposed only to packets naming these sources in input_sources, and is never counted in " +
+  "SUBSTANTIVE_SOURCES, source reliability weights, or deterministic synthesis.";
+
 export const SOURCE_RELIABILITY_WEIGHTS: Record<string, number> = {
   tax: 1.25,
   drive: 1.15,
