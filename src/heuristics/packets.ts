@@ -30,7 +30,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "single_family_clean_address_context",
       "tax_ownerrescount_portfolio_pattern",
     ],
-    input_sources: ["tax", "base"],
+    input_sources: ["tax", "base", "property_facts"],
     output_fields: [
       "residential_subject",
       "lien_exposure",
@@ -45,7 +45,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "Do not infer rental use from tax rows alone; identify whether the property is a viable residential subject " +
       "and whether ownership/exposure makes later occupancy evidence more important.",
     gate: makePacketGate({
-      source_scope: ["tax", "base"],
+      source_scope: ["tax", "base", "property_facts"],
       minimum_viability:
         "Run when tax or base mortgage/refi rows exist at the selected address.",
     }),
@@ -105,7 +105,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "utility_only_no_dates_discount",
       "trace_only_presence_discount",
     ],
-    input_sources: ["trace", "utility", "tax", "drive", "voter", "auto", "loan"],
+    input_sources: ["trace", "utility", "tax", "drive", "voter", "auto", "loan", "str_scan"],
     output_fields: [
       "owner_trace_or_utility_at_subject",
       "nonowner_trace_or_utility_at_subject",
@@ -121,7 +121,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "High risk requires dated/current non-owner utility evidence or corroboration from a stronger/current " +
       "source; owner utility plus tax/base/trace owner alignment is mitigating context.",
     gate: makePacketGate({
-      source_scope: ["trace", "utility", "tax", "drive", "voter", "auto", "loan"],
+      source_scope: ["trace", "utility", "tax", "drive", "voter", "auto", "loan", "str_scan"],
       minimum_viability:
         "Run when trace or utility rows exist, including trace-only/utility-only cases.",
     }),
@@ -170,7 +170,7 @@ export const PACKETS: readonly PacketDefinition[] = [
     description:
       "Review loan own/rent claims at the subject and owner loan records elsewhere.",
     atomic_heuristic_ids: ["loan_tenure_subject_analysis", "owner_loan_elsewhere"],
-    input_sources: ["loan", "tax"],
+    input_sources: ["loan", "tax", "str_scan"],
     output_fields: [
       "owner_loan_own_at_subject",
       "owner_loan_rent_conflict",
@@ -182,7 +182,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "Use loan own/rent values as explicit tenure claims, but check identity against tax owner before assigning " +
       "owner vs non-owner meaning.",
     gate: makePacketGate({
-      source_scope: ["loan", "tax"],
+      source_scope: ["loan", "tax", "str_scan"],
       minimum_viability:
         "Run when loan rows exist; tax rows improve owner/non-owner classification.",
     }),
@@ -223,7 +223,13 @@ export const PACKETS: readonly PacketDefinition[] = [
     description:
       "Reconcile all packet findings, evidence sparsity, ambiguity, and deterministic atomic synthesis into a final case view.",
     atomic_heuristic_ids: ["evidence_quality_and_synthesis"],
-    input_sources: SUBSTANTIVE_SOURCES,
+    // A COPY, never a mutation: SUBSTANTIVE_SOURCES is shared with row pre-seeding, the
+    // data-density gate and the reliability weights, and the external sources must never reach it.
+    // This packet runs concurrently with every other, so it cannot receive STR evidence
+    // transitively; blind, its prompt tells it to pick non_rental_absentee_owner when "rental-use
+    // evidence is absent", committing to the wrong archetype on the strongest cases. Safe to expose
+    // because it is score-neutral (score: 0, score_cap: 0).
+    input_sources: [...SUBSTANTIVE_SOURCES, "str_scan", "property_facts"],
     output_fields: [
       "data_density",
       "date_or_identity_gaps",
@@ -236,7 +242,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "Do not reread every source from scratch. Reconcile packet findings, highlight ambiguity and missing evidence, " +
       "and compare the agent-visible case against the deterministic atomic synthesis.",
     gate: makePacketGate({
-      source_scope: SUBSTANTIVE_SOURCES,
+      source_scope: [...SUBSTANTIVE_SOURCES, "str_scan", "property_facts"],
       minimum_viability:
         "Always run when any substantive source exists, and run for absence when evidence is sparse.",
       absence_sensitive: true,
