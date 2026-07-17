@@ -66,8 +66,19 @@
     "notes": "This plan. Set to passing only when E2E-1/E2E-2 pass and verify is green."
   },
   {
-    "id": "batch-cli",
+    "id": "external-evidence-wiring",
     "priority": 7,
+    "area": "agents",
+    "title": "External evidence wiring (STR scan results + property facts)",
+    "user_visible_behavior": "bun run run-address --evidence-file <json> feeds STR scan results and property facts to the packets that can reason with them; with no --evidence-file the engine runs blind exactly as before.",
+    "status": "passing",
+    "verification": "bun run verify; test/external_evidence_exposure.test.ts (the critical negative test); test/prose_external_evidence.test.ts (scrubber survival); test/e2e E2E-3 (parity guard) + E2E-4 (enriched); env -u ANTHROPIC_API_KEY bun test test/e2e; OE_PROSE_REDACT=1 bun run verify.",
+    "evidence": "OE_PROSE_REDACT=off OE_PROSE_REGISTER=off bun run verify: typecheck clean, lint clean (3 pre-existing warnings, 0 errors), 132 pass / 0 fail / 544 expect() across 23 files (baseline before this work: 56 pass / 0 fail). bun run e2e: 4 pass / 0 fail (E2E-1..E2E-4). env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY bun test test/e2e with .env moved aside: 4 pass / 0 fail (no key, no network). OE_PROSE_REDACT=1 OE_PROSE_REGISTER=off bun test: 131 pass / 1 fail — the 1 is 'proseRedactEnabled > is off by default', which fails by construction when the flag is on. Both acceptance guards observed FAILING when deliberately broken: adding str_scan to owner_identity_and_mailing's input_sources failed the critical negative test (solo compact, solo full, production group) + packets_exposure_map; making rental_market_summary_lines(null) return ['probe'] failed E2E-3 on the rental_market_summary assertion. Both reverted, green after.",
+    "notes": "Contract in src/agents/external_evidence.ts; exposure map locked by test/packets_exposure_map.test.ts. str_scan/property_facts are deliberately NOT in SUBSTANTIVE_SOURCES. evidence_map.property_types stays EMPTY on purpose — it feeds _has_portfolio_hint, a SCORING gate. KNOWN: with OE_PROSE_REGISTER=on the register glossary names str_scan/property_facts in EVERY prompt, so the critical negative test's bare-token markers fail under that flag — vocabulary only, no evidence content leaks. Unresolved by design; see PROGRESS.md."
+  },
+  {
+    "id": "batch-cli",
+    "priority": 8,
     "area": "cli",
     "title": "cli/run_investigation_batch.ts batch runner",
     "user_visible_behavior": "Run a cohort CSV of addresses and write per-run outputs.",
@@ -78,7 +89,7 @@
   },
   {
     "id": "judge-package",
-    "priority": 8,
+    "priority": 9,
     "area": "judge",
     "title": "Coverage judge (score assessments vs ground-truth)",
     "user_visible_behavior": "Judge a batch of assessments and emit data/reasoning coverage.",
@@ -89,7 +100,7 @@
   },
   {
     "id": "observability-summaries",
-    "priority": 9,
+    "priority": 10,
     "area": "observability",
     "title": "Batch CSV metric rollups",
     "user_visible_behavior": "Aggregate per-run metrics into a batch summary CSV.",
