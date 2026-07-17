@@ -38,6 +38,34 @@ package, observability/summaries.
   selective-exposure design held. Flags off: 132/0 unchanged. register on: 125/7 → 131/1. Both on:
   125/7 → 130/2, where the residual 1-2 are tautological (they assert the flags are off, so enabling
   one breaks them by construction) and predate this work.
+- **LIVE FUNCTIONAL VERIFICATION (2026-07-17) — actually run, not projected.** Graph service on
+  `:8000` over the prebuilt `graph.sqlite`; real Anthropic calls; address "1104 SPRING RUN RD".
+  **Enriched** (`--evidence-file`): exit 0, 1m46s, 133 KB report, 48 LLM calls / 45 GraphQL —
+  verdict `review`, raw 23, calibrated 18, archetype `ambiguous_nonowner_occupancy`.
+  **Blind control** (no flag): exit 0, 1m40s — verdict `review`, raw 16, calibrated 14, archetype
+  `owner_present_with_rental_indicators`.
+  - **Zero exposure leaks** across all 6 packets that ran. `case_quality_and_synthesis` cited BOTH
+    `str_scan` and `property_facts` — the packet argued hardest for, and the only one that used them.
+  - **Correction 2 proven live:** context `property_types` = `['single_family']` while
+    `evidence_map.property_types` = `[]`. The deterministic portfolio gate stayed blind; the
+    enrichment moved the score through reasoning, not a gate flip.
+  - **External refs led the list** (`str_scan`, `property_facts`, `tax`) — they survived `slice(0, 8)`.
+  - **Blind was genuinely blind:** empty `property_types` / `rental_market_summary`, no external
+    source in any `evidence_ref` or the `evidence_pack`.
+  - **Blind vs enriched** (same code, same address, same model — the payload is the only variable):
+    raw 16 → 23, calibrated 14 → 18, archetype `owner_present_with_rental_indicators` →
+    `ambiguous_nonowner_occupancy`, band `review` both. Notable: **the blind run reached "rental
+    indicators" from public records alone** — the original experiment's question, answered
+    affirmatively at n=1.
+  - **Known consequence confirmed:** the blind report carries the `str_scan`/`property_facts` tokens
+    in exactly 11 places, ALL in `investigation_plan.expected_sources` / `known_data_gaps` — the
+    fallback planner reading static `input_sources`, honestly recording "expected this source, got
+    nothing". Vocabulary, never evidence; the blind `evidence_map` and `evidence_pack` are clean. It
+    cannot reach the browser: X-011's `InvestigationReportDTO` drops `investigation_plan`.
+  - **Worth watching (n=1):** enrichment *raised* the score (+7) but made the archetype *less*
+    committal, and synthesis went `inconclusive` citing evidence ambiguity. A confirmed listing
+    intuitively argues toward `clear_absentee_rental`. One run proves nothing; if it repeats, the
+    synthesis packet's archetype rules deserve a look.
 - **Landmine for anyone running gates here:** the gitignored `.env` sets `OE_PROSE_REGISTER=on` and
   `OE_PROSE_REDACT=on`. Bun AUTO-LOADS `.env`, so `env -u` does not clear them. `bun run verify`
   therefore shows 2 pre-existing failures out of the box on this branch. Use
