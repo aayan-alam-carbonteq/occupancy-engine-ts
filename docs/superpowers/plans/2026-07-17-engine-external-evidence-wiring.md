@@ -81,13 +81,22 @@ git push origin main
 ```
 Expected: fast-forward, no merge commit, no conflicts.
 
-- [ ] **Step 4: Cut the branch and record the pre-change baseline**
+- [ ] **Step 4: Rebase the existing branch and record the pre-change baseline**
+
+**The branch already exists.** It was created at planning time and carries this plan document
+(commit `5901766`) on top of the **pre-fast-forward** `main`. Rebase it onto the now-current `main`
+rather than cutting a new one — it is a single docs commit, so this is conflict-free.
 
 ```bash
-git checkout -b feat/external-evidence   # base: main
+git checkout feat/external-evidence
+git rebase main                           # replays the plan doc onto the harness tree
 git status --short                        # expect: empty
 bun run verify                            # expect: GREEN before a single line changes
 ```
+
+`bun run verify` existing at all is the signal Step 3 worked: it does not exist on the pre-ff
+`main`. If it errors with "Script not found", the fast-forward did not happen — go back to Step 3.
+
 Record the exact pass/fail counts. The parity guard is measured against them.
 
 ---
