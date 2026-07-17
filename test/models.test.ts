@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HeuristicAgentResultSchema, HeuristicInterpretationSchema, EvidenceReferenceSchema } from "../src/agents/models.ts";
+import { AgentInvestigationRequestSchema, HeuristicAgentResultSchema, HeuristicInterpretationSchema, EvidenceReferenceSchema } from "../src/agents/models.ts";
 
 const base = {
   heuristic_id: "property_tax_context",
@@ -49,5 +49,33 @@ describe("HeuristicAgentResult schema validators", () => {
   test("EvidenceReference + interpretation defaults", () => {
     expect(EvidenceReferenceSchema.parse({ source: "tax" }).summary).toBe("");
     expect(HeuristicInterpretationSchema.parse({}).recommended_weight).toBe("low");
+  });
+});
+
+describe("AgentInvestigationRequest.external_evidence", () => {
+  const req = { address: "1104 SPRING RUN RD", graphql_url: "http://localhost:8000/graphql" };
+
+  test("defaults to null when absent — the absent payload IS the blind switch", () => {
+    expect(AgentInvestigationRequestSchema.parse(req).external_evidence).toBeNull();
+  });
+
+  test("accepts and validates a payload", () => {
+    const parsed = AgentInvestigationRequestSchema.parse({
+      ...req,
+      external_evidence: { str_listings: [{ platform: "airbnb", address_match_pct: 88 }] },
+    });
+    expect(parsed.external_evidence!.str_listings[0]!.platform).toBe("airbnb");
+  });
+
+  test("an empty-but-present payload is distinct from an absent one (negative evidence)", () => {
+    const parsed = AgentInvestigationRequestSchema.parse({ ...req, external_evidence: { scan_id: "scan_9" } });
+    expect(parsed.external_evidence).not.toBeNull();
+    expect(parsed.external_evidence!.str_listings).toEqual([]);
+  });
+
+  test("a malformed payload fails the request parse — no silent fallback to blind", () => {
+    expect(() =>
+      AgentInvestigationRequestSchema.parse({ ...req, external_evidence: { str_listings: [{ platform: "airbnb" }] } }),
+    ).toThrow();
   });
 });

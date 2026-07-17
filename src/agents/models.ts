@@ -1,5 +1,6 @@
 // Agent input/output schemas. Strict zod objects reject unknown keys; validators run via .superRefine.
 import { z } from "zod";
+import { ExternalEvidenceSchema } from "./external_evidence.ts";
 
 export const HEURISTIC_STATUS = ["triggered", "not_triggered", "inconclusive", "context", "mitigation", "quality", "error"] as const;
 export const HEURISTIC_DIRECTION = ["risk", "mitigation", "context", "quality"] as const;
@@ -193,6 +194,9 @@ export const AgentInvestigationRequestSchema = z
     metrics_debug_payloads: z.boolean().default(false),
     metrics_output_dir: z.string().nullish().default(null),
     batch_id: z.string().nullish().default(null),
+    // Absent => blind: the engine reasons only from the public-records graph, exactly as it does
+    // with no payload. Blind (benchmarking) and enriched (prod) run identical code.
+    external_evidence: ExternalEvidenceSchema.nullish().default(null),
   })
   .strict();
 export type AgentInvestigationRequest = z.infer<typeof AgentInvestigationRequestSchema>;
