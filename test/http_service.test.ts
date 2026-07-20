@@ -122,3 +122,49 @@ describe("POST /investigate — pre-stream rejections", () => {
     expect(body.error.issues.some((i: string) => i.startsWith("address:"))).toBe(true);
   });
 });
+
+describe("POST /investigate — backpressure", () => {
+  test("503 + Retry-After when the concurrency semaphore is saturated", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    engine = create_engine_server({
+      port: 0,
+      auth_token: TOKEN,
+      max_concurrency: 1,
+      investigate: async (_req, hooks) => {
+        // Emit one progress frame so Bun flushes the 200 headers — Bun 1.3.10 defers a streaming
+        // response's headers until the first chunk is enqueued, so without this `fetch(a)` below would
+        // block until release() (which only runs after that await), deadlocking. The frame flushes the
+        // headers while the stream stays open and the single permit stays held.
+        hooks.on_metric_event?.(
+          makeMetricEvent({ event_id: "hold", event_type: "span_start", run_id: "r", seq: 1 }),
+        );
+        await gate; // keep the single permit occupied until released
+        return realAssessment();
+      },
+    });
+
+    // Request A occupies the only permit. fetch resolves once the 200 headers are flushed (by the
+    // progress frame above); the permit was acquired synchronously in the handler before streaming.
+    const a = await fetch(`${engine.url}/investigate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(VALID_BODY),
+    });
+    expect(a.status).toBe(200);
+
+    // Request B finds the pool saturated → 503 with Retry-After.
+    const b = await fetch(`${engine.url}/investigate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(VALID_BODY),
+    });
+    expect(b.status).toBe(503);
+    expect(b.headers.get("retry-after")).toBe("2");
+
+    release();
+    await a.text(); // drain A so the permit is returned before teardown
+  });
+});
