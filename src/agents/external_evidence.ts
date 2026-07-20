@@ -24,6 +24,19 @@ export const StrListingSchema = z
   .strict();
 export type StrListing = z.infer<typeof StrListingSchema>;
 
+export const RentalListingSchema = z
+  .object({
+    // A realtor property_history "Listed for rent" event. Flat + .strict(), structurally parallel
+    // to StrListingSchema: the most-recent-2 events cross the contract as a flat array (NOT
+    // {count, recent[]}); the total count stays a backend-internal derivation value and never
+    // crosses. Introduces (with property_facts.flags) the first array shapes into this contract.
+    date: z.string(), // realtor event date, ISO-ish as returned, e.g. "2026-05-02"
+    price: z.number().nullish(), // monthly rent when present
+    source: z.string().nullish(), // event source_name, e.g. "AppfolioUnits" (a property manager)
+  })
+  .strict();
+export type RentalListing = z.infer<typeof RentalListingSchema>;
+
 export const PropertyFactsSchema = z
   .object({
     // "realtor" | "redfin" — which provider won the property-details waterfall. Not an enum, and
@@ -36,6 +49,13 @@ export const PropertyFactsSchema = z
     area_sqft: z.number().nullish(),
     lot_sqft: z.number().nullish(),
     listing_status: z.string().nullish(),
+    // X-014 transaction context (additive; the original 9 fields are unchanged): ownership-change
+    // recency, on-market recency, and distress state. flags is truthy labels only and defaults []
+    // so the clean case is 0 tokens and an absent payload stays byte-identical.
+    last_sold_date: z.string().nullish(),
+    last_sold_price: z.number().nullish(),
+    list_date: z.string().nullish(),
+    flags: z.array(z.string()).default([]),
     property_url: z.string().nullish(),
   })
   .strict();
@@ -46,6 +66,10 @@ export const ExternalEvidenceSchema = z
     scan_id: z.string().nullish(),
     scanned_at: z.string().nullish(),
     str_listings: z.array(StrListingSchema).default([]),
+    // X-014: realtor rental-listing history, sibling to str_listings and riding the same
+    // rental_market channel to the occupancy packets. Flat array of the most-recent-2 events.
+    // .default([]) preserves blind parity — an absent payload yields [].
+    rental_listings: z.array(RentalListingSchema).default([]),
     address_match_confidence: z.number().nullish(),
     property_facts: PropertyFactsSchema.nullish(),
   })
