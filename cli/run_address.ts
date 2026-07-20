@@ -4,6 +4,10 @@ import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { loadDotenv } from "../src/env.ts";
 import {
+  assessment_report_payload,
+  formatProgressLine,
+} from "../src/agents/investigation_wire.ts";
+import {
   type ExternalEvidence,
   ExternalEvidenceSchema,
 } from "../src/agents/external_evidence.ts";
@@ -30,7 +34,6 @@ export function reportDestination(
   return progress ? "stderr" : "stdout";
 }
 
-/** One `--progress` NDJSON line for a metric event (consumed by the backend's --progress translator). */
 /**
  * Read + validate the --evidence-file payload.
  *
@@ -61,31 +64,8 @@ export function readEvidenceFile(path: string): ExternalEvidence {
   return result.data;
 }
 
-export function formatProgressLine(event: MetricEvent): string {
-  const launched = event.metadata["launched_subagents"];
-  const workersTotal = event.metadata["workers_total"];
-  const workerIndex = event.metadata["worker_index"];
-  // span_start times the open; every other event type times its completion.
-  const ts = event.event_type === "span_start" ? event.started_at : event.ended_at;
-  return JSON.stringify({
-    progress: {
-      seq: event.seq,
-      event_id: event.event_id,
-      span_id: event.span_id,
-      parent_span_id: event.parent_span_id || null,
-      ts,
-      event_type: event.event_type,
-      phase: event.phase,
-      agent_id: event.agent_id,
-      heuristic_id: event.heuristic_id,
-      name: event.name,
-      workers_total: typeof workersTotal === "number" ? workersTotal : null,
-      worker_index: typeof workerIndex === "number" ? workerIndex : null,
-      status: event.status,
-      ...(typeof launched === "number" ? { count: launched } : {}),
-    },
-  });
-}
+// Re-exported so existing callers/tests keep importing it from the CLI entry.
+export { formatProgressLine } from "../src/agents/investigation_wire.ts";
 
 async function main(argv: string[]): Promise<number> {
   loadDotenv();
@@ -187,15 +167,14 @@ async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  // metrics_events is excluded from serialization — omit it from the output JSON.
-  const { metrics_events, ...assessmentOut } = assessment;
+  const assessmentOut = assessment_report_payload(assessment);
   const output = JSON.stringify(assessmentOut, null, 2);
   const out = values.out;
   const dest = reportDestination(values.progress, out);
   if (dest === "file") {
     mkdirSync(dirname(out!), { recursive: true });
     writeFileSync(out!, output + "\n", { encoding: "utf-8" });
-    const events = (metrics_events ?? []) as MetricEvent[];
+    const events = (assessment.metrics_events ?? []) as MetricEvent[];
     if (events.length > 0) {
       writeRunMetrics(out!, events, assessment.metrics as RunMetricsSummary);
     }
