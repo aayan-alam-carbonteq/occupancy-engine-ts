@@ -177,6 +177,11 @@ export const submit_investigation_plan = tool(async () => ({}), {
 
 // ── Orchestrator ──
 
+export interface InvestigationHooks {
+  on_metric_event?: (event: MetricEvent) => void;
+  should_cancel?: () => boolean;
+}
+
 export class AgentOrchestrator {
   graphql: GraphQLHttpTool;
   subagent: HeuristicSubagent;
@@ -184,6 +189,7 @@ export class AgentOrchestrator {
   max_concurrency: number;
   agent_timeout_seconds: number;
   on_metric_event: ((event: MetricEvent) => void) | null;
+  should_cancel: () => boolean;
 
   constructor(opts: {
     graphql: GraphQLHttpTool;
@@ -192,6 +198,7 @@ export class AgentOrchestrator {
     max_concurrency?: number;
     agent_timeout_seconds?: number;
     on_metric_event?: (event: MetricEvent) => void;
+    should_cancel?: () => boolean;
   }) {
     this.graphql = opts.graphql;
     this.subagent = opts.subagent;
@@ -199,6 +206,14 @@ export class AgentOrchestrator {
     this.max_concurrency = opts.max_concurrency ?? 8;
     this.agent_timeout_seconds = opts.agent_timeout_seconds ?? 120.0;
     this.on_metric_event = opts.on_metric_event ?? null;
+    this.should_cancel = opts.should_cancel ?? (() => false);
+  }
+
+  /** Site 4: between pipeline phases. Throw to unwind through the normal error path. */
+  private _ensure_not_cancelled(): void {
+    if (this.should_cancel()) {
+      throw new Error("investigation cancelled");
+    }
   }
 
   async investigate(request: AgentInvestigationRequest): Promise<OccupancyAgentAssessment> {
@@ -307,6 +322,7 @@ export class AgentOrchestrator {
     // The streamed worker unit is the bucket (one heuristic_worker span per bucket), so the
     // up-front total the UI counts against is buckets.length, not heuristics.length.
     const buckets = _bucket_by_group(heuristics);
+    this._ensure_not_cancelled();
     const results = await recorder.span(
       "heuristic_workers",
       {
@@ -321,6 +337,7 @@ export class AgentOrchestrator {
       const score_breakdown = scoreResults(results);
       return { conflicts, evidence_pack, score_breakdown };
     });
+    this._ensure_not_cancelled();
     const adjudication = await recorder.span(
       "master_adjudicator",
       { agent_id: "master_adjudicator", metadata: { raw_score: scoring.score_breakdown.final_score } },
@@ -557,6 +574,10 @@ export class AgentOrchestrator {
       const runnable = RunnableLambda.from<Record<string, any>, HeuristicAgentResult[]>(run_worker);
       await semaphore.acquire();
       try {
+        // Site 3: before launching each bucket. Cancelled buckets never invoke a subagent.
+        if (this.should_cancel()) {
+          return bucket.map((h) => error_result(h, "investigation cancelled before launch", graphql));
+        }
         return await withTimeout(
           runnable.invoke(
             {},
@@ -699,7 +720,7 @@ export class AgentOrchestrator {
 export async function investigate_address(
   request: AgentInvestigationRequest,
   subagent: HeuristicSubagent | null = null,
-  hooks: { on_metric_event?: (event: MetricEvent) => void } = {},
+  hooks: InvestigationHooks = {},
 ): Promise<OccupancyAgentAssessment> {
   const graphql = new GraphQLHttpTool(request.graphql_url, {
     timeout_seconds: request.graphql_timeout_seconds,
@@ -715,7 +736,7 @@ export async function investigate_address(
       timeout_seconds: request.agent_timeout_seconds,
     });
     const toolset = make_toolset(request.retrieval_mode, request.include_shortcuts);
-    resolvedSubagent = new RetrievalHeuristicSubagent(llm, toolset);
+    resolvedSubagent = new RetrievalHeuristicSubagent(llm, toolset, hooks.should_cancel);
     master_llm = llm;
   } else {
     resolvedSubagent = subagent;
@@ -728,6 +749,7 @@ export async function investigate_address(
     max_concurrency: request.max_concurrency,
     agent_timeout_seconds: request.agent_timeout_seconds,
     on_metric_event: hooks.on_metric_event,
+    should_cancel: hooks.should_cancel,
   });
   return await orchestrator.investigate(request);
 }

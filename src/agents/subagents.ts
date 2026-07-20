@@ -124,6 +124,7 @@ export class RetrievalHeuristicSubagent {
   constructor(
     public llm: any,
     public toolset: RetrievalToolset,
+    public should_cancel: () => boolean = () => false,
   ) {}
 
   async run(agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<HeuristicAgentResult> {
@@ -149,6 +150,9 @@ export class RetrievalHeuristicSubagent {
       4;
     const recorder = currentRecorder();
     for (let turn_index = 0; turn_index < max_turns; turn_index++) {
+      if (this.should_cancel()) {
+        throw new Error("investigation cancelled");
+      }
       const start = performance.now();
       const response = await model.invoke(
         messages,
@@ -265,6 +269,9 @@ export class RetrievalHeuristicSubagent {
     let group_error: string | null = null;
     try {
       for (let turn_index = 0; turn_index < max_turns; turn_index++) {
+        if (this.should_cancel()) {
+          throw new Error("investigation cancelled");
+        }
         const start = performance.now();
         const response = await model.invoke(
           messages,
