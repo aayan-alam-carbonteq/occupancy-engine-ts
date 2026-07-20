@@ -139,3 +139,46 @@ describe("rental_market_summary_lines folds realtor rental_listings (X-014)", ()
     ]);
   });
 });
+
+describe("_facts_summary renders the X-014 transaction fields (via external_evidence_refs)", () => {
+  test("the property_facts ref summary includes last_sold_*, list_date, and flags", () => {
+    const evidence = ExternalEvidenceSchema.parse({
+      scan_id: "scan_123",
+      property_facts: {
+        source_provider: "realtor",
+        listing_status: "for_rent",
+        last_sold_date: "2018-10-25",
+        last_sold_price: 195000,
+        list_date: "2026-05-02",
+        flags: ["foreclosure"],
+      },
+    });
+    const factsRef = external_evidence_refs(evidence).find((r) => r.source === "property_facts")!;
+    expect(factsRef.summary).toContain("last_sold_date=2018-10-25");
+    expect(factsRef.summary).toContain("last_sold_price=195000");
+    expect(factsRef.summary).toContain("list_date=2026-05-02");
+    expect(factsRef.summary).toContain("flags=foreclosure");
+  });
+
+  test("empty flags renders nothing — the clean case adds 0 tokens", () => {
+    const evidence = ExternalEvidenceSchema.parse({
+      scan_id: "scan_123",
+      property_facts: { source_provider: "realtor", flags: [] },
+    });
+    const factsRef = external_evidence_refs(evidence).find((r) => r.source === "property_facts")!;
+    expect(factsRef.summary).not.toContain("flags=");
+  });
+
+  test("multiple flags are comma-joined; rental_listings NEVER appears in the facts channel", () => {
+    const evidence = ExternalEvidenceSchema.parse({
+      scan_id: "scan_123",
+      rental_listings: [{ date: "2026-05-02", price: 2300, source: "AppfolioUnits" }],
+      property_facts: { source_provider: "realtor", flags: ["foreclosure", "short_sale"] },
+    });
+    const factsRef = external_evidence_refs(evidence).find((r) => r.source === "property_facts")!;
+    expect(factsRef.summary).toContain("flags=foreclosure,short_sale");
+    // rental history belongs ONLY to the rental channel, never the property_facts ref
+    expect(factsRef.summary).not.toContain("AppfolioUnits");
+    expect(factsRef.summary).not.toContain("listed for rent");
+  });
+});

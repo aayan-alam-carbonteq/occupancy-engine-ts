@@ -139,12 +139,19 @@ function _facts_summary(facts: PropertyFacts): string {
     ["area_sqft", facts.area_sqft],
     ["lot_sqft", facts.lot_sqft],
     ["listing_status", facts.listing_status],
+    ["last_sold_date", facts.last_sold_date],
+    ["last_sold_price", facts.last_sold_price],
+    ["list_date", facts.list_date],
     ["property_url", facts.property_url],
   ];
   for (const [key, value] of fields) {
     if (value !== null && value !== undefined && value !== "") {
       parts.push(`${key}=${value}`);
     }
+  }
+  // flags is an array (default []); render only when non-empty so the clean case adds nothing.
+  if (facts.flags.length > 0) {
+    parts.push(`flags=${facts.flags.join(",")}`);
   }
   return parts.join("; ");
 }
