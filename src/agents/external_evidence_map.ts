@@ -4,7 +4,7 @@
 //
 // Separate from external_evidence.ts so the contract module stays free of a
 // models.ts <-> external_evidence.ts import cycle.
-import type { ExternalEvidence, PropertyFacts, StrListing } from "./external_evidence.ts";
+import type { ExternalEvidence, PropertyFacts, RentalListing, StrListing } from "./external_evidence.ts";
 import { type EvidenceReference, EvidenceReferenceSchema } from "./models.ts";
 
 // Stated outright rather than left to the model to infer from the field name.
@@ -36,20 +36,57 @@ function _listing_line(listing: StrListing): string {
   return `Short-term rental listing found on ${listing.platform}${detail}. Address match ${_num(listing.address_match_pct)}%.`;
 }
 
+/** Trim a realtor event date to year-month for the summary line: "2026-05-02" -> "2026-05". */
+function _year_month(date: string): string {
+  return date.slice(0, 7);
+}
+
+/** One realtor rental event: "2026-05 $2300", or "2026-05" when no price is present. */
+function _rental_event(listing: RentalListing): string {
+  const ym = _year_month(listing.date);
+  return typeof listing.price === "number" ? `${ym} $${listing.price}` : ym;
+}
+
+/**
+ * The realtor rental-history line, folded into rental_market_summary beside the STR-scan listings:
+ * both are rental-market signals gated behind the SAME str_scan token, so a realtor "Listed for
+ * rent" event lands next to the Airbnb/Vrbo line as a second, independent source corroborating
+ * "rented". The source is the property-manager name (e.g. AppfolioUnits); when several events share
+ * it, it is cited once.
+ */
+function _rental_history_line(listings: RentalListing[]): string {
+  const events = listings.map((listing) => _rental_event(listing)).join(", ");
+  const sources: string[] = [];
+  for (const listing of listings) {
+    if (typeof listing.source === "string" && listing.source !== "" && !sources.includes(listing.source)) {
+      sources.push(listing.source);
+    }
+  }
+  const suffix = sources.length > 0 ? ` — source ${sources.join(", ")}` : "";
+  return `Property listed for rent (realtor history): ${events}${suffix}.`;
+}
+
 /** The rental_market_summary lines — the listing channel, gated behind str_scan scope. */
 export function rental_market_summary_lines(evidence: ExternalEvidence | null): string[] {
   if (evidence === null) {
     return [];
   }
-  if (evidence.str_listings.length === 0) {
-    return [NO_LISTINGS_LINE];
+  const lines: string[] =
+    evidence.str_listings.length === 0
+      ? [NO_LISTINGS_LINE]
+      : evidence.str_listings.map((listing) => _listing_line(listing));
+  if (evidence.str_listings.length > 0) {
+    lines.push(ADDRESS_MATCH_SEMANTICS);
+    if (typeof evidence.address_match_confidence === "number") {
+      lines.push(
+        `Scan-level address-match confidence ${_num(evidence.address_match_confidence)}% (0-100, same semantics).`,
+      );
+    }
   }
-  const lines = evidence.str_listings.map((listing) => _listing_line(listing));
-  lines.push(ADDRESS_MATCH_SEMANTICS);
-  if (typeof evidence.address_match_confidence === "number") {
-    lines.push(
-      `Scan-level address-match confidence ${_num(evidence.address_match_confidence)}% (0-100, same semantics).`,
-    );
+  // Realtor rental history: an INDEPENDENT rental-market source, folded regardless of str_listings
+  // (the 1104 case has realtor history but no matched STR listing). Rides the same str_scan gate.
+  if (evidence.rental_listings.length > 0) {
+    lines.push(_rental_history_line(evidence.rental_listings));
   }
   return lines;
 }

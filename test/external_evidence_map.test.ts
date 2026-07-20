@@ -95,3 +95,47 @@ describe("external_evidence_refs", () => {
     expect(external_evidence_refs(ExternalEvidenceSchema.parse({ scan_id: "scan_9" }))).toEqual([]);
   });
 });
+
+describe("rental_market_summary_lines folds realtor rental_listings (X-014)", () => {
+  test("emits the pinned realtor-history line beside the STR listing", () => {
+    const evidence = ExternalEvidenceSchema.parse({
+      str_listings: [{ platform: "vrbo", bedrooms: 3, baths: 2, guests: 6, address_match_pct: 92 }],
+      address_match_confidence: 83,
+      rental_listings: [
+        { date: "2026-05-02", price: 2300, source: "AppfolioUnits" },
+        { date: "2025-03-20", price: 2195, source: "AppfolioUnits" },
+      ],
+    });
+    const lines = rental_market_summary_lines(evidence);
+    expect(lines).toContain(
+      "Property listed for rent (realtor history): 2026-05 $2300, 2025-03 $2195 — source AppfolioUnits.",
+    );
+    // the STR line and semantics are unchanged
+    expect(lines[0]).toBe("Short-term rental listing found on vrbo: 3 bd / 2 ba / sleeps 6. Address match 92%.");
+    expect(lines.some((l) => l.includes("not a probability that the property is a rental"))).toBe(true);
+  });
+
+  test("realtor history is emitted even when no STR listing matched — the 1104 case", () => {
+    const evidence = ExternalEvidenceSchema.parse({
+      rental_listings: [{ date: "2026-05-02", price: 2300, source: "AppfolioUnits" }],
+    });
+    // the STR-negative line AND the realtor-positive line coexist (two independent facts)
+    expect(rental_market_summary_lines(evidence)).toEqual([
+      "All platforms scanned; no short-term rental listings matched this property.",
+      "Property listed for rent (realtor history): 2026-05 $2300 — source AppfolioUnits.",
+    ]);
+  });
+
+  test("a rental event with no price renders the year-month alone; no source omits the suffix", () => {
+    const evidence = ExternalEvidenceSchema.parse({ rental_listings: [{ date: "2024-11-01" }] });
+    expect(rental_market_summary_lines(evidence)).toContain(
+      "Property listed for rent (realtor history): 2024-11.",
+    );
+  });
+
+  test("empty rental_listings adds nothing — the existing empty-payload behavior is byte-identical", () => {
+    expect(rental_market_summary_lines(ExternalEvidenceSchema.parse({ scan_id: "scan_9" }))).toEqual([
+      "All platforms scanned; no short-term rental listings matched this property.",
+    ]);
+  });
+});
