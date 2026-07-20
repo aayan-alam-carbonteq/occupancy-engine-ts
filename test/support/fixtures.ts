@@ -33,6 +33,11 @@ export function externalEvidenceFixture(): ExternalEvidence {
       },
     ],
     address_match_confidence: 83,
+    // realtor rental history for 1104 (two "Listed for rent" events via a property manager)
+    rental_listings: [
+      { date: "2026-05-02", price: 2300, source: "AppfolioUnits" },
+      { date: "2025-03-20", price: 2195, source: "AppfolioUnits" },
+    ],
     property_facts: {
       source_provider: "realtor",
       home_type: "single_family",
@@ -42,6 +47,11 @@ export function externalEvidenceFixture(): ExternalEvidence {
       area_sqft: 1840,
       lot_sqft: 7200,
       listing_status: "for_rent",
+      // X-014 transaction context (from the 1104 probe: sold 2018-10-25 for $195k, listed 2026-05-02)
+      last_sold_date: "2018-10-25",
+      last_sold_price: 195000,
+      list_date: "2026-05-02",
+      flags: [],
       property_url: "https://www.realtor.com/realestateandhomes-detail/1104-Spring-Run-Rd",
     },
   });
