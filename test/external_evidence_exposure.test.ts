@@ -20,6 +20,13 @@ import { externalEvidenceFixture } from "./support/fixtures.ts";
 // Every surface the payload could leak through: the source token, the listing prose, the platform
 // name, and the listing url fragment.
 const STR_MARKERS = ["str_scan", "Short-term rental listing", "vrbo", "1234567"];
+// rental_listings rides the SAME str_scan gate as the STR line, so it is excluded from
+// owner_identity at EVERY level (solo, full, and the production group).
+const RENTAL_MARKERS = ["Property listed for rent (realtor history)", "AppfolioUnits"];
+// the X-014 property_facts transaction fields. Excluded from a SOLO owner_identity prompt (which
+// gets no property_facts at all); they DO reach its GROUP prompt via property_tax_context — a
+// decision of record asserted below.
+const FACTS_TXN_MARKERS = ["last_sold_date", "last_sold_price", "list_date"];
 
 const SOURCE_COUNTS = { tax: 2, base: 1, trace: 1, utility: 1, loan: 1, drive: 1, voter: 0, auto: 0 };
 
@@ -82,27 +89,27 @@ function renderGroup(
   );
 }
 
-describe("THE CRITICAL NEGATIVE TEST: owner_identity_and_mailing never sees str_scan", () => {
-  test("solo prompt, compact profile", () => {
+describe("THE CRITICAL NEGATIVE TEST: owner_identity_and_mailing never sees the rental channel", () => {
+  test("solo prompt, compact profile — no STR, no realtor history, no transaction facts", () => {
     const prompt = renderSolo("owner_identity_and_mailing");
-    for (const marker of STR_MARKERS) {
+    for (const marker of [...STR_MARKERS, ...RENTAL_MARKERS, ...FACTS_TXN_MARKERS]) {
       expect(prompt).not.toContain(marker);
     }
   });
 
   test("solo prompt, full profile — profile is verbosity, not authorization", () => {
     const prompt = renderSolo("owner_identity_and_mailing", "full");
-    for (const marker of STR_MARKERS) {
+    for (const marker of [...STR_MARKERS, ...RENTAL_MARKERS, ...FACTS_TXN_MARKERS]) {
       expect(prompt).not.toContain(marker);
     }
   });
 
-  test("its PRODUCTION group prompt — the bucket union must not leak str_scan", () => {
+  test("its PRODUCTION group prompt — the bucket union carries property_facts but NOT the rental channel", () => {
     // _bucket_by_group pairs it with property_tax_context and run_group unions their scopes. The
-    // exposure map is chosen so that union carries property_facts but NOT str_scan. This is the
-    // assertion that makes the map's collapse-critical exclusion real in production.
+    // union carries property_facts (so the transaction facts DO appear — see KNOWN CONSEQUENCES)
+    // but NOT str_scan, so the realtor rental history is withheld here too.
     const prompt = renderGroup(["property_tax_context", "owner_identity_and_mailing"]);
-    for (const marker of STR_MARKERS) {
+    for (const marker of [...STR_MARKERS, ...RENTAL_MARKERS]) {
       expect(prompt).not.toContain(marker);
     }
   });
@@ -142,6 +149,14 @@ describe("KNOWN CONSEQUENCES of the bucket union (decisions of record, not surpr
       expect(prompt).not.toContain(marker);
     }
   });
+
+  test("owner_identity_and_mailing DOES see the transaction facts via its bucket-mate", () => {
+    // Same decision of record as source_provider=realtor: property facts are not the smoking gun,
+    // and the packet is excluded for having no owner identity to reason with — not for collapse risk.
+    const prompt = renderGroup(["property_tax_context", "owner_identity_and_mailing"]);
+    expect(prompt).toContain("last_sold_date=2018-10-25");
+    expect(prompt).toContain("list_date=2026-05-02");
+  });
 });
 
 describe("the exposed packets do see their sources", () => {
@@ -180,5 +195,20 @@ describe("the exposed packets do see their sources", () => {
 
   test("the property type reaches even an unexposed packet (context-level, global)", () => {
     expect(renderSolo("owner_identity_and_mailing")).toContain("single_family");
+  });
+
+  test("subject_occupancy_surfaces sees the realtor rental history beside the STR line", () => {
+    const prompt = renderSolo("subject_occupancy_surfaces");
+    expect(prompt).toContain(
+      "Property listed for rent (realtor history): 2026-05 $2300, 2025-03 $2195 — source AppfolioUnits.",
+    );
+  });
+
+  test("property_tax_context sees the transaction facts but NOT the rental channel", () => {
+    const prompt = renderSolo("property_tax_context");
+    expect(prompt).toContain("last_sold_date=2018-10-25");
+    expect(prompt).toContain("list_date=2026-05-02");
+    expect(prompt).not.toContain("Property listed for rent");
+    expect(prompt).not.toContain("AppfolioUnits");
   });
 });
