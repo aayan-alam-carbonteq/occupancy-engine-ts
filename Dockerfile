@@ -3,5 +3,6 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY . .
-# The agent is a job: args are passed at `docker compose run agent <args>`.
-ENTRYPOINT ["bun", "run", "cli/run_address.ts"]
+# The engine runs as a long-running HTTP service exposing POST /investigate.
+EXPOSE 8787
+ENTRYPOINT ["bun", "run", "cli/serve.ts"]
