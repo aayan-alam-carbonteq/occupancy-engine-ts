@@ -31,3 +31,24 @@ describe("the prose scrubber must not eat external evidence", () => {
     expect(detect_leaks("The str_scan source shows a match.").join(" ")).toContain("str_scan");
   });
 });
+
+const REALTOR_FINDING =
+  "Realtor history shows the home was listed for rent in 2026-05 ($2300) and 2025-03 ($2195), " +
+  "sourced from AppfolioUnits; a foreclosure flag was present on the listing.";
+
+describe("the prose scrubber must not eat realtor rental-history evidence (X-014)", () => {
+  test("the property-manager source name and rental prose survive redaction intact", () => {
+    const scrubbed = redact_prose(REALTOR_FINDING);
+    expect(scrubbed).toContain("AppfolioUnits");
+    expect(scrubbed).toContain("listed for rent");
+    expect(scrubbed).toContain("foreclosure");
+    expect(scrubbed).toContain("$2300");
+  });
+
+  test("none of that evidence content is reported as a leak", () => {
+    const leaks = detect_leaks(REALTOR_FINDING).join(" ");
+    expect(leaks).not.toContain("AppfolioUnits");
+    expect(leaks).not.toContain("foreclosure");
+    expect(leaks).not.toContain("listed");
+  });
+});
