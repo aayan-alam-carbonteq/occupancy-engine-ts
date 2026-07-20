@@ -117,6 +117,8 @@ describe("E2E-3: the parity guard — no payload, behavior unchanged", () => {
       expect(subagent.all()).not.toContain("str_scan; platform=");
       expect(subagent.all()).not.toContain("property_facts; source_provider=");
       expect(subagent.all()).not.toContain("not a probability that the property is a rental");
+      expect(subagent.all()).not.toContain("Property listed for rent");
+      expect(subagent.all()).not.toContain("last_sold_date=");
 
       // 4. and the assessment still assembles exactly as E2E-1 asserts
       expect(a.resolved_address.selected).not.toBeNull();
@@ -161,6 +163,11 @@ describe("E2E-4: enriched — a payload reaches exactly the exposed packets", ()
       expect(subagent.prompts.has("case_quality_and_synthesis")).toBe(true);
       expect(subagent.prompts.get("case_quality_and_synthesis")!).toContain("Short-term rental listing found on vrbo");
       expect(subagent.prompts.get("case_quality_and_synthesis")!).toContain("source_provider=realtor");
+      // the realtor rental history reaches the synthesis packet beside the STR line
+      expect(subagent.prompts.get("case_quality_and_synthesis")!).toContain(
+        "Property listed for rent (realtor history): 2026-05 $2300, 2025-03 $2195 — source AppfolioUnits.",
+      );
+      expect(subagent.prompts.get("case_quality_and_synthesis")!).toContain("last_sold_date=2018-10-25");
 
       // and every packet that DID run obeys the exposure map. Solo dispatch (FakeSubagent has no
       // run_group), so this asserts the per-packet scope, not the bucket union — which
@@ -175,6 +182,16 @@ describe("E2E-4: enriched — a payload reaches exactly the exposed packets", ()
           expect([packet_id, prompt.includes("vrbo")]).toEqual([packet_id, false]);
         }
         expect([packet_id, prompt.includes("source_provider=realtor")]).toEqual([packet_id, FACTS_EXPOSED.has(packet_id)]);
+        if (STR_EXPOSED.has(packet_id)) {
+          expect([packet_id, prompt.includes("Property listed for rent (realtor history)")]).toEqual([packet_id, true]);
+        } else {
+          expect([packet_id, prompt.includes("Property listed for rent")]).toEqual([packet_id, false]);
+          expect([packet_id, prompt.includes("AppfolioUnits")]).toEqual([packet_id, false]);
+        }
+        expect([packet_id, prompt.includes("last_sold_date=2018-10-25")]).toEqual([
+          packet_id,
+          FACTS_EXPOSED.has(packet_id),
+        ]);
       }
 
       expect(a.heuristics.every((h: any) => h.status !== "error")).toBe(true);
