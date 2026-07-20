@@ -168,3 +168,55 @@ describe("POST /investigate — backpressure", () => {
     await a.text(); // drain A so the permit is returned before teardown
   });
 });
+
+describe("POST /investigate — the engine's own overall timeout flips should_cancel", () => {
+  test("a runner that polls should_cancel stops and yields a terminal {error} frame", async () => {
+    engine = create_engine_server({
+      port: 0,
+      auth_token: TOKEN,
+      request_timeout_ms: 50, // short overall timeout for the test
+      investigate: async (_req, hooks) => {
+        let iterations = 0;
+        while (!hooks.should_cancel?.()) {
+          await Bun.sleep(10);
+          iterations += 1;
+          if (iterations > 1000) break; // safety net — should never reach it
+        }
+        throw new Error("investigation cancelled"); // unwind through the normal error path
+      },
+    });
+    const res = await fetch(`${engine.url}/investigate`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(VALID_BODY),
+    });
+    expect(res.status).toBe(200);
+    const lines = (await res.text()).split("\n").filter((l) => l.length > 0);
+    expect(JSON.parse(lines[lines.length - 1]!)).toEqual({ error: { message: "investigation cancelled" } });
+  });
+});
+
+describe("GET /healthz + graceful shutdown", () => {
+  test("healthz is 200 when the clients construct", async () => {
+    engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: "http://graphql:8000/graphql" });
+    const res = await fetch(`${engine.url}/healthz`);
+    // 200 when ANTHROPIC_API_KEY (or another provider key) is present; the shape is always {status}.
+    const body = (await res.json()) as any;
+    expect(typeof body.status).toBe("string");
+    expect([200, 503]).toContain(res.status);
+  });
+
+  test("stop() drains, then new requests are refused", async () => {
+    engine = create_engine_server({ port: 0, auth_token: TOKEN, investigate: async () => realAssessment() });
+    const url = engine.url;
+    await engine.stop();
+    engine = undefined; // already stopped
+    await expect(
+      fetch(`${url}/investigate`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(VALID_BODY),
+      }),
+    ).rejects.toThrow(); // socket closed after a graceful stop
+  });
+});

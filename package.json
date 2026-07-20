@@ -14,7 +14,8 @@
     "lint:fix": "biome check --write .",
     "verify": "bun run typecheck && bun run lint && bun test",
     "run-address": "bun run cli/run_address.ts",
-    "run-batch": "bun run cli/run_investigation_batch.ts"
+    "run-batch": "bun run cli/run_investigation_batch.ts",
+    "serve": "bun run cli/serve.ts"
   },
   "dependencies": {
     "@langchain/anthropic": "^0.3.0",
