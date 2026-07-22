@@ -67,6 +67,7 @@ import {
   sanitize_adjudication_prose,
   sanitize_result_prose,
 } from "./prose_redaction.ts";
+import { humanize_evidence_map_for_display } from "./prose_display.ts";
 import type { MetricEvent } from "../observability/models.ts";
 
 const PREFLIGHT_QUERY = `
@@ -348,8 +349,15 @@ export class AgentOrchestrator {
     // and BEFORE the report is assembled. Running it after adjudication keeps it a pure output
     // filter that never perturbs the adjudicator's inputs (so the redact-only experiment arm is
     // verdict-neutral); running it before build_report lets the derived report inherit clean text.
-    const finalResults = proseRedactEnabled() ? results.map((r) => sanitize_result_prose(r)) : results;
-    const finalAdjudication = proseRedactEnabled() ? sanitize_adjudication_prose(adjudication) : adjudication;
+    const redactOn = proseRedactEnabled();
+    const finalResults = redactOn ? results.map((r) => sanitize_result_prose(r)) : results;
+    const finalAdjudication = redactOn ? sanitize_adjudication_prose(adjudication) : adjudication;
+    // Deterministic evidence_map strings are ALSO human-facing (frontend renders owner_summaries,
+    // people_at_address, nonowner_occupancy_hints). Humanize a DISPLAY COPY under the same gate;
+    // `context` (the prompt-grounding copy) was consumed earlier, so this cannot change coverage.
+    const displayContext = redactOn
+      ? { ...context, evidence_map: humanize_evidence_map_for_display(context.evidence_map) }
+      : context;
 
     const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
     caveats.push(..._global_caveats(context, finalResults));
@@ -364,6 +372,7 @@ export class AgentOrchestrator {
       results: finalResults,
       adjudication: finalAdjudication,
       report,
+      display_evidence_map: displayContext.evidence_map,
     });
     const metrics_summary = recorder.summary();
     const assessment: OccupancyAgentAssessment = {
@@ -379,7 +388,7 @@ export class AgentOrchestrator {
         thread_id: trace.thread_id,
         address_key: trace.address_key,
       },
-      resolved_address: context,
+      resolved_address: displayContext,
       score_breakdown: scoring.score_breakdown,
       adjudication: finalAdjudication,
       investigation_plan,
@@ -1192,8 +1201,9 @@ function _agent_metrics(opts: {
   results: HeuristicAgentResult[];
   adjudication: CaseAdjudication;
   report: string;
+  display_evidence_map: CaseEvidenceMap;
 }): Record<string, any> {
-  const { candidate_count, gated_count, workers_total, plan, results, adjudication, report } = opts;
+  const { candidate_count, gated_count, workers_total, plan, results, adjudication, report, display_evidence_map } = opts;
   // Always measured (both flags on and off) so the A/B can read leakage before vs after.
   const prose_texts = [
     ...results.flatMap((r) => [r.finding, ...r.caveats, ...r.missing_evidence]),
@@ -1202,6 +1212,9 @@ function _agent_metrics(opts: {
     ...adjudication.why_not_lower,
     ...adjudication.score_adjustments.map((sa) => sa.reason),
     report,
+    ...display_evidence_map.owner_summaries.flatMap((o) => o.summaries),
+    ...display_evidence_map.people_at_address.flatMap((p) => p.summaries),
+    ...display_evidence_map.nonowner_occupancy_hints,
   ];
   return {
     candidate_packets: candidate_count,
