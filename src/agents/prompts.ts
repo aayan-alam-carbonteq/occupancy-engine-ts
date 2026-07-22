@@ -62,7 +62,7 @@ const _PROSE_REGISTER_ENABLED = ["1", "true", "yes", "on"].includes(
 
 // Plain-language names for each source, shared with the reader in the register so the model has
 // consistent replacement language for internal record types.
-const SOURCE_HUMAN_PHRASES: Record<string, string> = {
+export const SOURCE_HUMAN_PHRASES: Record<string, string> = {
   tax: "property-tax record",
   base: "identity/residence record",
   utility: "utility service record",
