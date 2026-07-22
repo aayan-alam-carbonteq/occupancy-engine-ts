@@ -6,6 +6,7 @@ import {
   humanize_owner_summary,
   humanize_person_summary,
 } from "../src/agents/prose_display.ts";
+import { count_prose_leaks, detect_leaks, redact_prose } from "../src/agents/prose_redaction.ts";
 
 describe("humanize_person_summary", () => {
   test("renders a loan record with renter tenure, dropping address/dob", () => {
@@ -107,5 +108,26 @@ describe("humanize_evidence_map_for_display", () => {
     const snapshot = structuredClone(input);
     humanize_evidence_map_for_display(input);
     expect(input).toEqual(snapshot);
+  });
+});
+
+describe("end-to-end: baseline demo leaks are eliminated", () => {
+  test("model-prose leaks are gone after redact_prose", () => {
+    const finding =
+      "Tax owner WINKFIELD (TAX:68344); DONALD R CAIN holds four loan records (LOAN:74141-74144); " +
+      "residential=True; the situs address shows own_rent=0.";
+    expect(count_prose_leaks([redact_prose(finding)])).toBe(0);
+  });
+
+  test("evidence_map display strings are leak-free after humanization", () => {
+    const out = humanize_evidence_map_for_display(sampleMap());
+    const strings = [
+      ...out.owner_summaries.flatMap((o) => o.summaries),
+      ...out.people_at_address.flatMap((p) => p.summaries),
+      ...out.nonowner_occupancy_hints,
+    ];
+    for (const s of strings) {
+      expect(detect_leaks(s)).toEqual([]);
+    }
   });
 });
