@@ -297,13 +297,13 @@ export function redact_prose(text: string): string {
   return out.replace(/\s{2,}/g, " ").replace(/\s+([.,;])/g, "$1").trim();
 }
 
-// Gated so nothing changes until explicitly enabled (mirrors OE_SYNTH_AUGMENT / OE_PROMPT_CACHE).
-const _REDACT_ENABLED = ["1", "true", "yes", "on"].includes(
-  (process.env.OE_PROSE_REDACT ?? "").trim().toLowerCase(),
-);
-
+// Default-ON: the scrubber is coverage-neutral by construction, so it ships enabled. Disable
+// only with an explicit falsy value (0|false|no|off) to capture the baseline experiment arm.
+// Read at call time so tests and per-run env can flip it. (Contrast OE_PROSE_REGISTER, the
+// prompt lever with real coverage risk, which stays default-off.)
 export function proseRedactEnabled(): boolean {
-  return _REDACT_ENABLED;
+  const raw = (process.env.OE_PROSE_REDACT ?? "").trim().toLowerCase();
+  return !["0", "false", "no", "off"].includes(raw);
 }
 
 /** Total identifier leaks across all strings (used for the always-on prose_leak_count metric). */

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { detect_leaks, redact_prose } from "../src/agents/prose_redaction.ts";
 import {
   count_prose_leaks,
@@ -137,8 +137,20 @@ describe("sanitize_adjudication_prose", () => {
 });
 
 describe("proseRedactEnabled", () => {
-  test("is off by default", () => {
-    expect(proseRedactEnabled()).toBe(false);
+  const original = process.env.OE_PROSE_REDACT;
+  afterEach(() => {
+    if (original === undefined) delete process.env.OE_PROSE_REDACT;
+    else process.env.OE_PROSE_REDACT = original;
+  });
+  test("is on by default (unset)", () => {
+    delete process.env.OE_PROSE_REDACT;
+    expect(proseRedactEnabled()).toBe(true);
+  });
+  test("can be explicitly disabled for the baseline arm", () => {
+    for (const v of ["0", "false", "no", "off"]) {
+      process.env.OE_PROSE_REDACT = v;
+      expect(proseRedactEnabled()).toBe(false);
+    }
   });
 });
 
