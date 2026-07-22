@@ -182,6 +182,33 @@ const TOKEN_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
 // "identifier = value" / "identifier=value". Value stops before whitespace or sentence punctuation.
 const ASSIGN_RE = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s,;.)]+)/g;
 
+// Source-tag CITATIONS the model embeds inline, e.g. "TAX:68344", "LOAN:74141-74144".
+// These are not identifier-shaped, so CAMEL_RE/SNAKE_RE miss them. The digits/ranges are the
+// machine anchor — it lives in the structured evidence fields, so we strip it from prose entirely.
+const SOURCE_TAGS = "TAX|LOAN|BASE|TRACE|UTILITY|VOTER|DRIVE|AUTO|CRIMINAL";
+const SOURCE_REF_RE = new RegExp(`\\b(?:${SOURCE_TAGS}):\\d[\\d-]*`, "gi");
+// A parenthetical wrapping ONLY source-tag citations (optionally comma/space separated), e.g.
+// " (TAX:68344)" or " (LOAN:74141-74144)". Removed whole so no empty "()" is left behind.
+const SOURCE_REF_PARENS_RE = new RegExp(
+  `\\s*\\((?:${SOURCE_TAGS}):\\d[\\d-]*(?:[\\s,]+(?:${SOURCE_TAGS}):\\d[\\d-]*)*\\)`,
+  "gi",
+);
+// Row / record ids: "rowid 1296784" and opaque trace codes like "cd113530" (letter prefix + a
+// long digit run). Both are internal record references, not meaningful to a human reader.
+const ROWID_RE = /\browid\s+\d+/gi;
+const TRACE_CODE_RE = /\bcd\d{4,}\b/gi;
+// Bare `word=value` where the value is a raw data literal (boolean / null / number / quoted /
+// ALL-CAPS code). The existing ASSIGN_RE only fires when the LEFT side is identifier-shaped, so
+// "residential=True" / "condo=False" slip through. Collapse to the plain word, dropping "=value".
+const BARE_ASSIGN_RE =
+  /\b([A-Za-z][A-Za-z0-9]*)=(?:"[^"]*"|'[^']*'|True|False|None|null|NULL|-?\d[\d,.]*|[A-Z][A-Z0-9_]+)\b/g;
+// Obscure legal jargon → plain wording. Standard finance terms (LTV, CLTV) are deliberately kept.
+const JARGON_PHRASES: Record<string, string> = {
+  "situs address": "subject address",
+  situs: "subject property",
+};
+const JARGON_RE = /\bsitus(?:\s+address)?\b/gi;
+
 // Object.prototype member names (constructor, toString, hasOwnProperty, valueOf, …). Several are
 // camelCase-shaped (toString, hasOwnProperty) and would otherwise trip CAMEL_RE; "constructor"
 // additionally resolves through the prototype chain. They are ordinary English in prose ("the
@@ -214,12 +241,25 @@ export function detect_leaks(text: string): string[] {
   }
   const found: string[] = [];
   const seen = new Set<string>();
-  for (const match of text.matchAll(TOKEN_RE)) {
-    const token = match[0];
+  const push = (token: string) => {
     const key = token.toLowerCase();
-    if (isIdentifierToken(token) && !seen.has(key)) {
+    if (!seen.has(key)) {
       seen.add(key);
       found.push(token);
+    }
+  };
+  for (const re of [SOURCE_REF_RE, ROWID_RE, TRACE_CODE_RE, JARGON_RE]) {
+    for (const m of text.matchAll(re)) {
+      push(m[0]);
+    }
+  }
+  for (const m of text.matchAll(BARE_ASSIGN_RE)) {
+    push(m[0]);
+  }
+  for (const match of text.matchAll(TOKEN_RE)) {
+    const token = match[0];
+    if (isIdentifierToken(token)) {
+      push(token);
     }
   }
   return found;
@@ -235,12 +275,20 @@ export function redact_prose(text: string): string {
   if (!text) {
     return text;
   }
-  const afterAssign = text.replace(ASSIGN_RE, (whole, ident: string) =>
+  let out = text.replace(SOURCE_REF_PARENS_RE, "");
+  out = out.replace(SOURCE_REF_RE, "");
+  out = out.replace(ROWID_RE, "");
+  out = out.replace(TRACE_CODE_RE, "");
+  out = out.replace(JARGON_RE, (m) => JARGON_PHRASES[m.toLowerCase()] ?? "the subject property");
+  out = out.replace(BARE_ASSIGN_RE, (_whole, word: string) => word);
+  out = out.replace(ASSIGN_RE, (whole, ident: string) =>
     isIdentifierToken(ident) ? phraseFor(ident) : whole,
   );
-  return afterAssign.replace(TOKEN_RE, (token) =>
-    isIdentifierToken(token) ? phraseFor(token) : token,
-  );
+  out = out.replace(TOKEN_RE, (token) => (isIdentifierToken(token) ? phraseFor(token) : token));
+  // Drop empty parens left when an INNER ref was stripped but the parens were not a pure
+  // source-tag citation (e.g. "(rowid 1296784)" → "()"), then collapse leftover whitespace.
+  out = out.replace(/\s*\(\s*\)/g, "");
+  return out.replace(/\s{2,}/g, " ").replace(/\s+([.,;])/g, "$1").trim();
 }
 
 // Gated so nothing changes until explicitly enabled (mirrors OE_SYNTH_AUGMENT / OE_PROMPT_CACHE).

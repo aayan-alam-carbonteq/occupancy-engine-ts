@@ -180,6 +180,50 @@ describe("controlled vocabulary is not a leak", () => {
   });
 });
 
+describe("new leak classes (X-prose-refinement)", () => {
+  test("strips a parenthetical source-tag citation, keeping the sentence", () => {
+    const out = redact_prose("Tax owner WINKFIELD (TAX:68344) is identified.");
+    expect(out).toBe("Tax owner WINKFIELD is identified.");
+    expect(detect_leaks("Tax owner WINKFIELD (TAX:68344) is identified.")).toContain("TAX:68344");
+  });
+
+  test("strips a bare source-tag citation with a hyphenated id range", () => {
+    expect(redact_prose("four loan records (LOAN:74141-74144) at the address")).toBe(
+      "four loan records at the address",
+    );
+  });
+
+  test("drops rowid and trace-code references, cleaning empty parens", () => {
+    expect(redact_prose("utility account (rowid 1296784) and trace cd113530 present")).toBe(
+      "utility account and trace present",
+    );
+    expect(detect_leaks("rowid 1296784")).toContain("rowid 1296784");
+    expect(detect_leaks("cd113530")).toContain("cd113530");
+  });
+
+  test("collapses bare word=value pairs to the plain words (backstop, not beautifier)", () => {
+    // The scrubber keeps the WORD and drops the raw value; it does not judge True vs False
+    // (that nicety lives in the Component B owner-summary humanizer, not here).
+    expect(redact_prose("the property (residential=True, condo=False) built in 1983")).toBe(
+      "the property (residential, condo) built in 1983",
+    );
+    expect(detect_leaks("residential=True")).toContain("residential=True");
+  });
+
+  test("replaces the obscure jargon 'situs' but keeps LTV/CLTV", () => {
+    expect(redact_prose("the situs address shows LTV ~64.6% and CLTV 38.7%")).toBe(
+      "the subject address shows LTV ~64.6% and CLTV 38.7%",
+    );
+    expect(detect_leaks("LTV CLTV")).toEqual([]);
+  });
+
+  test("still leaves clean human prose untouched", () => {
+    const clean = "The owner lives at the property and holds one mortgage.";
+    expect(redact_prose(clean)).toBe(clean);
+    expect(detect_leaks(clean)).toEqual([]);
+  });
+});
+
 describe("integration: sanitized findings produce a leak-free report", () => {
   test("build_report over sanitized inputs has no identifier leaks", () => {
     const result = HeuristicAgentResultSchema.parse({
