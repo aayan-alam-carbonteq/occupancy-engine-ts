@@ -33,6 +33,14 @@ describe("E2E-1: orchestrator assembly (fixture GraphQL + fake subagent, no LLM)
       expect(typeof a.report).toBe("string");
       expect(a.report.length).toBeGreaterThan(0);
       expect(server.requests.length).toBeGreaterThanOrEqual(1);
+
+      // WIRING REGRESSION GUARD: the real preflight fixture populates owner_summaries with a raw
+      // "owner=...; residential=True; ..." bit-string internally; resolved_address must serve the
+      // HUMANIZED display copy (orchestrator's `displayContext`), not that raw string. This would
+      // catch a revert of `resolved_address: displayContext` back to the ungrounded `context`.
+      const ownerSummary = a.resolved_address.evidence_map.owner_summaries[0]?.summaries[0];
+      expect(ownerSummary).toMatch(/^Owner /);
+      expect(ownerSummary).not.toContain("=");
     } finally {
       server.close();
     }
