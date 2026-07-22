@@ -222,6 +222,17 @@ describe("new leak classes (X-prose-refinement)", () => {
     expect(redact_prose(clean)).toBe(clean);
     expect(detect_leaks(clean)).toEqual([]);
   });
+
+  test("strips quoted values in bare word=value pairs", () => {
+    expect(redact_prose('type="single_family" and status="ACTIVE" here')).toBe("type and status here");
+    expect(detect_leaks('type="single_family"')).toContain('type="single_family"');
+  });
+
+  test("tidies a mixed parenthetical of refs + prose into clean text", () => {
+    expect(
+      redact_prose("owner presence (BASE:81239 with 10-year residence, TAX:68344, TRACE:267914) confirmed"),
+    ).toBe("owner presence (with 10-year residence) confirmed");
+  });
 });
 
 describe("integration: sanitized findings produce a leak-free report", () => {

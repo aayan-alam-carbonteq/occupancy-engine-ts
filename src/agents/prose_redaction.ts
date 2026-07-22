@@ -2,7 +2,8 @@
 // (GraphQL field/type names, DB column names) surviving in the human-facing prose fields. It
 // recognizes the enumerated schema identifiers plus any camelCase / snake_case identifier shape;
 // bare dictionary words (Person, Property, residential, tax, loan) are left untouched so ordinary
-// prose — including owner names like "McDonald" — is never mangled.
+// prose — including owner names like "McDonald" — is never mangled. It also substitutes obscure
+// jargon (e.g. "situs" → plain wording) so the prose reads naturally for a non-technical reader.
 //
 // Design note: only IDENTIFIER-SHAPED tokens are treated as sensitive — camelCase, snake_case, or
 // an explicitly enumerated concatenated identifier (e.g. "ownername"). Bare dictionary words that
@@ -201,7 +202,7 @@ const TRACE_CODE_RE = /\bcd\d{4,}\b/gi;
 // ALL-CAPS code). The existing ASSIGN_RE only fires when the LEFT side is identifier-shaped, so
 // "residential=True" / "condo=False" slip through. Collapse to the plain word, dropping "=value".
 const BARE_ASSIGN_RE =
-  /\b([A-Za-z][A-Za-z0-9]*)=(?:"[^"]*"|'[^']*'|True|False|None|null|NULL|-?\d[\d,.]*|[A-Z][A-Z0-9_]+)\b/g;
+  /\b([A-Za-z][A-Za-z0-9]*)=(?:"[^"]*"|'[^']*'|(?:True|False|None|null|NULL|-?\d[\d,.]*|[A-Z][A-Z0-9_]+)\b)/g;
 // Obscure legal jargon → plain wording. Standard finance terms (LTV, CLTV) are deliberately kept.
 const JARGON_PHRASES: Record<string, string> = {
   "situs address": "subject address",
@@ -285,9 +286,14 @@ export function redact_prose(text: string): string {
     isIdentifierToken(ident) ? phraseFor(ident) : whole,
   );
   out = out.replace(TOKEN_RE, (token) => (isIdentifierToken(token) ? phraseFor(token) : token));
-  // Drop empty parens left when an INNER ref was stripped but the parens were not a pure
-  // source-tag citation (e.g. "(rowid 1296784)" → "()"), then collapse leftover whitespace.
-  out = out.replace(/\s*\(\s*\)/g, "");
+  // Tidy citation debris: stripping refs from a MIXED parenthetical (e.g.
+  // "(BASE:81239 with 10-year residence, TAX:68344)") can leave dangling / repeated commas and
+  // edge whitespace. Trim punctuation at the paren edges, collapse comma runs, drop empty parens.
+  out = out
+    .replace(/\(\s*[,;\s]*/g, "(")
+    .replace(/[,;\s]*\)/g, ")")
+    .replace(/,\s*(?:,\s*)+/g, ", ")
+    .replace(/\(\s*\)/g, "");
   return out.replace(/\s{2,}/g, " ").replace(/\s+([.,;])/g, "$1").trim();
 }
 
