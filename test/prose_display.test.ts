@@ -46,6 +46,13 @@ describe("humanize_owner_summary", () => {
       "Owner X; condominium; 2 liens totaling $150,000; recorded 2020-05-01",
     );
   });
+  test("preserves multiple co-owners via the structured owner_name", () => {
+    const raw = "owner=CORRELL, REBECCA CHRISTINE; CORRELL, JOSIAH STEEL; residential=True";
+    const name = "CORRELL, REBECCA CHRISTINE; CORRELL, JOSIAH STEEL";
+    expect(humanize_owner_summary(raw, name)).toBe(
+      "Owner Correll, Rebecca Christine; Correll, Josiah Steel; residential property",
+    );
+  });
 });
 
 describe("humanize_nonowner_hint", () => {
@@ -94,6 +101,31 @@ describe("humanize_evidence_map_for_display", () => {
     );
     expect(out.people_at_address[0]!.summaries[0]).toBe("Mortgage/loan application record; listed as a renter");
     expect(out.nonowner_occupancy_hints[0]).toBe("Unrelated person, in mortgage/loan application records: Donald Cain.");
+  });
+
+  test("preserves both co-owners end-to-end when owner_name holds two names joined by '; '", () => {
+    const map = CaseEvidenceMapSchema.parse({
+      normalized_address: "1104 SPRING RUN RD",
+      owner_summaries: [
+        {
+          owner_name: "CORRELL, REBECCA CHRISTINE; CORRELL, JOSIAH STEEL",
+          mailing_address: "1104 SPRING RUN RD",
+          mailing_matches_subject: true,
+          // Bit-string truncated to the first co-owner, as the real "owner=" field would be
+          // parsed by parseBits (which splits on ";") — the fix must source the name from
+          // owner_name instead, not from this raw field.
+          summaries: ["owner=CORRELL, REBECCA CHRISTINE; residential=True"],
+        },
+      ],
+      people_at_address: [],
+      nonowner_occupancy_hints: [],
+      evidence_refs: [],
+    });
+    const out = humanize_evidence_map_for_display(map);
+    expect(out.owner_summaries[0]!.summaries[0]).toContain("Josiah");
+    expect(out.owner_summaries[0]!.summaries[0]).toBe(
+      "Owner Correll, Rebecca Christine; Correll, Josiah Steel; residential property",
+    );
   });
 
   test("leaves evidence_refs (machine anchors) untouched", () => {

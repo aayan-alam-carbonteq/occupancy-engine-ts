@@ -41,6 +41,10 @@ describe("E2E-1: orchestrator assembly (fixture GraphQL + fake subagent, no LLM)
       const ownerSummary = a.resolved_address.evidence_map.owner_summaries[0]?.summaries[0];
       expect(ownerSummary).toMatch(/^Owner /);
       expect(ownerSummary).not.toContain("=");
+      // CO-OWNER FIDELITY GUARD: the fixture's ownername is "CORRELL, REBECCA CHRISTINE; CORRELL,
+      // JOSIAH STEEL" — a real multi-owner value. The humanizer must not truncate it to the first
+      // co-owner (parseBits splits on ";"); it must survive end-to-end via the structured owner_name.
+      expect(ownerSummary).toContain("Josiah");
     } finally {
       server.close();
     }

@@ -87,11 +87,17 @@ export function humanize_person_summary(raw: string): string {
   return out.join("; ");
 }
 
-/** An owner summary: "owner=…; residential=True; totalliencount=1; totallienbalance=83000.0; …". */
-export function humanize_owner_summary(raw: string): string {
+/**
+ * An owner summary: "owner=…; residential=True; totalliencount=1; totallienbalance=83000.0; …".
+ * `ownerName`, when given, overrides the bit-string's `owner=` field — the raw tax `ownername`
+ * value can contain multiple co-owners joined by "; " (e.g. "A; B"), which the bit-string parser
+ * would otherwise truncate to the first co-owner. Pass the structured `OwnerEvidenceSummary.owner_name`
+ * (which carries the full value) to preserve all co-owners.
+ */
+export function humanize_owner_summary(raw: string, ownerName?: string): string {
   const { fields } = parseBits(raw);
   const out: string[] = [];
-  const owner = fields.get("owner");
+  const owner = ownerName?.trim() || fields.get("owner");
   if (owner) out.push(`Owner ${titleCaseName(owner)}`);
   const mailing = fields.get("mailing");
   if (mailing) out.push(`mailing address ${mailing}`);
@@ -140,7 +146,10 @@ export function humanize_nonowner_hint(raw: string): string {
 export function humanize_evidence_map_for_display(map: CaseEvidenceMap): CaseEvidenceMap {
   return {
     ...map,
-    owner_summaries: map.owner_summaries.map((o) => ({ ...o, summaries: o.summaries.map(humanize_owner_summary) })),
+    owner_summaries: map.owner_summaries.map((o) => ({
+      ...o,
+      summaries: o.summaries.map((s) => humanize_owner_summary(s, o.owner_name)),
+    })),
     people_at_address: map.people_at_address.map((p) => ({ ...p, summaries: p.summaries.map(humanize_person_summary) })),
     nonowner_occupancy_hints: map.nonowner_occupancy_hints.map(humanize_nonowner_hint),
   };
