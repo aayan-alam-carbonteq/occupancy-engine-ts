@@ -191,6 +191,17 @@ until proven coverage-neutral.
   This matches the 2026-07-15 spec's deferred build_report decision — left to the UI.
 - **Structured enum fields** (`verdict_band`, `case_archetype`, `relationship_to_owner`)
   — already label-mapped in the frontend (`labels.ts`); no engine change needed.
+- **Contract enum values ECHOED into free-form MODEL prose** (e.g. a `finding` that writes
+  `likely_family` or `ambiguous_nonowner_occupancy` because the model was grounded on those
+  tokens). These are deliberately NOT rewritten by the deterministic layer: they are engine
+  *contract vocabulary* (allowlisted in `CONTROLLED_VOCABULARY`), and the scrubber must
+  preserve them verbatim so the `report` string's build_report-embedded enums keep
+  `prose_leak_count == 0`. Component B humanizes these values where they appear in the
+  **deterministic** evidence_map strings, and the frontend label-maps the **structured**
+  enum fields — so the user-visible occurrences are covered. A raw enum echoed into model
+  free-prose is owned by the gated **prompt-register lever** (`OE_PROSE_REGISTER`), which
+  instructs the model not to emit raw tokens; that lever stays gated pending the coverage
+  A/B, consistent with the rollout decision. Revisit only if the register A/B is abandoned.
 
 ## Non-goals / risks
 
