@@ -18,8 +18,10 @@ const OWN_RENT_DISPLAY: Record<string, string> = {
   "1": "listed as owner-occupant",
   o: "listed as owner-occupant",
   own: "listed as owner-occupant",
+  owner: "listed as owner-occupant",
   r: "listed as a renter",
   rent: "listed as a renter",
+  renter: "listed as a renter",
   u: "tenure not stated",
   "": "tenure not stated",
 };
@@ -72,7 +74,7 @@ function formatMoney(value: string): string {
 }
 
 /** A person-at-address summary: "loan; own_rent=0; address=…" → "Mortgage/loan application record; listed as a renter". */
-export function humanizePersonSummary(raw: string): string {
+export function humanize_person_summary(raw: string): string {
   const { lead, fields } = parseBits(raw);
   const out: string[] = [];
   if (lead) out.push(sourcePhrase(lead));
@@ -85,7 +87,7 @@ export function humanizePersonSummary(raw: string): string {
 }
 
 /** An owner summary: "owner=…; residential=True; totalliencount=1; totallienbalance=83000.0; …". */
-export function humanizeOwnerSummary(raw: string): string {
+export function humanize_owner_summary(raw: string): string {
   const { fields } = parseBits(raw);
   const out: string[] = [];
   const owner = fields.get("owner");
@@ -104,9 +106,11 @@ export function humanizeOwnerSummary(raw: string): string {
     out.push(`${n} lien${n === 1 ? "" : "s"}${balPart}`);
   }
   const resCount = fields.get("ownerrescount");
-  if (resCount) {
+  if (resCount !== undefined) {
     const n = Number(resCount);
-    out.push(`owner linked to ${n} propert${n === 1 ? "y" : "ies"}`);
+    if (Number.isFinite(n)) {
+      out.push(`owner linked to ${n} propert${n === 1 ? "y" : "ies"}`);
+    }
   }
   const recorded = fields.get("recordingdate");
   if (recorded) out.push(`recorded ${recorded}`);
@@ -116,7 +120,7 @@ export function humanizeOwnerSummary(raw: string): string {
 const NONOWNER_HINT_RE = /^(\w+) person at address via ([^:]+):\s*(.+?)\.?$/;
 
 /** A non-owner-occupancy hint: "likely_family person at address via trace: NAME." */
-export function humanizeNonownerHint(raw: string): string {
+export function humanize_nonowner_hint(raw: string): string {
   const m = NONOWNER_HINT_RE.exec(raw);
   if (!m) return raw;
   const [, rel, sources, name] = m;
