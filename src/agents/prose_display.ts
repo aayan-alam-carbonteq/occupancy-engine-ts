@@ -3,6 +3,7 @@
 // "key=value; key=value" bit-strings and are ALSO fed to prompts as grounding — so this module
 // NEVER mutates in place: it maps to NEW strings for a display copy only (see orchestrator
 // finalization). Unlike the scrubber it keeps meaning: "1 lien totaling $83,000", not "a lien field".
+import type { CaseEvidenceMap } from "./models.ts";
 import { SOURCE_HUMAN_PHRASES } from "./prompts.ts";
 
 const RELATIONSHIP_DISPLAY: Record<string, string> = {
@@ -126,4 +127,21 @@ export function humanize_nonowner_hint(raw: string): string {
   const [, rel, sources, name] = m;
   const relPhrase = RELATIONSHIP_DISPLAY[rel!] ?? rel!;
   return `${relPhrase}, in ${sourceListPhrase(sources!)}: ${titleCaseName(name!)}.`;
+}
+
+/**
+ * Return a NEW CaseEvidenceMap with the human-facing string arrays humanized for DISPLAY.
+ * Everything else — including evidence_refs (machine anchors) — is passed through. The input is
+ * never mutated: this is the copy the model already consumed for grounding, and it must stay
+ * byte-identical (asserted by the grounding-integrity test).
+ * Pass-through fields (evidence_refs, source_counts, nested sources, …) are shared by reference
+ * with the input; treat the returned object as read-only / serialize-only and never mutate through it.
+ */
+export function humanize_evidence_map_for_display(map: CaseEvidenceMap): CaseEvidenceMap {
+  return {
+    ...map,
+    owner_summaries: map.owner_summaries.map((o) => ({ ...o, summaries: o.summaries.map(humanize_owner_summary) })),
+    people_at_address: map.people_at_address.map((p) => ({ ...p, summaries: p.summaries.map(humanize_person_summary) })),
+    nonowner_occupancy_hints: map.nonowner_occupancy_hints.map(humanize_nonowner_hint),
+  };
 }

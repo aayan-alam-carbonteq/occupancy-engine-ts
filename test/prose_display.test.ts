@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { CaseEvidenceMapSchema } from "../src/agents/models.ts";
 import {
+  humanize_evidence_map_for_display,
   humanize_nonowner_hint,
   humanize_owner_summary,
   humanize_person_summary,
@@ -61,5 +63,49 @@ describe("humanize_nonowner_hint", () => {
     expect(humanize_nonowner_hint("unrelated person at address via base, loan: JOHN DOE.")).toBe(
       "Unrelated person, in identity/residence records, mortgage/loan application records: John Doe.",
     );
+  });
+});
+
+function sampleMap() {
+  return CaseEvidenceMapSchema.parse({
+    normalized_address: "1552 SAMARA GLEN WAY",
+    owner_summaries: [
+      {
+        owner_name: "WINKFIELD, JERAHMY S",
+        mailing_address: "209 FALCON DR VERSAILLES KY 40383",
+        mailing_matches_subject: false,
+        summaries: ["owner=WINKFIELD, JERAHMY S; residential=True; totalliencount=1; totallienbalance=83000.0; ownerrescount=1"],
+      },
+    ],
+    people_at_address: [
+      { name: "DONALD CAIN", relationship_to_owner: "unrelated", sources: ["loan"], summaries: ["loan; own_rent=0; address=X"] },
+    ],
+    nonowner_occupancy_hints: ["unrelated person at address via loan: DONALD CAIN."],
+    evidence_refs: [{ source: "tax", table: "taxProperties", rowid: 5, summary: "tax; own_rent=0" }],
+  });
+}
+
+describe("humanize_evidence_map_for_display", () => {
+  test("humanizes the three human-facing arrays", () => {
+    const out = humanize_evidence_map_for_display(sampleMap());
+    expect(out.owner_summaries[0]!.summaries[0]).toBe(
+      "Owner Winkfield, Jerahmy S; residential property; 1 lien totaling $83,000; owner linked to 1 property",
+    );
+    expect(out.people_at_address[0]!.summaries[0]).toBe("Mortgage/loan application record; listed as a renter");
+    expect(out.nonowner_occupancy_hints[0]).toBe("Unrelated person, in mortgage/loan application records: Donald Cain.");
+  });
+
+  test("leaves evidence_refs (machine anchors) untouched", () => {
+    const input = sampleMap();
+    const out = humanize_evidence_map_for_display(input);
+    expect(out.evidence_refs).toBe(input.evidence_refs);
+    expect(out.evidence_refs[0]!.summary).toBe("tax; own_rent=0");
+  });
+
+  test("GROUNDING INTEGRITY: does not mutate the input map", () => {
+    const input = sampleMap();
+    const snapshot = structuredClone(input);
+    humanize_evidence_map_for_display(input);
+    expect(input).toEqual(snapshot);
   });
 });
