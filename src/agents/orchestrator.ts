@@ -137,7 +137,7 @@ const SubmitCaseAdjudicationArgs = z
       .number()
       .int()
       .describe("Raw deterministic worker score. Must equal raw_score.final_score from the prompt."),
-    calibrated_score: z.number().int().min(0).max(20).describe("Master-calibrated case score from 0 to 20."),
+    calibrated_score: z.number().int().min(0).max(10).describe("Master-calibrated case score from 0 to 10."),
     clarity_score: z.number().int().min(0).max(10).describe("Evidence clarity from 0 to 10."),
     verdict_band: z
       .enum(VERDICT_BAND)
@@ -743,6 +743,9 @@ export async function investigate_address(
       model: request.model,
       base_url: request.base_url,
       timeout_seconds: request.agent_timeout_seconds,
+      // Deterministic investigation: temperature 0 so the master adjudicator and
+      // the heuristic subagent (both use this one instance) score reproducibly.
+      temperature: 0,
     });
     const toolset = make_toolset(request.retrieval_mode, request.include_shortcuts);
     resolvedSubagent = new RetrievalHeuristicSubagent(llm, toolset, hooks.should_cancel);
@@ -1118,7 +1121,9 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
   const band: VerdictBand = (raw_score?.band ?? "low_evidence") as VerdictBand;
   return {
     raw_score: score,
-    calibrated_score: score,
+    // calibrated_score now shares clarity's 0-10 scale; the raw worker sum can
+    // exceed 10, and this fallback path bypasses schema validation, so clamp it.
+    calibrated_score: Math.min(10, score),
     clarity_score: score ? 5 : 2,
     verdict_band: band,
     case_archetype: score ? "mixed_evidence" : "insufficient_ownership_data",

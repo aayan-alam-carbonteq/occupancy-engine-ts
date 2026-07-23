@@ -295,7 +295,7 @@ export type ScoreAdjustment = z.infer<typeof ScoreAdjustmentSchema>;
 export const CaseAdjudicationSchema = z
   .object({
     raw_score: z.number().int(),
-    calibrated_score: z.number().int().min(0).max(20),
+    calibrated_score: z.number().int().min(0).max(10),
     clarity_score: z.number().int().min(0).max(10),
     verdict_band: z.enum(VERDICT_BAND),
     case_archetype: z.enum(CASE_ARCHETYPE_VALUES),
