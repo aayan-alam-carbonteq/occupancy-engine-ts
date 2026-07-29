@@ -169,6 +169,31 @@ Every prompt change in Task 15 traces to a line here. Do not guess beyond it.
 
 ---
 
+## Contract B addenda — pinned by the umbrella after per-repo planning
+
+The graph-service plan extended Contract B while this plan was being drafted. These three fields are
+**additive** — every pinned key keeps its name and meaning. This plan's tasks must honour them.
+
+1. **`GET /v1/source-record/{shape}/{rowid}` takes a required `?address_id=<id>` query param.**
+   `rowid` is the row's index within its shape *in a specific bundle*, so it is meaningless without
+   the address that scopes it. Any engine call to operation 6 must pass it — the `data_client`
+   method signature and every call site need the address id threaded through.
+
+2. **Bundle-sourced records carry a `__rowid` field.** A `run_sql` result has no provenance, and the
+   engine's evidence references require a citable row. `__rowid` is what turns a record the model is
+   looking at into a `get_source_record` call it can cite. The SQL toolset's guidance and the
+   evidence-reference plumbing both depend on it.
+
+3. **`GET /v1/person/{id}/records` returns `records_timed_out: bool`.** The `hal:` traversal fetches
+   rows by `(source_table, record_id)`, and no index covers `record_id` — it is the one unindexed hop
+   in the typed surface. It runs under the statement timeout, so an empty result must be
+   distinguishable from a timed-out one, exactly as `tax_timed_out` already is on the address path.
+   The engine must surface this rather than silently reading a timeout as "this person has no
+   records elsewhere" — that failure mode would quietly break owner-elsewhere detection, which is
+   the strongest signal this whole corpus supports.
+
+---
+
 ## Task 1: Branch + record the baseline
 
 **Files:** none (ops).
@@ -790,6 +815,8 @@ export interface DataSchema {
   caveats: string[];
 }
 
+// See "Contract B addenda" above — operation 6 takes address_id; person records carry
+// records_timed_out; bundle records carry __rowid.
 export class DataHttpClient {
   readonly base_url: string;
   timeout_seconds: number;
