@@ -3675,7 +3675,10 @@ services:
   graph:
     build: ./services/graph
     environment:
-      GRAPH_SERVICE_DSN: ${GRAPH_SERVICE_DSN}
+      PARTNER_DSN: ${PARTNER_DSN}
+      PARTNER_STATEMENT_TIMEOUT_MS: ${PARTNER_STATEMENT_TIMEOUT_MS:-20000}
+      PARTNER_POOL_MIN: ${PARTNER_POOL_MIN:-1}
+      PARTNER_POOL_MAX: ${PARTNER_POOL_MAX:-8}
     ports:
       - "8000:8000"
     healthcheck:
@@ -3713,7 +3716,7 @@ Replace the intro (`talks to the existing Python GraphQL server over HTTP`) with
 
 ```
     git submodule update --init --recursive          # fetch services/graph
-    export GRAPH_SERVICE_DSN=postgres://…            # partner corpus
+    export PARTNER_DSN=postgres://…                  # partner corpus
     docker compose up -d graph                       # data service on :8000
     docker compose up -d agent                       # engine service on :8787
     docker compose down
