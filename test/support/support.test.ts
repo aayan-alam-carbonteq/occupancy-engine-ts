@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ScriptedChatModel } from "./scripted_llm.ts";
 import { FixtureDataService } from "./fixture_data_service.ts";
-import { loadPreflight1104, sparsePreflightPayload } from "./fixtures.ts";
+import { people1104, resolve1104, sparseResolvePayload } from "./fixtures.ts";
 
 describe("ScriptedChatModel", () => {
   test("bindTools returns an invocable that yields the scripted batch, then throws when exhausted", async () => {
@@ -131,14 +131,63 @@ describe("FixtureDataService", () => {
   });
 });
 
+// These guard the fixture against the ONE failure mode a capture-free fixture has: drifting away
+// from the response the service actually serves, with nothing to diff it against. Each assertion
+// pins a property of handlers.resolve_address / records.records_block, not just a value.
 describe("fixtures", () => {
-  test("real preflight fixture loads with an address id and source fields", () => {
-    const p = loadPreflight1104();
-    expect(p.addressByText).toBeDefined();
-    expect(typeof (p.addressByText as any).id).toBe("number");
+  test("resolve_1104 is a Contract-B resolve body for the real case", () => {
+    const p = resolve1104() as any;
+    expect(p.address_id).toBe(3342);
+    expect(Object.keys(p).sort()).toEqual([
+      "address_id",
+      "candidates",
+      "dropped_counts",
+      "records_by_source",
+      "source_counts",
+      "tax_timed_out",
+    ]);
+    // records_by_source covers every live shape, and only those: voter/criminal/linkedin are gone.
+    expect(Object.keys(p.records_by_source).sort()).toEqual(["auto", "base", "drive", "loan", "tax", "trace", "utility"]);
+    expect(Object.keys(p.source_counts).sort()).toEqual(Object.keys(p.records_by_source).sort());
+    // handlers._candidate: relation_count IS sum(source_counts.values()).
+    const summed = Object.values(p.source_counts as Record<string, number>).reduce((a, b) => a + b, 0);
+    expect(p.candidates[0].relation_count).toBe(summed);
   });
+
+  test("records are RAW vendor rows stamped with __rowid, not {table,rowid,data} envelopes", () => {
+    const tax = (resolve1104() as any).records_by_source.tax.records[0];
+    expect(tax.ownername).toBe("CORRELL, REBECCA CHRISTINE; CORRELL, JOSIAH STEEL"); // raw column, untidied
+    expect(tax.__rowid).toBe(0); // bundle position, so the first row is 0 — never a database rowid
+    expect(tax.data).toBeUndefined();
+    expect(tax.table).toBeUndefined();
+  });
+
+  test("every block's paging arithmetic matches records_block at limit 10, offset 0", () => {
+    for (const [shape, block] of Object.entries((resolve1104() as any).records_by_source) as [string, any][]) {
+      expect(block.records.length).toBe(Math.min(block.total_count, 10));
+      expect(block.has_more).toBe(block.records.length < block.total_count);
+      expect(block.records.map((r: any) => r.__rowid)).toEqual(block.records.map((_: unknown, i: number) => i));
+      expect(block.total_count).toBe((resolve1104() as any).source_counts[shape]);
+    }
+    expect((resolve1104() as any).records_by_source.utility.has_more).toBe(true); // 15 rows, page of 10
+  });
+
+  test("people1104 is an operation-3 body: clustered, sorted, and with no hal identity", () => {
+    const p = people1104() as any;
+    expect(p.people.length).toBe(10);
+    expect(p.has_more).toBe(p.people.length < p.total_count);
+    expect(p.people.map((x: any) => x.norm_name_key)).toEqual([...p.people.map((x: any) => x.norm_name_key)].sort());
+    expect(p.people.map((x: any) => x.id)).toEqual(p.people.map((_: unknown, i: number) => `addr:3342:${i}`));
+    // handlers._PERSON_KEYS omits both — an addr:-clustered person has no hal identity to score.
+    expect(p.people.every((x: any) => !("identity_confidence" in x) && !("is_suspicious" in x))).toBe(true);
+    // sources is the shapes the cluster was drawn from, so it is not uniformly "base".
+    expect(p.people.find((x: any) => x.norm_name_key === "jessica|whisman").sources).toEqual(["base", "trace"]);
+    expect(p.people.find((x: any) => x.norm_name_key === "amy|wilson").sources).toEqual(["utility"]);
+  });
+
   test("sparse payload has zero-count sources", () => {
-    const p = sparsePreflightPayload();
-    expect((p.addressByText as any).taxProperties.totalCount).toBe(0);
+    const p = sparseResolvePayload() as any;
+    expect(p.source_counts.tax).toBe(0);
+    expect(Object.values(p.records_by_source as Record<string, any>).every((b) => b.records.length === 0)).toBe(true);
   });
 });
