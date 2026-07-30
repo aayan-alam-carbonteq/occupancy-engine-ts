@@ -7,11 +7,11 @@
 // name through run_typed_tool and never invokes a tool's own func.
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import type { CountingGraphQLTool } from "./graphql_tool.ts";
+import type { CountingDataClient } from "./data_client.ts";
 import type { HeuristicAgentInput } from "./models.ts";
 import {
-  ADDRESS_SOURCE_FIELDS,
-  PERSON_SOURCE_FIELDS,
+  ADDRESS_SHAPES,
+  PERSON_SHAPES,
   _resolve_bundle_address_id,
   fetch_address_records,
   fetch_address_records_multi,
@@ -27,11 +27,8 @@ export const SHAPE_TOOLS: Record<string, [string, string]> = {
   get_loans: ["loan", "both"],
   get_vehicles: ["auto", "both"],
   get_drivers_licenses: ["drive", "both"],
-  get_voter_records: ["voter", "both"],
   get_trace_records: ["trace", "both"],
-  get_criminal_records: ["criminal", "both"],
   get_utility: ["utility", "address"],
-  get_linkedin: ["linkedin", "person"],
 };
 
 const ShapeToolArgs = z
@@ -49,23 +46,18 @@ const AddressOnlyArgs = z.object({
   limit: z.number().int().min(1).max(100).default(25),
 });
 
-const PersonOnlyArgs = z.object({
-  person_id: z.string().describe("Person id (this shape is person-scoped only)."),
-  limit: z.number().int().min(1).max(100).default(25),
-});
-
 const SearchPeopleArgs = z.object({
   name: z.string().describe("Name to search for, e.g. a tax owner name."),
   limit: z.number().int().min(1).max(50).default(10),
 });
 
-export const ALL_SHAPES: Set<string> = new Set([...Object.keys(ADDRESS_SOURCE_FIELDS), ...Object.keys(PERSON_SOURCE_FIELDS)]);
+export const ALL_SHAPES: Set<string> = new Set([...ADDRESS_SHAPES, ...PERSON_SHAPES]);
 
 const GetRecordsArgs = z
   .object({
     shapes: z
       .array(z.string())
-      .describe("Shapes to fetch together in ONE call: base, tax, loan, auto, drive, voter, trace, criminal, utility (address-only), linkedin (person-only)."),
+      .describe("Shapes to fetch together in ONE call: base, tax, loan, auto, drive, trace, utility (address-only)."),
     person_id: z
       .string()
       .nullish()
@@ -83,6 +75,23 @@ function _envelope(source: string, block: Record<string, any>): Record<string, a
     has_more: Boolean(block["hasMore"]),
     records: block["records"] ?? [],
   };
+}
+
+/**
+ * Contract B addendum 3: carry a person-records timeout through the tool envelope. The model only
+ * ever sees the tool result, so dropping the flag here would hand it an empty record list with no
+ * way to tell "the lookup ran out of time" from "this person has no records elsewhere".
+ */
+function _with_gaps(out: Record<string, any>, res: Record<string, any>): Record<string, any> {
+  if (!res["records_timed_out"]) {
+    return out;
+  }
+  return { ...out, records_timed_out: true, data_gaps: res["data_gaps"] ?? [] };
+}
+
+/** Shapes retrieval could not serve, plus the ones this corpus no longer has at all. */
+function _merge_unsupported(res: Record<string, any>, unknown: string[]): string[] {
+  return [...new Set([...(res["unsupported_sources"] ?? []), ...unknown])].sort();
 }
 
 function _normalize_shapes(args: Record<string, any>, agent_input: HeuristicAgentInput): string[] {
@@ -113,48 +122,56 @@ function _normalize_shapes(args: Record<string, any>, agent_input: HeuristicAgen
   return deduped;
 }
 
-async function _run_get_records(args: Record<string, any>, agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<Record<string, any>> {
+async function _run_get_records(args: Record<string, any>, agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<Record<string, any>> {
   const shapes = _normalize_shapes(args, agent_input);
+  // A packet scope that still names a dropped shape (legal_address_presence was
+  // ["drive","voter","auto","tax"]) must DEGRADE to its live shapes, not fail the whole call —
+  // otherwise one stale entry costs the heuristic every row it could have had. Only a scope with
+  // no live shape at all is an error, because then there is genuinely nothing to fetch.
   const unknown = shapes.filter((s) => !ALL_SHAPES.has(s));
-  if (unknown.length > 0) {
-    return { ok: false, error: `Unknown shape(s): ${JSON.stringify(unknown)}`, valid_shapes: [...ALL_SHAPES].sort() };
+  const known = shapes.filter((s) => ALL_SHAPES.has(s));
+  if (known.length === 0) {
+    return { ok: false, error: `No live shape(s) in ${JSON.stringify(shapes)}`, valid_shapes: [...ALL_SHAPES].sort() };
   }
   const limit = Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 25)), 100));
   const person_id = String(args["person_id"] ?? "").trim();
   if (person_id) {
-    const res = await fetch_person_records(graphql, person_id, { sources: shapes, limit });
+    const res = await fetch_person_records(data, person_id, { sources: known, limit });
     if (!res["ok"]) return res;
-    return {
-      ok: true,
-      scope: "person",
-      person: res["person"],
-      records_by_source: res["records_by_source"] ?? {},
-      unsupported_sources: res["unsupported_sources"] ?? [],
-    };
+    return _with_gaps(
+      {
+        ok: true,
+        scope: "person",
+        person: res["person"],
+        records_by_source: res["records_by_source"] ?? {},
+        unsupported_sources: _merge_unsupported(res, unknown),
+      },
+      res,
+    );
   }
   const address_id = _resolve_bundle_address_id(agent_input.context);
   if (address_id === null) {
     return { ok: false, error: "No resolved subject address is available." };
   }
-  const res = await fetch_address_records_multi(graphql, address_id, { sources: shapes, limit });
+  const res = await fetch_address_records_multi(data, address_id, { sources: known, limit });
   if (!res["ok"]) return res;
   return {
     ok: true,
     scope: "address",
     records_by_source: res["records_by_source"] ?? {},
-    unsupported_sources: res["unsupported_sources"] ?? [],
+    unsupported_sources: _merge_unsupported(res, unknown),
   };
 }
 
-async function _run_shape_tool(name: string, args: Record<string, any>, agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<Record<string, any>> {
+async function _run_shape_tool(name: string, args: Record<string, any>, agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<Record<string, any>> {
   const [shape, mode] = SHAPE_TOOLS[name]!;
   const limit = Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 25)), 100));
   const person_id = String(args["person_id"] ?? "").trim();
   if (person_id && (mode === "both" || mode === "person")) {
-    const res = await fetch_person_records(graphql, person_id, { sources: [shape], limit });
+    const res = await fetch_person_records(data, person_id, { sources: [shape], limit });
     if (!res["ok"]) return res;
-    const block = (res["records_by_source"] ?? {})[shape] ?? { totalCount: 0, hasMore: false, records: [] };
-    return _envelope(shape, block);
+    const block = res["records_by_source"]?.[shape] ?? { totalCount: 0, hasMore: false, records: [] };
+    return _with_gaps(_envelope(shape, block), res);
   }
   if (mode === "person") {
     return { ok: false, error: `${name} is person-scoped; provide a person_id.` };
@@ -163,40 +180,40 @@ async function _run_shape_tool(name: string, args: Record<string, any>, agent_in
   if (address_id === null) {
     return { ok: false, error: "No resolved subject address is available." };
   }
-  const res = await fetch_address_records(graphql, address_id, shape, { limit });
+  const res = await fetch_address_records(data, address_id, shape, { limit });
   if (!res["ok"]) return res;
   return _envelope(shape, res);
 }
 
-async function _run_get_people(args: Record<string, any>, agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<Record<string, any>> {
+async function _run_get_people(args: Record<string, any>, agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<Record<string, any>> {
   const address_id = _resolve_bundle_address_id(agent_input.context);
   if (address_id === null) {
     return { ok: false, error: "No resolved subject address is available." };
   }
-  const res = await fetch_people_at_address(graphql, address_id, { limit: Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 25)), 100)) });
+  const res = await fetch_people_at_address(data, address_id, { limit: Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 25)), 100)) });
   if (!res["ok"]) return res;
   return { ok: true, source: "people", count: Math.trunc(Number(res["totalCount"] ?? 0)), has_more: Boolean(res["hasMore"]), records: res["people"] ?? [] };
 }
 
-async function _run_search_people(args: Record<string, any>, _agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<Record<string, any>> {
-  return await fetch_search_people(graphql, String(args["name"] ?? ""), { limit: Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 10)), 50)) });
+async function _run_search_people(args: Record<string, any>, _agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<Record<string, any>> {
+  return await fetch_search_people(data, String(args["name"] ?? ""), { limit: Math.max(1, Math.min(Math.trunc(Number(args["limit"] || 10)), 50)) });
 }
 
-// tool_name -> handler(args, agent_input, graphql) for non-shape tools
-export const SPECIAL_HANDLERS: Record<string, (args: Record<string, any>, agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool) => Promise<Record<string, any>>> = {
+// tool_name -> handler(args, agent_input, data) for non-shape tools
+export const SPECIAL_HANDLERS: Record<string, (args: Record<string, any>, agent_input: HeuristicAgentInput, data: CountingDataClient) => Promise<Record<string, any>>> = {
   get_people: _run_get_people,
   search_people: _run_search_people,
 };
 
-export async function run_typed_tool(name: string, args: Record<string, any>, agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<Record<string, any>> {
+export async function run_typed_tool(name: string, args: Record<string, any>, agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<Record<string, any>> {
   if (name === "get_records") {
-    return await _run_get_records(args, agent_input, graphql);
+    return await _run_get_records(args, agent_input, data);
   }
   if (Object.hasOwn(SPECIAL_HANDLERS, name)) {
-    return await SPECIAL_HANDLERS[name]!(args, agent_input, graphql);
+    return await SPECIAL_HANDLERS[name]!(args, agent_input, data);
   }
   if (Object.hasOwn(SHAPE_TOOLS, name)) {
-    return await _run_shape_tool(name, args, agent_input, graphql);
+    return await _run_shape_tool(name, args, agent_input, data);
   }
   return { ok: false, error: `Unknown tool: ${name}` };
 }
@@ -204,7 +221,7 @@ export async function run_typed_tool(name: string, args: Record<string, any>, ag
 const get_records = tool(async () => ({}), {
   name: "get_records",
   description:
-    "Fetch multiple record shapes for ONE entity in a single query. Subject address by default, or pass person_id. Prefer this over the individual get_* tools to gather everything you need at once. Shapes: base, tax, loan, auto, drive, voter, trace, criminal, utility (address-only), linkedin (person-only).",
+    "Fetch multiple record shapes for ONE entity in a single query. Subject address by default, or pass person_id. Prefer this over the individual get_* tools to gather everything you need at once. Shapes: base, tax, loan, auto, drive, trace, utility (address-only).",
   schema: GetRecordsArgs,
 });
 
@@ -254,21 +271,9 @@ const get_drivers_licenses = tool(async () => ({}), {
   schema: ShapeToolArgs,
 });
 
-const get_voter_records = tool(async () => ({}), {
-  name: "get_voter_records",
-  description: "Voter-registration records: name, address, gender, contact. Subject address by default, or a person's voter records.",
-  schema: ShapeToolArgs,
-});
-
 const get_trace_records = tool(async () => ({}), {
   name: "get_trace_records",
   description: "Trace/skip-trace residency records: name, address, phone, email, DOB parts. Subject address by default, or a person's trace records.",
-  schema: ShapeToolArgs,
-});
-
-const get_criminal_records = tool(async () => ({}), {
-  name: "get_criminal_records",
-  description: "Criminal records: name, address, category, offense description, county, arrest date. Subject address by default, or a person's criminal records.",
   schema: ShapeToolArgs,
 });
 
@@ -278,12 +283,6 @@ const get_utility = tool(async () => ({}), {
   schema: AddressOnlyArgs,
 });
 
-const get_linkedin = tool(async () => ({}), {
-  name: "get_linkedin",
-  description: "LinkedIn records for a person (person-only): name, profile url, position title and company.",
-  schema: PersonOnlyArgs,
-});
-
 // fixed set of per-shape data tools
 const _DATA_TOOLS: any[] = [
   get_base,
@@ -291,11 +290,8 @@ const _DATA_TOOLS: any[] = [
   get_loans,
   get_vehicles,
   get_drivers_licenses,
-  get_voter_records,
   get_trace_records,
-  get_criminal_records,
   get_utility,
-  get_linkedin,
 ];
 
 export function _typed_tool_definitions(): any[] {
@@ -311,10 +307,7 @@ const _TOOL_ONE_LINERS: Record<string, string> = {
   get_utility: "utility-account names at the address (address-only)",
   get_vehicles: "vehicle/auto registrations",
   get_drivers_licenses: "driver-license records",
-  get_voter_records: "voter-registration records",
   get_trace_records: "trace/skip-trace residency records",
-  get_criminal_records: "criminal records",
-  get_linkedin: "LinkedIn records (person-only)",
 };
 
 // shape -> the per-shape tool that serves it, for relevance selection
