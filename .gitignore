@@ -7,3 +7,6 @@ runs/
 dist/
 .DS_Store
 *.tsbuildinfo
+
+# Harness worktrees — never commit a checkout into the repo
+.claude/worktrees/
