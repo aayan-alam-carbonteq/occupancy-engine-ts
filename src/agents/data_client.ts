@@ -331,7 +331,12 @@ export class CountingDataClient {
   heuristic_id: string;
   logs: DataCallLog[] = [];
   // D3: the 422 channel replaces the old pre-execution validator. A refusal is a RESULT, so it is
-  // recorded here rather than raised; subagents.ts reads this exactly as it read validation_logs.
+  // recorded here rather than raised.
+  //
+  // NOT "read exactly as validation_logs was", as D3 claims: the old logs were `{ok, errors:
+  // string[]}` and the real call sites read `.errors` and `!log.ok`. A SqlRefusal has NEITHER, so
+  // subagents.ts maps `reason` onto validation_errors and uses the log length as the repair-attempt
+  // count. Same two output fields, same meaning, different read.
   refusal_logs: SqlRefusal[] = [];
   schema_tool_calls = 0;
   calls = 0;

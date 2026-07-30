@@ -1,23 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { GraphQLHttpTool } from "../src/agents/graphql_tool.ts";
+import { DataHttpClient } from "../src/agents/data_client.ts";
 import { AgentInvestigationRequestSchema } from "../src/agents/models.ts";
 import { AgentOrchestrator } from "../src/agents/orchestrator.ts";
-import { FixtureGraphQLServer } from "./support/fixture_graphql.ts";
-import { externalEvidenceFixture, loadPreflight1104 } from "./support/fixtures.ts";
+import { FixtureDataService } from "./support/fixture_data_service.ts";
+import { externalEvidenceFixture, people1104, resolve1104 } from "./support/fixtures.ts";
 import { FakeSubagent } from "./support/subagents.ts";
 
 async function preflight(external_evidence: unknown) {
-  const server = new FixtureGraphQLServer(loadPreflight1104());
+  const server = new FixtureDataService({ resolve: resolve1104(), address_people: people1104() });
   try {
     const orch = new AgentOrchestrator({
-      graphql: new GraphQLHttpTool(server.url),
+      data: new DataHttpClient(server.url),
       subagent: new FakeSubagent(),
     });
     return await orch.preflight(
       AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        graphql_url: server.url,
+        data_url: server.url,
+        // typed_tools: this suite is about the external-evidence fold, and `tools` would add a
+        // /v1/schema fetch that has nothing to do with it.
+        retrieval_mode: "typed_tools",
         external_evidence,
       }),
     );
@@ -74,16 +77,16 @@ describe("preflight folds the payload into the context", () => {
 
   test("source_counts never gains an external key — the deterministic weights are untouched", async () => {
     const context = await preflight(externalEvidenceFixture());
+    // The seven live shapes and nothing else: voter/criminal are gone from the corpus, and no
+    // external channel (str_scan, property_facts, rental history) may become a counted source.
     expect(Object.keys(context.evidence_map.source_counts).sort()).toEqual([
       "auto",
       "base",
-      "criminal",
       "drive",
       "loan",
       "tax",
       "trace",
       "utility",
-      "voter",
     ]);
   });
 });
