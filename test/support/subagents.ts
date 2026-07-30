@@ -10,7 +10,7 @@ import { TypedToolset } from "../../src/agents/toolsets/typed_toolset.ts";
  * results whose id isn't in the requested set). No LLM, no network.
  */
 export class FakeSubagent implements HeuristicSubagent {
-  async run(agent_input: any, _graphql: any) {
+  async run(agent_input: any, _data: any) {
     const hid = String(agent_input.heuristic.id);
     return HeuristicAgentResultSchema.parse({
       heuristic_id: hid,
@@ -31,13 +31,13 @@ export class FakeSubagent implements HeuristicSubagent {
 export class PromptRecordingSubagent extends FakeSubagent {
   readonly prompts = new Map<string, string>();
 
-  override async run(agent_input: any, graphql: any) {
+  override async run(agent_input: any, data: any) {
     const toolset = new TypedToolset();
     this.prompts.set(
       String(agent_input.heuristic.id),
       toolset.user_prompt(agent_input, toolset.build_context(agent_input)),
     );
-    return super.run(agent_input, graphql);
+    return super.run(agent_input, data);
   }
 
   /** Every recorded prompt joined — for "this string appears nowhere" assertions. */
