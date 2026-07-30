@@ -1389,9 +1389,13 @@ function _people_at_address_summaries(
   owners: OwnerEvidenceSummary[],
 ): PersonEvidenceSummary[] {
   const owner_tokens = _owner_name_tokens(owners);
+  // Keyed on the identity key, NOT the display name. The same human arrives on both paths with two
+  // different spellings — op 3's cluster carries the middle initial ("JOHN H PIERCE"), the raw row
+  // it was clustered from does not ("JOHN PIERCE") — and a display-name key would file those as two
+  // residents. Resident counts feed the occupancy heuristics, so that duplicate is not cosmetic.
   const grouped = new Map<string, PersonEvidenceSummary>();
-  const add = (name: string, source: string, data: Record<string, any>): void => {
-    let current = grouped.get(name);
+  const add = (key: string, name: string, source: string, data: Record<string, any>): void => {
+    let current = grouped.get(key);
     if (current === undefined) {
       current = {
         name,
@@ -1399,7 +1403,7 @@ function _people_at_address_summaries(
         sources: [],
         summaries: [],
       };
-      grouped.set(name, current);
+      grouped.set(key, current);
     }
     if (!current.sources.includes(source)) {
       current.sources.push(source);
@@ -1415,23 +1419,27 @@ function _people_at_address_summaries(
     current.summaries.push(summary_bits.join("; "));
   };
 
+  // The clustered people lead, so their richer spelling wins the display name for anyone reached
+  // both ways: op 3's `full_name` is the service's own canonical rendering of the identity.
   for (const person of people.slice(0, 10)) {
     const name = _person_name(person);
-    if (!name) {
+    const key = _person_identity_key(person);
+    if (!name || !key) {
       continue;
     }
     const sources = (Array.isArray(person["sources"]) ? person["sources"] : [])
       .map((source) => String(source))
       .filter((source) => source !== "");
     for (const source of sources.length > 0 ? sources : ["base"]) {
-      add(name, source, person);
+      add(key, name, source, person);
     }
   }
   for (const shape of PERSON_BEARING_SHAPES) {
     for (const row of _rows_of(resolved, shape).slice(0, 10)) {
       const name = _person_name(row);
-      if (name) {
-        add(name, shape, row);
+      const key = _person_identity_key(row);
+      if (name && key) {
+        add(key, name, shape, row);
       }
     }
   }
@@ -1528,19 +1536,77 @@ function _short_source_summary(source: string, data: Record<string, any>): strin
   return parts.join("; ");
 }
 
+/**
+ * The name FIELDS a person-bearing record can carry, in the service's own precedence.
+ *
+ * `source/people.py::_names` reads `firstname` OR `first_name` — the seven live shapes do not agree
+ * on a spelling, and `utility` (the most populous shape at a typical address) is the snake_case one:
+ * SOURCE_DATA_FIELDS.utility is `first_name`/`last_name`/`middle_name`. Reading only the camel/flat
+ * spellings made every utility row anonymous to this map. `firstName`/`lastName` are the retired
+ * GraphQL spellings, kept because nothing guarantees a caller's payload is service-shaped.
+ */
+const _FIRST_NAME_KEYS = ["firstname", "first_name", "firstName"] as const;
+const _LAST_NAME_KEYS = ["lastname", "last_name", "lastName"] as const;
+
+function _first_present(data: Record<string, any>, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = data[key];
+    if (value !== null && value !== undefined && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+  return "";
+}
+
 function _person_name(data: Record<string, any>): string {
   // `full_name` is the clustered person's field (Contract B); `fullName` was the GraphQL spelling.
   const full = data["full_name"] || data["fullName"];
   if (full) {
     return String(full).trim().toUpperCase();
   }
-  const first = data["firstname"] || data["firstName"];
-  const last = data["lastname"] || data["lastName"];
-  const name = [first, last]
-    .filter((part) => Boolean(part))
-    .map((part) => String(part).trim())
+  const name = [_first_present(data, _FIRST_NAME_KEYS), _first_present(data, _LAST_NAME_KEYS)]
+    .filter((part) => part !== "")
     .join(" ");
   return name.toUpperCase();
+}
+
+/**
+ * The identity a person is GROUPED by — deliberately not the display name.
+ *
+ * Mirrors `normalize.name_key`: `normalize_text(first)|normalize_text(last)`, i.e. first and last
+ * only, whitespace-collapsed and case-folded. The middle name is excluded on purpose. Op 3's
+ * `full_name` is `first middle last` (`source/people.py:51`) while the row it was clustered from
+ * renders `first last`, so "JOHN H PIERCE" and "JOHN PIERCE" are one human seen twice; keying on the
+ * rendered name would double them and inflate the resident count the occupancy heuristics read.
+ *
+ * The service's own key is preferred when the payload carries it — `norm_name_key` on an op 3
+ * person (`handlers._PERSON_KEYS`), `__norm_name_key` on a projected row (`source/project.py:81`) —
+ * so the engine's grouping cannot drift from the clustering that produced the people list. The
+ * local computation is the fallback for payloads without it (e.g. a `hal:` search result).
+ */
+function _person_identity_key(data: Record<string, any>): string {
+  const served = data["norm_name_key"] ?? data["__norm_name_key"];
+  if (typeof served === "string" && served !== "" && served !== "|") {
+    return served;
+  }
+  let first = _first_present(data, _FIRST_NAME_KEYS);
+  let last = _first_present(data, _LAST_NAME_KEYS);
+  if (first === "" && last === "") {
+    // Only a rendered name to go on: take the outer tokens, dropping any middle names between them.
+    const parts = String(data["full_name"] ?? data["fullName"] ?? "").trim().split(/\s+/).filter((p) => p !== "");
+    if (parts.length === 0) {
+      return "";
+    }
+    first = parts[0]!;
+    last = parts.length > 1 ? parts[parts.length - 1]! : "";
+  }
+  const key = `${_normalize_name_text(first)}|${_normalize_name_text(last)}`;
+  return key === "|" ? "" : key;
+}
+
+/** `normalize.normalize_text`: collapse internal whitespace, trim, case-fold. */
+function _normalize_name_text(value: string): string {
+  return value.trim().split(/\s+/).join(" ").toLowerCase();
 }
 
 function _owner_name_tokens(owners: OwnerEvidenceSummary[]): Set<string> {

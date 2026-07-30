@@ -128,13 +128,43 @@ describe("preflight over POST /v1/resolve", () => {
     expect(by_name.get("AMY WILSON")?.sources).toEqual(["utility"]);
     expect(by_name.get("REBECCA CORRELL")?.sources).toEqual(["tax"]);
     expect(by_name.get("BRANDON MORGISON")?.sources).toEqual(["auto"]);
-    // KNOWN GAP, pinned so it cannot be lost: utility rows name people in snake_case
-    // (`first_name`/`last_name`, per SOURCE_DATA_FIELDS.utility) and `_person_name` reads only
-    // `firstname`/`firstName`. So the shape pass cannot name a utility row at all, and op 3's
-    // clustered list — paged at 10 — is the ONLY path a utility identity reaches this map.
-    // TAMIE WORTHINGTON is the 11th cluster and has utility rows here, yet appears in neither.
-    expect(by_name.has("TAMIE WORTHINGTON")).toBe(false);
+    // WAS A KNOWN GAP, NOW FIXED. This used to assert `by_name.has("TAMIE WORTHINGTON") === false`:
+    // utility rows name people in snake_case (`first_name`/`last_name`, per
+    // SOURCE_DATA_FIELDS.utility) and `_person_name` read only `firstname`/`firstName`, so the shape
+    // pass could not name a single utility row and op 3's clustered list — paged at 10 — was the
+    // ONLY path a utility identity reached this map. TAMIE WORTHINGTON is the 11th cluster, so she
+    // fell off that page and vanished despite having two utility rows right here in the payload.
+    // `_person_name` now reads the snake_case spellings the service actually serves, so the shape
+    // pass reaches her.
     expect((resolve1104() as any).records_by_source.utility.records.some((r: any) => r.last_name === "WORTHINGTON")).toBe(true);
+    expect(by_name.get("TAMIE WORTHINGTON")?.sources).toEqual(["utility"]);
+    expect(by_name.get("TAMIE WORTHINGTON")?.relationship_to_owner).toBe("unrelated");
+  });
+
+  test("one human reached both ways is ONE person, not a middle-initial duplicate", async () => {
+    const { context } = await preflight({});
+    const people = context.evidence_map.people_at_address;
+    // JOHN PIERCE arrives twice: once as op 3's cluster, whose `full_name` carries the middle
+    // initial ("JOHN H PIERCE" — people.py joins first+middle+last), and once as a raw utility row,
+    // which yields "JOHN PIERCE". Keying the map on the display name would file those as two
+    // residents, inflating a count several heuristics read. Grouping is on the service's own
+    // first|last identity key instead, so they collapse.
+    expect(people.filter((p) => p.name.includes("PIERCE") && p.name.includes("JOHN"))).toHaveLength(1);
+    expect(people.some((p) => p.name === "JOHN PIERCE")).toBe(false);
+    const john = people.find((p) => p.name === "JOHN H PIERCE")!;
+    expect(john).toBeDefined();
+    // The collapse is real, not an accident of one path never running: the utility row's own
+    // summary (which the cluster object cannot produce — it carries no address/zip) is on this
+    // single person.
+    expect(john.sources).toEqual(["utility"]);
+    expect(john.summaries.some((s) => s.includes("address=1104 SPRING RUN RD"))).toBe(true);
+    // Same collapse for the other three middle-initial clusters, and the whole map is 11 people:
+    // the 10 clustered + TAMIE WORTHINGTON off the shape pass. Never 14.
+    for (const name of ["SUSAN R PIERCE", "KENNETH S WORTHINGTON", "PATRICK A WILSON"]) {
+      expect(people.filter((p) => p.name === name)).toHaveLength(1);
+    }
+    expect(people.map((p) => p.name)).toHaveLength(11);
+    expect(new Set(people.map((p) => p.name)).size).toBe(11);
   });
 
   test("evidence refs cite the bundle position, and never re-export the service's derived keys", async () => {
@@ -175,15 +205,26 @@ describe("preflight over POST /v1/resolve", () => {
     const { context, requests } = await preflight({ address_people: undefined }); // 404s operation 3
     expect(requests.map((r) => r.path)).toEqual(["/v1/resolve", "/v1/address/3342/people"]);
     expect(context.selected?.id).toBe(3342);
-    // The name-carrying shapes still contribute, so the map degrades rather than emptying...
+    // The name-carrying shapes still contribute, so the map degrades rather than emptying. This
+    // list used to be three names — utility rows were unnameable, so the corpus's most populous
+    // shape at this address contributed nothing on the degraded path.
     expect(context.evidence_map.people_at_address.map((p) => p.name).sort()).toEqual([
+      "AMY WILSON",
       "BRANDON MORGISON",
+      "JENNIFER HOWARD",
       "JESSICA WHISMAN",
+      "JOHN PIERCE",
       "JOSIAH CORRELL",
+      "KENNETH WORTHINGTON",
+      "PATRICK WILSON",
+      "SUSAN PIERCE",
+      "TAMIE WORTHINGTON",
     ]);
-    // ...but every identity that only op 3's clustering can supply is gone: `base` and `tax` have
-    // no shape pass at all, and utility rows cannot be named (see the known gap above).
+    // ...but the identities only op 3's clustering can supply are still gone: `base` and `tax` have
+    // no shape pass at all. Without the cluster, the names carry no middle initial — that spelling
+    // is op 3's, and it is exactly why the two paths need a normalized join key.
     expect(context.evidence_map.people_at_address.some((p) => p.sources.includes("base"))).toBe(false);
-    expect(context.evidence_map.people_at_address.some((p) => p.sources.includes("utility"))).toBe(false);
+    expect(context.evidence_map.people_at_address.some((p) => p.sources.includes("tax"))).toBe(false);
+    expect(context.evidence_map.people_at_address.some((p) => p.sources.includes("utility"))).toBe(true);
   });
 });
