@@ -362,8 +362,8 @@ export function sql_tools_guide(heuristic: Record<string, any>): string {
     typed_tools_guide(heuristic),
     "Exploratory SQL (use only when the typed tools cannot answer the question):",
     "- describe_schema: the tables, the indexed access paths that are actually fast, and the known data-quality caveats. Read it BEFORE writing SQL.",
-    "- run_sql(query): one read-only SELECT. A LIMIT is injected if you omit one. A predicate off an indexed path is refused before execution and returns the planner's reason plus a hint — repair against the hint, do not retry the same shape.",
-    "- get_source_record(shape, rowid): a run_sql result carries no provenance, so a SQL hit is not citable evidence until you fetch the row this way.",
+    "- run_sql(query): one read-only SELECT. A LIMIT is injected if you omit one. A predicate off an indexed path is refused before execution and returns the planner's reason plus a hint naming the paths that ARE fast. A refusal is a repair signal, not a failure: rewrite onto a hinted path and try again — do not retry the same shape and do not report it as a data gap.",
+    "- get_source_record(shape, rowid, address_id): a run_sql result carries no provenance — it is columns and row arrays, with no rowid — so a SQL hit is NOT citable evidence until you fetch the row this way. rowid is a position within one address's rows for that shape, so address_id is required; it defaults to the subject address, and you must pass it explicitly for a rowid read off another address's records. Records fetched through the typed tools carry their handle as __rowid.",
     "The concrete job for SQL here: enumerating an owner's other properties. The property rows carry no identifier that reaches the person graph, so no typed tool can reach them; last_name is the only fully-populated key.",
   ].join("\n");
 }
