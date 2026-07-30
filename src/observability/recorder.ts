@@ -1,4 +1,4 @@
-// Metrics recorder: collects per-run telemetry events (spans, LLM/tool/GraphQL calls,
+// Metrics recorder: collects per-run telemetry events (spans, LLM/tool/data-service calls,
 // counters) and rolls them up into a RunMetricsSummary. The current recorder and the
 // current span id live in AsyncLocalStorage, so they propagate across every `await` to
 // the whole async subtree while staying isolated between concurrent runs.
@@ -81,8 +81,9 @@ export interface RecordToolCallOptions {
   metadata?: Record<string, unknown>;
 }
 
-export interface RecordGraphqlCallOptions {
-  call_type: string;
+export interface RecordDataCallOptions {
+  /** "op" = one of the six typed operations, "sql" = the hatch, "schema" = the curated schema. */
+  call_type: "op" | "sql" | "schema";
   operation_name: string;
   latency_ms?: number | null;
   status?: string;
@@ -232,11 +233,11 @@ export class MetricsRecorder {
     });
   }
 
-  record_graphql_call(opts: RecordGraphqlCallOptions): void {
-    this.record_event("graphql_call", {
-      phase: `graphql_${opts.call_type}`,
+  record_data_call(opts: RecordDataCallOptions): void {
+    this.record_event("data_call", {
+      phase: `data_${opts.call_type}`,
       name: opts.operation_name,
-      agent_id: opts.agent_id ?? "graphql",
+      agent_id: opts.agent_id ?? "data",
       heuristic_id: opts.heuristic_id ?? "",
       latency_ms: opts.latency_ms ?? null,
       status: opts.status ?? "ok",
@@ -319,7 +320,6 @@ export class MetricsRecorder {
       provider: this.context.provider,
       model: this.context.model,
       prompt_profile: this.context.prompt_profile,
-      include_shortcuts: this.context.include_shortcuts,
       event_count: events.length,
     });
     const costs: number[] = [];
@@ -351,16 +351,19 @@ export class MetricsRecorder {
       if (event.event_type === "tool_call") {
         summary.tool_call_count += 1;
       }
-      if (event.event_type === "graphql_call") {
-        if (event.phase === "graphql_query") {
-          summary.graphql_query_count += 1;
-        } else if (event.phase === "graphql_validate") {
-          summary.graphql_validation_count += 1;
-        } else if (event.phase === "graphql_schema") {
-          summary.graphql_schema_tool_call_count += 1;
+      if (event.event_type === "data_call") {
+        if (event.phase === "data_op" || event.phase === "data_sql") {
+          summary.data_call_count += 1;
+        } else if (event.phase === "data_schema") {
+          summary.data_schema_call_count += 1;
         }
-        if (event.status !== "ok") {
-          summary.graphql_error_count += 1;
+        // A 422 from the hatch is a REFUSAL, not an error (D3): it is the agent's repair signal and
+        // rolls up on its own counter. Only a genuine failure raises data_error_count.
+        if (event.status === "refused") {
+          summary.sql_refusal_count += 1;
+        }
+        if (event.status === "error") {
+          summary.data_error_count += 1;
         }
       }
       if (event.status !== "ok") {
@@ -398,7 +401,7 @@ export class NoopMetricsRecorder {
 
   record_tool_call(_opts: RecordToolCallOptions): void {}
 
-  record_graphql_call(_opts: RecordGraphqlCallOptions): void {}
+  record_data_call(_opts: RecordDataCallOptions): void {}
 
   record_counter(_name: string, _opts: RecordCounterOptions = {}): void {}
 

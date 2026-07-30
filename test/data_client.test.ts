@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { DataClientError, DataHttpClient, rowRowid } from "../src/agents/data_client.ts";
+import {
+  CountingDataClient,
+  DataClientError,
+  DataHttpClient,
+  isSqlRefusal,
+  rowRowid,
+} from "../src/agents/data_client.ts";
+import { QueryCache } from "../src/agents/query_cache.ts";
+import { MetricsRecorder, makeRunMetricsContext, runWithRecorder } from "../src/observability/recorder.ts";
 import { FixtureDataService } from "./support/fixture_data_service.ts";
 
 describe("DataHttpClient — the six typed operations", () => {
@@ -239,6 +247,176 @@ describe("DataHttpClient — the SQL hatch", () => {
     const s = new FixtureDataService({ sql: { detail: "boom" }, status: 500 });
     try {
       await expect(new DataHttpClient(s.url).run_sql("SELECT 1")).rejects.toThrow(/run_sql failed: HTTP 500/);
+    } finally {
+      s.close();
+    }
+  });
+});
+
+function counted(s: FixtureDataService, max_calls: number, cache: QueryCache | null = null) {
+  return new CountingDataClient(new DataHttpClient(s.url), { max_calls, agent_id: "w1", heuristic_id: "h1", cache });
+}
+
+describe("CountingDataClient — budget accounting", () => {
+  test("counts every typed call and throws the pinned budget message on overrun", async () => {
+    const s = new FixtureDataService({ address_records: { records_by_source: {}, unsupported_shapes: [] } });
+    try {
+      const c = counted(s, 2);
+      await c.address_records(1, { shapes: ["tax"] });
+      await c.address_records(1, { shapes: ["base"] });
+      expect(c.calls).toBe(2);
+      await expect(c.address_records(1, { shapes: ["loan"] })).rejects.toThrow("Data call budget exceeded: 2");
+      // The refused call is NOT counted and NOT sent.
+      expect(c.calls).toBe(2);
+      expect(s.requests.length).toBe(2);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("logs one DataCallLog per call, with the operation and a result summary", async () => {
+    const s = new FixtureDataService({ resolve: { candidates: [], address_id: 9, source_counts: { tax: 1 }, dropped_counts: {}, tax_timed_out: false, records_by_source: {} } });
+    try {
+      const c = counted(s, 4);
+      await c.resolve("1104 SPRING RUN RD", "40514");
+      expect(c.logs.length).toBe(1);
+      expect(c.logs[0]!.operation).toBe("resolve");
+      expect(c.logs[0]!.params).toEqual({ address: "1104 SPRING RUN RD", zip: "40514" });
+      expect(c.logs[0]!.result_summary).not.toBe("");
+      expect(c.logs[0]!.error).toBeNull();
+    } finally {
+      s.close();
+    }
+  });
+
+  test("a failed call is logged with its error and still consumes budget", async () => {
+    const s = new FixtureDataService({ resolve: {}, status: 500 });
+    try {
+      const c = counted(s, 4);
+      await expect(c.resolve("a", "")).rejects.toThrow(/HTTP 500/);
+      expect(c.calls).toBe(1);
+      expect(c.logs.length).toBe(1);
+      expect(c.logs[0]!.error).toMatch(/HTTP 500/);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("schema() spends the SEPARATE schema budget, never the data budget", async () => {
+    const s = new FixtureDataService({ schema: { tables: [], access_paths: [], caveats: [] } });
+    try {
+      const c = counted(s, 1);
+      await c.schema({ max_calls: 1 });
+      expect(c.schema_tool_calls).toBe(1);
+      expect(c.calls).toBe(0);
+      await expect(c.schema({ max_calls: 1 })).rejects.toThrow("Schema description tool budget exceeded: 1");
+      // The data budget is untouched by either schema call, so a typed op still gets through.
+      await expect(c.resolve("a", "")).rejects.toThrow(/no fixture for this route|HTTP 404/);
+      expect(c.calls).toBe(1);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("a SQL refusal is recorded on refusal_logs, counts against the budget, and does not throw", async () => {
+    const s = new FixtureDataService({ sql: { refused: true, stage: "parse", reason: "only one SELECT is allowed", hint: "Remove the ';'." } });
+    try {
+      const c = counted(s, 4);
+      const out = await c.run_sql("SELECT 1; DROP TABLE tax");
+      expect(isSqlRefusal(out)).toBe(true);
+      expect(c.refusal_logs.length).toBe(1);
+      expect(c.refusal_logs[0]!.stage).toBe("parse");
+      expect(c.refusal_logs[0]!.reason).toBe("only one SELECT is allowed");
+      expect(c.calls).toBe(1);
+      // The refusal is a RESULT, so it is logged as one: the log carries no error.
+      expect(c.logs[0]!.error).toBeNull();
+      expect(c.logs[0]!.result_summary).toBe("refused at parse: only one SELECT is allowed");
+      // The raw SQL never reaches the log or the telemetry — only its digest and length.
+      expect(c.logs[0]!.params).toEqual({
+        query_sha256: expect.any(String),
+        query_chars: "SELECT 1; DROP TABLE tax".length,
+      });
+    } finally {
+      s.close();
+    }
+  });
+
+  test("the shared QueryCache coalesces identical calls and spends budget only once per execution", async () => {
+    const s = new FixtureDataService({ address_records: { records_by_source: {}, unsupported_shapes: [] } });
+    try {
+      const cache = new QueryCache();
+      const c = counted(s, 4, cache);
+      await c.address_records(1, { shapes: ["tax"], limit: 25 });
+      await c.address_records(1, { shapes: ["tax"], limit: 25 });
+      expect(cache.executed).toBe(1);
+      expect(cache.hits).toBe(1);
+      expect(s.requests.length).toBe(1);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("the cache keys source_record on the address too — a rowid is meaningless without it", async () => {
+    const s = new FixtureDataService({
+      source_record: { source: "tax", table: "tax", rowid: 0, record_id: "4001", summary: "", data: {} },
+    });
+    try {
+      const cache = new QueryCache();
+      const c = counted(s, 4, cache);
+      await c.source_record("tax", 0, 3342);
+      await c.source_record("tax", 0, 9999);
+      expect(cache.executed).toBe(2);
+      expect(s.requests.map((r) => r.query)).toEqual([{ address_id: "3342" }, { address_id: "9999" }]);
+    } finally {
+      s.close();
+    }
+  });
+});
+
+describe("CountingDataClient — telemetry", () => {
+  test("emits one data_call event per call and rolls them up onto the renamed counters", async () => {
+    const s = new FixtureDataService({
+      address_records: { records_by_source: {}, unsupported_shapes: [] },
+      sql: { refused: true, stage: "explain", reason: "Seq Scan on records_legacy", hint: "Indexed paths: zip." },
+      schema: { tables: [], access_paths: [], caveats: [] },
+    });
+    try {
+      const recorder = new MetricsRecorder(makeRunMetricsContext({ run_id: "run-1" }), { enabled: true });
+      await runWithRecorder(recorder, async () => {
+        const c = counted(s, 4);
+        await c.address_records(1, { shapes: ["tax"] });
+        await c.run_sql("SELECT * FROM records_legacy");
+        await c.schema({ max_calls: 2 });
+      });
+      const events = recorder.events();
+      expect(events.map((e) => e.event_type)).toEqual(["data_call", "data_call", "data_call"]);
+      expect(events.map((e) => e.phase)).toEqual(["data_op", "data_sql", "data_schema"]);
+      expect(events.map((e) => e.status)).toEqual(["ok", "refused", "ok"]);
+      expect(events[0]!.agent_id).toBe("w1");
+      expect(events[0]!.heuristic_id).toBe("h1");
+
+      const summary = recorder.summary();
+      expect(summary.data_call_count).toBe(2); // the typed op + the hatch call
+      expect(summary.sql_refusal_count).toBe(1);
+      expect(summary.data_schema_call_count).toBe(1);
+      // A refusal is the agent's repair signal, not a failure of the data layer.
+      expect(summary.data_error_count).toBe(0);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("a failed call rolls up onto data_error_count, not sql_refusal_count", async () => {
+    const s = new FixtureDataService({ address_records: {}, status: 500 });
+    try {
+      const recorder = new MetricsRecorder(makeRunMetricsContext({ run_id: "run-1" }), { enabled: true });
+      await runWithRecorder(recorder, async () => {
+        await expect(counted(s, 4).address_records(1, {})).rejects.toThrow(/HTTP 500/);
+      });
+      const summary = recorder.summary();
+      expect(summary.data_error_count).toBe(1);
+      expect(summary.sql_refusal_count).toBe(0);
+      expect(summary.data_call_count).toBe(1);
     } finally {
       s.close();
     }

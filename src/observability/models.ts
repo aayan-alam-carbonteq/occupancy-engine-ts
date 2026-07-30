@@ -7,7 +7,7 @@ export type MetricEventType =
   | "span_start"
   | "llm_call"
   | "tool_call"
-  | "graphql_call"
+  | "data_call"
   | "error"
   | "counter";
 
@@ -141,7 +141,6 @@ export interface RunMetricsSummary {
   provider: string;
   model: string;
   prompt_profile: string;
-  include_shortcuts: boolean;
   event_count: number;
   latency_ms: number | null;
   llm_call_count: number;
@@ -153,10 +152,10 @@ export interface RunMetricsSummary {
   reasoning_output_tokens: number;
   estimated_cost_usd: number | null;
   tool_call_count: number;
-  graphql_query_count: number;
-  graphql_validation_count: number;
-  graphql_schema_tool_call_count: number;
-  graphql_error_count: number;
+  data_call_count: number;
+  sql_refusal_count: number;
+  data_schema_call_count: number;
+  data_error_count: number;
   error_count: number;
   phase_counts: Record<string, number>;
   agent_counts: Record<string, number>;
@@ -174,7 +173,6 @@ export function makeRunMetricsSummary(partial: Partial<RunMetricsSummary> = {}):
     provider: "",
     model: "",
     prompt_profile: "",
-    include_shortcuts: false,
     event_count: 0,
     latency_ms: null,
     llm_call_count: 0,
@@ -186,10 +184,10 @@ export function makeRunMetricsSummary(partial: Partial<RunMetricsSummary> = {}):
     reasoning_output_tokens: 0,
     estimated_cost_usd: null,
     tool_call_count: 0,
-    graphql_query_count: 0,
-    graphql_validation_count: 0,
-    graphql_schema_tool_call_count: 0,
-    graphql_error_count: 0,
+    data_call_count: 0,
+    sql_refusal_count: 0,
+    data_schema_call_count: 0,
+    data_error_count: 0,
     error_count: 0,
     phase_counts: {},
     agent_counts: {},

@@ -5,6 +5,11 @@
 // A 422 from /v1/sql is a RESULT, not an error: it carries the planner's own reason and is what the
 // agent repairs against. Every other non-2xx is a DataClientError.
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { currentRecorder } from "../observability/index.ts";
+import { DataCallLogSchema, type DataCallLog } from "./models.ts";
+import type { QueryCache } from "./query_cache.ts";
 
 /** Raised when a data-service call fails or violates a tool guardrail. */
 export class DataClientError extends Error {
@@ -307,6 +312,228 @@ export class DataHttpClient {
     }
     return payload;
   }
+}
+
+/**
+ * Per-agent budget accounting over DataHttpClient. Preserves, exactly, what CountingGraphQLTool
+ * provided: a hard `max_calls` ceiling with a string-matched error, a `logs` array that
+ * error_result() reads, a SEPARATE schema-tool counter, QueryCache single-flight, and one telemetry
+ * event per call. This is cost control, not bookkeeping — do not simplify it away.
+ *
+ * The accounting order is budget check -> increment -> cache -> log -> recorder event, and it is
+ * load-bearing: the increment happens BEFORE the call so an in-flight call is already paid for, and
+ * the refused call is neither counted nor sent.
+ */
+export class CountingDataClient {
+  client: DataHttpClient;
+  max_calls: number;
+  agent_id: string;
+  heuristic_id: string;
+  logs: DataCallLog[] = [];
+  // D3: the 422 channel replaces the old pre-execution validator. A refusal is a RESULT, so it is
+  // recorded here rather than raised; subagents.ts reads this exactly as it read validation_logs.
+  refusal_logs: SqlRefusal[] = [];
+  schema_tool_calls = 0;
+  calls = 0;
+  cache: QueryCache | null;
+
+  constructor(
+    client: DataHttpClient,
+    opts: { max_calls: number; agent_id?: string; heuristic_id?: string; cache?: QueryCache | null },
+  ) {
+    this.client = client;
+    this.max_calls = opts.max_calls;
+    this.agent_id = opts.agent_id ?? "data";
+    this.heuristic_id = opts.heuristic_id ?? "";
+    this.cache = opts.cache ?? null;
+  }
+
+  resolve(address: string, zip: string): Promise<ResolveResponse> {
+    return this._budgeted("resolve", { address, zip: zip ?? "" }, () => this.client.resolve(address, zip));
+  }
+
+  address_records(address_id: number, opts: { shapes?: string[]; limit?: number; offset?: number } = {}) {
+    return this._budgeted<AddressRecordsResponse>(
+      "address_records",
+      { address_id, ...opts },
+      () => this.client.address_records(address_id, opts),
+    );
+  }
+
+  address_people(address_id: number, opts: { limit?: number; offset?: number } = {}) {
+    return this._budgeted<AddressPeopleResponse>(
+      "address_people",
+      { address_id, ...opts },
+      () => this.client.address_people(address_id, opts),
+    );
+  }
+
+  person_records(person_id: string, opts: { shapes?: string[]; limit?: number } = {}) {
+    return this._budgeted<PersonRecordsResponse>(
+      "person_records",
+      { person_id, ...opts },
+      () => this.client.person_records(person_id, opts),
+    );
+  }
+
+  search_people(name: string, opts: { limit?: number } = {}) {
+    return this._budgeted<PeopleSearchResponse>("search_people", { name, ...opts }, () =>
+      this.client.search_people(name, opts),
+    );
+  }
+
+  /**
+   * `address_id` is required and is part of the cache key: a rowid is a position within ONE
+   * address's rows, so keying on {shape, rowid} alone would serve address A's row for address B.
+   */
+  source_record(shape: string, rowid: number, address_id: number) {
+    return this._budgeted<SourceRecordResponse>("source_record", { shape, rowid, address_id }, () =>
+      this.client.source_record(shape, rowid, address_id),
+    );
+  }
+
+  async run_sql(query: string): Promise<SqlResponse> {
+    const result = await this._budgeted<SqlResponse>(
+      "run_sql",
+      { query_sha256: sha256(query), query_chars: Array.from(query).length },
+      () => this.client.run_sql(query),
+      (value) => (isSqlRefusal(value) ? `refused at ${value.stage}: ${value.reason}` : `${value.row_count} rows`),
+    );
+    if (isSqlRefusal(result)) {
+      this.refusal_logs.push(result);
+    }
+    return result;
+  }
+
+  /** The curated schema. Spends `schema_tool_budget`, never the data-call budget. */
+  async schema(opts: { max_calls?: number | null } = {}): Promise<DataSchema> {
+    const max_calls = opts.max_calls ?? null;
+    const recorder = currentRecorder();
+    const start = performance.now();
+    if (max_calls !== null && this.schema_tool_calls >= max_calls) {
+      recorder.record_data_call({
+        call_type: "schema",
+        operation_name: "schema",
+        latency_ms: elapsedMs(start),
+        status: "error",
+        error: `Schema description tool budget exceeded: ${max_calls}`,
+        metadata: { max_calls, schema_tool_calls: this.schema_tool_calls },
+        agent_id: this.agent_id,
+        heuristic_id: this.heuristic_id,
+      });
+      throw new DataClientError(`Schema description tool budget exceeded: ${max_calls}`);
+    }
+    this.schema_tool_calls += 1;
+    try {
+      const data = await this.client.schema();
+      recorder.record_data_call({
+        call_type: "schema",
+        operation_name: "schema",
+        latency_ms: elapsedMs(start),
+        metadata: {
+          schema_tool_calls: this.schema_tool_calls,
+          response_bytes: Buffer.byteLength(JSON.stringify(data), "utf8"),
+        },
+        agent_id: this.agent_id,
+        heuristic_id: this.heuristic_id,
+      });
+      return data;
+    } catch (exc) {
+      if (!(exc instanceof DataClientError)) throw exc;
+      recorder.record_data_call({
+        call_type: "schema",
+        operation_name: "schema",
+        latency_ms: elapsedMs(start),
+        status: "error",
+        error: errStr(exc),
+        metadata: { schema_tool_calls: this.schema_tool_calls },
+        agent_id: this.agent_id,
+        heuristic_id: this.heuristic_id,
+      });
+      throw exc;
+    }
+  }
+
+  private async _budgeted<T>(
+    operation: string,
+    params: Record<string, unknown>,
+    run: () => Promise<T>,
+    summarize: (value: T) => string = (value) => summarizeResponse(value),
+  ): Promise<T> {
+    const recorder = currentRecorder();
+    const start = performance.now();
+    const call_type = operation === "run_sql" ? "sql" : "op";
+    if (this.calls >= this.max_calls) {
+      recorder.record_data_call({
+        call_type,
+        operation_name: operation,
+        latency_ms: elapsedMs(start),
+        status: "error",
+        error: `Data call budget exceeded: ${this.max_calls}`,
+        metadata: { ...params, max_calls: this.max_calls, calls: this.calls },
+        agent_id: this.agent_id,
+        heuristic_id: this.heuristic_id,
+      });
+      throw new DataClientError(`Data call budget exceeded: ${this.max_calls}`);
+    }
+    this.calls += 1;
+    let value: T;
+    try {
+      value =
+        this.cache !== null
+          ? ((await this.cache.get_or_execute(operation, params, run)) as T)
+          : await run();
+    } catch (exc) {
+      if (!(exc instanceof DataClientError)) throw exc;
+      this.logs.push(
+        DataCallLogSchema.parse({
+          operation,
+          params,
+          result_summary: `${operation} failed: ${errStr(exc)}`,
+          error: errStr(exc),
+        }),
+      );
+      recorder.record_data_call({
+        call_type,
+        operation_name: operation,
+        latency_ms: elapsedMs(start),
+        status: "error",
+        error: errStr(exc),
+        metadata: { ...params, calls: this.calls },
+        agent_id: this.agent_id,
+        heuristic_id: this.heuristic_id,
+      });
+      throw exc;
+    }
+    const response_bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    const summary = summarize(value);
+    this.logs.push(DataCallLogSchema.parse({ operation, params, result_summary: summary }));
+    recorder.record_data_call({
+      call_type,
+      operation_name: operation,
+      latency_ms: elapsedMs(start),
+      status: operation === "run_sql" && isSqlRefusal(value) ? "refused" : "ok",
+      metadata: { ...params, calls: this.calls, response_bytes },
+      agent_id: this.agent_id,
+      heuristic_id: this.heuristic_id,
+    });
+    return value;
+  }
+}
+
+function summarizeResponse(value: unknown): string {
+  if (!isRecord(value)) return "";
+  const keys = Object.keys(value).sort().join(", ");
+  return keys ? `keys: ${keys}` : "empty response";
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/** Milliseconds since `startMs`, rounded to 3 decimals (matches the recorder). */
+function elapsedMs(startMs: number): number {
+  return Math.round((performance.now() - startMs) * 1000) / 1000;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
