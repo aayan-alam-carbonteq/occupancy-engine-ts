@@ -109,7 +109,7 @@ const CATCH_ALL_PHRASE = "an internal record field";
 const ENGINE_CONTRACT_FIELDS: readonly string[] = [
   "heuristic_id", "heuristic_ids", "status", "direction", "score", "local_score", "confidence",
   "finding", "interpretation", "evidence_for", "evidence_against", "evidence_refs",
-  "missing_evidence", "graphql_queries", "tool_errors", "validation_errors",
+  "missing_evidence", "data_queries", "tool_errors", "validation_errors",
   "query_repair_attempts", "raw_model_failures", "caveats", "needs_second_pass",
   "raw_score", "calibrated_score", "clarity_score", "verdict_band", "case_archetype",
   "score_adjustments", "reasoning_summary", "why_not_higher", "why_not_lower",
