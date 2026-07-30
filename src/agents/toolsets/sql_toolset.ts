@@ -5,7 +5,7 @@
 //
 // A 422 refusal from the hatch is NOT an error: it is the repair signal, carrying the planner's own
 // reason and a hint naming the indexed access paths. It lands on diagnostics.validation_errors and
-// increments query_repair_attempts, which is exactly what the GraphQL validate loop used to do.
+// increments query_repair_attempts, which is exactly what the retired validate/repair loop did.
 // DataHttpClient accepts 422 for /v1/sql and nothing else, so a 500 from the same endpoint still
 // raises — a broken service must not present as a refusal the agent repairs forever.
 import { createHash } from "node:crypto";

@@ -5,7 +5,8 @@ import type { HeuristicAgentInput } from "../models.ts";
 /** Mutable per-subagent run diagnostics shared by the loop and toolset dispatch. */
 export class Diagnostics {
   tool_errors: string[] = [];
-  /** SQL refusal reasons — the hatch's repair channel (was GraphQL validation errors). */
+  /** SQL refusal reasons — the hatch's repair channel. Named for the pre-execution validator it
+   * replaced; the field name is part of the diagnostics contract, so it stays. */
   validation_errors: string[] = [];
   query_repair_attempts = 0;
   raw_model_failures: string[] = [];

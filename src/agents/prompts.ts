@@ -169,7 +169,7 @@ export const MINI_SCHEMA_GUIDE = DATA_SURFACE_PRIMER;
 
 /**
  * The retrieval-requirements block, shared by the single and grouped packet prompts so they cannot
- * drift apart (the GraphQL versions had already drifted — the grouped builder carried its own copy).
+ * drift apart (the previous versions HAD drifted — the grouped builder carried its own copy).
  * The second line is the 422 repair channel replacing the pre-execution validator (item 7).
  */
 const DATA_ACCESS_REQUIREMENTS: readonly string[] = [

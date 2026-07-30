@@ -1543,7 +1543,8 @@ function _short_source_summary(source: string, data: Record<string, any>): strin
  * on a spelling, and `utility` (the most populous shape at a typical address) is the snake_case one:
  * SOURCE_DATA_FIELDS.utility is `first_name`/`last_name`/`middle_name`. Reading only the camel/flat
  * spellings made every utility row anonymous to this map. `firstName`/`lastName` are the retired
- * GraphQL spellings, kept because nothing guarantees a caller's payload is service-shaped.
+ * camelCase spellings of the previous data surface, kept because nothing guarantees a caller's
+ * payload is service-shaped.
  */
 const _FIRST_NAME_KEYS = ["firstname", "first_name", "firstName"] as const;
 const _LAST_NAME_KEYS = ["lastname", "last_name", "lastName"] as const;
@@ -1559,7 +1560,7 @@ function _first_present(data: Record<string, any>, keys: readonly string[]): str
 }
 
 function _person_name(data: Record<string, any>): string {
-  // `full_name` is the clustered person's field (Contract B); `fullName` was the GraphQL spelling.
+  // `full_name` is the clustered person's field (Contract B); `fullName` is the retired spelling.
   const full = data["full_name"] || data["fullName"];
   if (full) {
     return String(full).trim().toUpperCase();

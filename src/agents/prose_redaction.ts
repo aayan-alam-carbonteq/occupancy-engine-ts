@@ -1,5 +1,5 @@
 // Deterministic prose redaction: a SECURITY BACKSTOP against internal data-surface identifiers
-// (GraphQL field/type names, DB column names) surviving in the human-facing prose fields. It
+// (data-service field names, DB column names) surviving in the human-facing prose fields. It
 // recognizes the enumerated schema identifiers plus any camelCase / snake_case identifier shape;
 // bare dictionary words (Person, Property, residential, tax, loan) are left untouched so ordinary
 // prose — including owner names like "McDonald" — is never mangled. It also substitutes obscure
@@ -42,8 +42,6 @@ export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
   autorecords: "vehicle-registration record",
   loanrecords: "mortgage/loan application record",
   driverecords: "driver's-license record",
-  voterrecords: "voter-registration record",
-  criminalrecords: "criminal record",
   // associations / query roots
   personassociations: "person association",
   propertyassociations: "property association",
@@ -71,11 +69,11 @@ export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
   forecloserecorddate: "foreclosure record date",
   rowid: "record reference",
   recordid: "record reference",
-  // singular / PascalCase GraphQL type names (the model sees these via describe_schema)
+  // singular / PascalCase type names from the retired schema surface. No live operation emits these
+  // any more, but a model that saw them in an earlier turn's prose must not leak them either.
   taxrecord: "property-tax record",
   baserecord: "residence record",
   driverecord: "driver's-license record",
-  voterrecord: "voter-registration record",
   autorecord: "vehicle-registration record",
   loanrecord: "mortgage/loan application record",
   tracerecord: "address-history record",
@@ -95,7 +93,7 @@ export const SCHEMA_TOKEN_PHRASES: Record<string, string> = {
 const CATCH_ALL_PHRASE = "an internal record field";
 
 // The engine's own CONTRACT vocabulary. The scrubber exists to hide the underlying DATA SURFACE
-// (GraphQL schema field/type names, DB column names) — it must never eat the engine's own words.
+// (schema field/type names, DB column names) — it must never eat the engine's own words.
 // That covers four families, all of which legitimately appear in prose and diagnostics:
 //   1. classification labels (verdict bands, case archetypes, status/interpretation enums) —
 //      build_report embeds verdict_band/case_archetype verbatim;
@@ -186,7 +184,9 @@ const ASSIGN_RE = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^\s,;.)]+)/g
 // Source-tag CITATIONS the model embeds inline, e.g. "TAX:68344", "LOAN:74141-74144".
 // These are not identifier-shaped, so CAMEL_RE/SNAKE_RE miss them. The digits/ranges are the
 // machine anchor — it lives in the structured evidence fields, so we strip it from prose entirely.
-const SOURCE_TAGS = "TAX|LOAN|BASE|TRACE|UTILITY|VOTER|DRIVE|AUTO|CRIMINAL";
+// One tag per live shape (source/manifest.py ships seven) — the only shapes an evidence ref, and so
+// a citation, can name.
+const SOURCE_TAGS = "TAX|LOAN|BASE|TRACE|UTILITY|DRIVE|AUTO";
 const SOURCE_REF_RE = new RegExp(`\\b(?:${SOURCE_TAGS}):\\d[\\d-]*`, "gi");
 // A parenthetical wrapping ONLY source-tag citations (optionally comma/space separated), e.g.
 // " (TAX:68344)" or " (LOAN:74141-74144)". Removed whole so no empty "()" is left behind.

@@ -5,7 +5,7 @@
 // context.
 //
 // `_union_source_scope` lives here rather than in the hatch toolset: SqlToolset COMPOSES this class,
-// so the dependency has to point this way. It used to point the other way, at graphql_toolset.ts.
+// so the dependency has to point this way (it pointed the other way before the typed surface landed).
 import type { CountingDataClient } from "../data_client.ts";
 import type { HeuristicAgentInput } from "../models.ts";
 import {

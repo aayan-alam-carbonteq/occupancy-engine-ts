@@ -315,8 +315,8 @@ export class DataHttpClient {
 }
 
 /**
- * Per-agent budget accounting over DataHttpClient. Preserves, exactly, what CountingGraphQLTool
- * provided: a hard `max_calls` ceiling with a string-matched error, a `logs` array that
+ * Per-agent budget accounting over DataHttpClient. Preserves, exactly, what the retired counting
+ * tool provided: a hard `max_calls` ceiling with a string-matched error, a `logs` array that
  * error_result() reads, a SEPARATE schema-tool counter, QueryCache single-flight, and one telemetry
  * event per call. This is cost control, not bookkeeping — do not simplify it away.
  *
