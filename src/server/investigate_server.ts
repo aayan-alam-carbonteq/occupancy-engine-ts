@@ -1,10 +1,10 @@
 // Long-running, stateless HTTP service wrapping investigate_address. One streaming endpoint:
 //   POST /investigate  → NDJSON: zero-or-more {"progress"} frames (formatProgressLine, verbatim),
 //                        then exactly one terminal {"report"} or {"error"} frame.
-//   GET  /healthz       → 200 once the LLM + graph clients construct, else 503.
+//   GET  /healthz       → 200 once the LLM + data clients construct, else 503.
 // Bun.serve is native — no new dependency. No job store, no persistence.
 import { createChatModel } from "../agents/llm.ts";
-import { GraphQLHttpTool } from "../agents/graphql_tool.ts";
+import { DataHttpClient } from "../agents/data_client.ts";
 import { investigate_address, type InvestigationHooks } from "../agents/orchestrator.ts";
 import {
   assessment_report_payload,
@@ -25,7 +25,7 @@ export interface EngineServerOptions {
   request_timeout_ms?: number; // default 300_000 — flips should_cancel for that request
   shutdown_drain_ms?: number; // default = request_timeout_ms (<= engine timeout)
   retry_after_seconds?: number; // default 2
-  graphql_url?: string; // healthcheck default; investigations carry their own graphql_url
+  data_url?: string; // healthcheck default; investigations carry their own data_url
   investigate?: InvestigationRunner; // injection seam for deterministic tests
 }
 
@@ -82,7 +82,7 @@ export function create_engine_server(opts: EngineServerOptions = {}): EngineServ
   const request_timeout_ms = opts.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const shutdown_drain_ms = opts.shutdown_drain_ms ?? request_timeout_ms;
   const retry_after = String(opts.retry_after_seconds ?? DEFAULT_RETRY_AFTER_SECONDS);
-  const graphql_url_default = opts.graphql_url ?? process.env.GRAPHQL_URL ?? "http://graphql:8000/graphql";
+  const data_url_default = opts.data_url ?? process.env.DATA_URL ?? "http://graph:8000";
   const run_investigation: InvestigationRunner =
     opts.investigate ?? ((request, hooks) => investigate_address(request, null, hooks));
   const pool = new PermitPool(max_concurrency);
@@ -95,11 +95,11 @@ export function create_engine_server(opts: EngineServerOptions = {}): EngineServ
     async fetch(req) {
       const url = new URL(req.url);
 
-      // Healthcheck (no auth): proves the LLM + graph clients construct. Cheap — no network, no spend.
+      // Healthcheck (no auth): proves the LLM + data clients construct. Cheap — no network, no spend.
       if (req.method === "GET" && url.pathname === "/healthz") {
         try {
           createChatModel({ provider: "auto", timeout_seconds: 30 });
-          new GraphQLHttpTool(graphql_url_default);
+          new DataHttpClient(data_url_default);
           return json_response({ status: "ok" }, 200);
         } catch (exc) {
           return json_response({ status: "unhealthy", error: errStr(exc) }, 503);
