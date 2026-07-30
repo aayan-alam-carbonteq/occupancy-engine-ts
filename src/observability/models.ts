@@ -75,7 +75,6 @@ export interface MetricEvent {
   provider: string;
   model: string;
   prompt_profile: string;
-  include_shortcuts: boolean;
   span_id: string;
   parent_span_id: string;
   langchain_run_id: string;
@@ -112,7 +111,6 @@ export function makeMetricEvent(partial: Partial<MetricEvent> & Pick<MetricEvent
     provider: "",
     model: "",
     prompt_profile: "",
-    include_shortcuts: false,
     span_id: "",
     parent_span_id: "",
     langchain_run_id: "",

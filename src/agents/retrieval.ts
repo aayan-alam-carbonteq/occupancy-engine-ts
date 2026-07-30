@@ -6,9 +6,18 @@
 import { CountingDataClient, DataClientError, SHAPES, rowRowid, type PersonSummary, type RecordBlock, type SourceRow } from "./data_client.ts";
 import type { ResolvedAddressContext } from "./models.ts";
 
-/** Shapes servable at an address. utility is address-linked and has no person scope. */
+/** Shapes servable at an address: all seven the service ships. */
 export const ADDRESS_SHAPES: readonly string[] = [...SHAPES];
-/** Shapes servable for a person id. */
+/**
+ * Shapes we request for a person id. The service DOES serve `utility` on the person path — op 4
+ * shares `select_shapes` with op 2 — so the exclusion is ours, and the reason is citability, not
+ * availability. `utility` is the one shape whose projection carries no `id` at all (`id_linked=False`
+ * in the service manifest, uniquely), and the owner-elsewhere (`hal:`) traversal emits its record
+ * blocks with `with_rowid=False`, so there is no `__rowid` handle either; operation 6 additionally
+ * requires an `?address_id=` that a `hal:` person id cannot supply. A person-scoped utility row would
+ * therefore be an uncitable name match. Utility rows still reach the model on the address path
+ * (op 2), where the bundle position supplies the rowid.
+ */
 export const PERSON_SHAPES: readonly string[] = SHAPES.filter((s) => s !== "utility");
 
 const PERSON_KEYS = [

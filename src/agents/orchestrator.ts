@@ -178,10 +178,6 @@ export class AgentOrchestrator {
         provider: _report_provider(request.provider),
         model: request.model || "",
         prompt_profile: request.prompt_profile,
-        // D1 retired include_shortcuts from the request: both retrieval modes now carry the same
-        // typed tools, so there is nothing to bolt on. The recorder context still declares the
-        // field, so it is reported as the constant it now is.
-        include_shortcuts: false,
       },
       {
         enabled: request.metrics_enabled,

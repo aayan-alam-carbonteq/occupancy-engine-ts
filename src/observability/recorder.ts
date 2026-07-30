@@ -28,7 +28,6 @@ export interface RunMetricsContext {
   provider: string;
   model: string;
   prompt_profile: string;
-  include_shortcuts: boolean;
 }
 
 /** Build a RunMetricsContext with default field values (run_id is required). */
@@ -44,7 +43,6 @@ export function makeRunMetricsContext(
     provider: "",
     model: "",
     prompt_profile: "",
-    include_shortcuts: false,
     ...partial,
   };
 }
@@ -280,7 +278,6 @@ export class MetricsRecorder {
       provider: this.context.provider,
       model: this.context.model,
       prompt_profile: this.context.prompt_profile,
-      include_shortcuts: this.context.include_shortcuts,
       parent_span_id: parent_span_id ?? (spanStorage.getStore() ?? ""),
       started_at: started_at ?? metricEventNow(),
       ended_at: ended_at ?? metricEventNow(),
