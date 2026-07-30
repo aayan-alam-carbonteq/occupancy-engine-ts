@@ -355,3 +355,15 @@ export function typed_tools_guide(heuristic: Record<string, any>): string {
   lines.push('evidence_for is REQUIRED when status is triggered (cite at least one supporting source/table/rowid); evidence_against or missing_evidence is required when not_triggered. Citing rows is not "repeating the conclusion" — these structured citations are mandatory anchors, separate from the finding narrative.');
   return lines.join("\n");
 }
+
+/** The typed-tools guide plus the hatch. Used only by SqlToolset ("tools" mode). */
+export function sql_tools_guide(heuristic: Record<string, any>): string {
+  return [
+    typed_tools_guide(heuristic),
+    "Exploratory SQL (use only when the typed tools cannot answer the question):",
+    "- describe_schema: the tables, the indexed access paths that are actually fast, and the known data-quality caveats. Read it BEFORE writing SQL.",
+    "- run_sql(query): one read-only SELECT. A LIMIT is injected if you omit one. A predicate off an indexed path is refused before execution and returns the planner's reason plus a hint — repair against the hint, do not retry the same shape.",
+    "- get_source_record(shape, rowid): a run_sql result carries no provenance, so a SQL hit is not citable evidence until you fetch the row this way.",
+    "The concrete job for SQL here: enumerating an owner's other properties. The property rows carry no identifier that reaches the person graph, so no typed tool can reach them; last_name is the only fully-populated key.",
+  ].join("\n");
+}

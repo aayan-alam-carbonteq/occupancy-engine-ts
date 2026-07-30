@@ -1,15 +1,16 @@
 // Diagnostics container and the RetrievalToolset interface for subagent runs.
-import type { CountingGraphQLTool } from "../graphql_tool.ts";
+import type { CountingDataClient } from "../data_client.ts";
 import type { HeuristicAgentInput } from "../models.ts";
 
 /** Mutable per-subagent run diagnostics shared by the loop and toolset dispatch. */
 export class Diagnostics {
   tool_errors: string[] = [];
+  /** SQL refusal reasons — the hatch's repair channel (was GraphQL validation errors). */
   validation_errors: string[] = [];
   query_repair_attempts = 0;
   raw_model_failures: string[] = [];
   output_validation_failures: string[] = [];
-  graphql_budget_exhausted = false;
+  data_budget_exhausted = false;
   fetched_rows: Record<string, any>[] = [];
 }
 
@@ -35,7 +36,7 @@ export interface RetrievalToolset {
     name: string,
     args: Record<string, any>,
     agent_input: HeuristicAgentInput,
-    graphql: CountingGraphQLTool,
+    data: CountingDataClient,
     diagnostics: Diagnostics,
   ): Promise<Record<string, any>>;
 

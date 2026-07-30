@@ -1,9 +1,12 @@
 // The "typed_tools" retrieval surface adapter (implements RetrievalToolset). Tool definitions,
 // dispatch, and the per-heuristic guide live in typed_tools.ts; this class wires them into the
 // subagent loop's toolset protocol: the same tool ownership set, the same prompt wiring
-// (TYPED_TOOLS_HEURISTIC_SYSTEM_PROMPT, typed_tools_guide), schema_mini_guide dropped from context,
-// and grouping reuses _union_source_scope from graphql_toolset.ts.
-import type { CountingGraphQLTool } from "../graphql_tool.ts";
+// (TYPED_TOOLS_HEURISTIC_SYSTEM_PROMPT, typed_tools_guide), and schema_mini_guide dropped from
+// context.
+//
+// `_union_source_scope` lives here rather than in the hatch toolset: SqlToolset COMPOSES this class,
+// so the dependency has to point this way. It used to point the other way, at graphql_toolset.ts.
+import type { CountingDataClient } from "../data_client.ts";
 import type { HeuristicAgentInput } from "../models.ts";
 import {
   TYPED_TOOLS_HEURISTIC_SYSTEM_PROMPT,
@@ -19,7 +22,23 @@ import {
   typed_tools_guide,
 } from "../typed_tools.ts";
 import type { Diagnostics, RetrievalToolset } from "./base.ts";
-import { _union_source_scope } from "./graphql_toolset.ts";
+
+/** Ordered union of every input's context_scope (falling back to input_sources), deduped. */
+export function _union_source_scope(agent_inputs: HeuristicAgentInput[]): string[] {
+  const scope: string[] = [];
+  for (const ai of agent_inputs) {
+    const contextScope = ai.heuristic["context_scope"] as any[] | undefined;
+    const inputSources = ai.heuristic["input_sources"] as any[] | undefined;
+    const sources: any[] = contextScope?.length ? contextScope : inputSources?.length ? inputSources : [];
+    for (const source of sources) {
+      const name = String(source);
+      if (!scope.includes(name)) {
+        scope.push(name);
+      }
+    }
+  }
+  return scope;
+}
 
 export class TypedToolset implements RetrievalToolset {
   name = "typed_tools";
@@ -70,10 +89,10 @@ export class TypedToolset implements RetrievalToolset {
     name: string,
     args: Record<string, any>,
     agent_input: HeuristicAgentInput,
-    graphql: CountingGraphQLTool,
+    data: CountingDataClient,
     diagnostics: Diagnostics,
   ): Promise<Record<string, any>> {
-    const content = await run_typed_tool(name, args, agent_input, graphql);
+    const content = await run_typed_tool(name, args, agent_input, data);
     if (!content["ok"] && content["error"]) {
       diagnostics.tool_errors.push(String(content["error"]));
     }
