@@ -25,12 +25,12 @@
     "id": "agent-toolsets",
     "priority": 3,
     "area": "agents",
-    "title": "GraphQL + typed toolsets for subagents",
-    "user_visible_behavior": "Subagents fetch evidence via typed/raw GraphQL tools.",
+    "title": "Typed + hatch toolsets for subagents",
+    "user_visible_behavior": "Subagents fetch evidence via the 10 typed tools ('typed_tools' mode) or those plus the guarded SQL hatch ('tools' mode, the default).",
     "status": "passing",
-    "verification": "bun run verify; exercised by E2E-2.",
+    "verification": "OE_PROSE_REGISTER=off bun run verify; exercised by E2E-2; test/sql_toolset.test.ts.",
     "evidence": "Parity verification; typecheck+tests green.",
-    "notes": "src/agents/toolsets/*."
+    "notes": "src/agents/toolsets/*. Renamed from 'GraphQL + typed toolsets' by X-016: SqlToolset COMPOSES TypedToolset, so the two surfaces cannot drift."
   },
   {
     "id": "observability",
@@ -48,11 +48,12 @@
     "priority": 5,
     "area": "cli",
     "title": "cli/run_address.ts single-address runner",
-    "user_visible_behavior": "bun run run-address --address ... --graphql-url ... prints an assessment JSON.",
+    "user_visible_behavior": "bun run run-address --address ... --zip ... --data-url ... prints an assessment JSON.",
     "status": "passing",
-    "verification": "Live run against the Python GraphQL server on :8000.",
-    "evidence": "Deterministic-parity live run vs Python on '1104 SPRING RUN RD'.",
-    "notes": "Needs the Python server; not in the offline verify loop."
+    "verification": "Live run against the occupancy data service on :8000. Offline: test/run_address_env.test.ts pins the request keys the CLI sends.",
+    "evidence": "Deterministic-parity live run vs Python on '1104 SPRING RUN RD' (pre-X-016, over the old data layer). Post-X-016 the required-arg paths were smoke-checked in place: no --data-url/DATA_URL prints '--data-url is required (or set DATA_URL)'; no --address prints '--address is required'. A LIVE post-X-016 run is the coordinator's, after the graph service merges."
+,
+    "notes": "X-016 renamed --graphql-url to --data-url and GRAPHQL_URL to DATA_URL (breaking, no shim). Needs a running data service; not in the offline verify loop."
   },
   {
     "id": "agent-harness",
@@ -137,9 +138,9 @@
     "area": "agents",
     "title": "Typed data service client + SQL hatch (X-016)",
     "user_visible_behavior": "The engine reaches the graph service over six typed HTTP operations plus a guarded SQL hatch instead of GraphQL. POST /investigate takes data_url (was graphql_url). voter/criminal/linkedin shapes are gone; drive is re-weighted from 1.15 to 0.75 because a drive row is a payday-loan row already counted as loan.",
-    "status": "in_progress",
-    "verification": "OE_PROSE_REGISTER=off bun run verify; OE_PROSE_REGISTER=off bun run e2e; test/data_client.test.ts; test/sql_toolset.test.ts; test/score_benchmark.test.ts; grep -r 'graphql' src/ returns nothing.",
-    "evidence": "Baseline recorded on this branch at 8c810d1 (Task 1): OE_PROSE_REGISTER=off bun run verify exit 0 — tsc --noEmit clean; biome check . Checked 82 files, Found 3 warnings (src/agents/retrieval.ts:168, src/agents/toolsets/graphql_toolset.ts:97 unused validate_graphql, src/agents/typed_tools.ts:156 — all three in files this plan rewrites, so the expected end state is 0 warnings); bun test 195 pass / 0 fail / 765 expect() across 29 files.",
-    "notes": "Plan: docs/superpowers/plans/2026-07-29-typed-data-service.md. Contracts pinned by the workspace umbrella. Plan said priority 12, which realtor-listing-signals already holds; used 13."
+    "status": "passing",
+    "verification": "OE_PROSE_REGISTER=off bun run verify; OE_PROSE_REGISTER=off bun run e2e; bun test under the .env defaults (records the one tautological failure); test/data_client.test.ts; test/sql_toolset.test.ts; test/score_benchmark.test.ts; test/schema_guide.test.ts; docker compose config; bash -n init.sh; grep -rni 'graphql' src/ returns nothing outside src/observability/pricing.ts.",
+    "evidence": "FINAL, run in place at e39bccc + this commit (verbatim). `OE_PROSE_REGISTER=off bun run verify` -> exit 0: `tsc --noEmit` clean (no output); `biome check .` -> 'Checked 91 files in 304ms. No fixes applied.' = 0 warnings, down from the 3 at baseline 8c810d1, all three of which lived in files this plan rewrote; `bun test` -> '355 pass / 0 fail / 1348 expect() calls / Ran 355 tests across 38 files'. `OE_PROSE_REGISTER=off bun run e2e` -> '7 pass / 0 fail / 100 expect() calls / Ran 7 tests across 2 files' (E2E-1..E2E-5, the new E2E-5 being the no-GraphQL guard: it asserts no request in the fixture service's recorded log has path '/graphql'). Under the gitignored .env defaults (both prose flags on) `bun test` -> '354 pass / 1 fail', the 1 being the PRE-EXISTING tautological '_prose_register_lines (gated) > is empty by default (flag off) so prompts are byte-identical' — it asserts the register is empty, so OE_PROSE_REGISTER=on breaks it by construction; ZERO real failures in either config. `docker compose config` -> exit 0, `docker compose config --services` -> 'graph' then 'agent', and the interpolated output carries `DATA_URL: http://graph:8000`. `bash -n init.sh` -> ok. `grep -rni 'graphql' src/ | grep -v pricing.ts` -> no output. `grep -rn 'voter|criminal|linkedin' src/` -> 5 hits, ALL explanatory comments recording why those shapes are absent (synthesis.ts:297-298, typed_tools.ts:128, prompts.ts:142,461); no code, data or prompt string references them, and test/prompts_data_surface.test.ts + test/typed_tools.test.ts + test/retrieval.test.ts pin that. Baseline for comparison, 8c810d1: 195 pass / 0 fail / 765 expect() across 29 files, 3 lint warnings — so +160 tests, +583 expect(), -3 warnings. DRIVE RE-WEIGHT BEFORE->AFTER, measured on the fixed 12-case set in test/score_benchmark.test.ts (goldens pinned BEFORE the change in e12768b, re-pinned after in d52460e; today's run reproduces every 'after' value exactly): no_rows 0.00=0.00 low_evidence; tax_only_mailing_elsewhere 2.50=2.50 monitor; drive_only_owner_elsewhere 5.95->4.75 review->MONITOR (-1.20); drive_and_loan_same_row 7.00->5.80 review (-1.20); nonowner_loan_renter_at_subject 5.65=5.65 review; auto_only_owner_elsewhere 4.30=4.30 monitor; utility_only_nonowner 4.00=4.00 monitor; trace_only_presence 2.50=2.50 monitor; full_stack_absentee 18.25->17.05 high_priority_review (-1.20); drive_at_subject_nonowner 9.40->7.00 hpr->REVIEW (-2.40); drive_and_loan_nonowner_at_subject 16.00->13.30 high_priority_review (-2.70); loan_only_owner_elsewhere 3.55=3.55 monitor. Five cases move, seven hold; every case that moved carries a drive row and every case that held carries none; two cross a band boundary downward.",
+    "notes": "Plan: docs/superpowers/plans/2026-07-29-typed-data-service.md, Tasks 1-22 complete. Contracts pinned by the workspace umbrella. Plan said priority 12, which realtor-listing-signals already holds; used 13. OPEN ITEM (recorded, not resolved): the drive re-weight 1.15->0.75 HALVES the loan/drive double-count but does not remove it. _owner_source_elsewhere scores drive at base 3 ('strong') vs loan's base 1, so one physical payday row still contributes 3 x 0.75 = 2.25 against loan's 1.05 — the gap goes 3.45 -> 2.25, not to zero. The plan's claim that 'the duplicate contributes strictly less than the original' is FALSE as stated. Closing the rest means demoting drive's path STRENGTH in src/heuristics/atomic_eval.ts, which is a semantic claim about the evidence rather than a weight change and wider than Task 14 specified; documented in src/heuristics/policy.ts. DEFERRED, DELIBERATELY: (1) the live engine <-> graph-service run needs the typed surface deployed — the coordinator's, after the graph service merges; (2) the hatch adversarial pass is server-side and belongs to the graph-service plan, the engine's only obligation being that a 422 is returned rather than thrown, which test/data_client.test.ts and test/sql_toolset.test.ts prove; (3) heuristics/atomic_eval.ts build_evidence and engine.ts evaluate_address are dead at runtime and still carry a SQLite db_path option — next cleanup; (4) the backend's investigation-report.dto.ts doc comment still says heuristics[].graphql_queries, which is the backend's to fix (the field itself is safe: the VO is .passthrough() and heuristics is z.array(z.unknown()))."
   }
 ]
