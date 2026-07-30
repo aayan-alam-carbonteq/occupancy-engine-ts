@@ -330,7 +330,7 @@ function _packet_for_agent(packet: PacketDefinition): Record<string, unknown> {
 
 function _packet_scoring_guidance(packet: PacketDefinition): string {
   const ladder =
-    "tax > drive > loan > auto > voter == utility; base is canonical context; trace is unranked corroboration";
+    "tax > loan > auto > drive == utility; base is canonical context; trace is unranked corroboration";
   if (packet.id === "case_quality_and_synthesis") {
     return (
       "Use score 0. This packet reconciles quality, ambiguity, why-not-higher/lower, " +

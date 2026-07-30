@@ -61,7 +61,7 @@ export function weighted_synthesis(args: {
       return aSource < bSource ? -1 : aSource > bSource ? 1 : 0;
     })
     .map(([source]) => source);
-  const discountFilter = new Set([...UNRANKED_CONTEXT_SOURCES, "voter", "utility"]);
+  const discountFilter = new Set([...UNRANKED_CONTEXT_SOURCES, "drive", "utility"]);
   const discountedSet = new Set<string>();
   for (const item of adjustments) {
     for (const source of _path_sources_by_ref_or_name(item.path_id, [])) {
@@ -294,13 +294,11 @@ function _has_clear_absentee_context(active_paths: ReadonlySet<string>): boolean
   const direct_drive_pair =
     active_paths.has("owner_drive_elsewhere") &&
     active_paths.has("nonowner_drive_at_subject");
-  const legal_pair =
-    active_paths.has("owner_voter_elsewhere") &&
-    active_paths.has("nonowner_voter_at_subject");
+  // The `legal_pair` term died with the voter paths it named: no voter rows exist in the partner
+  // corpus, so owner_voter_elsewhere / nonowner_voter_at_subject can never both be active.
   const absentee_owner_context = _intersects(
     [
       "owner_drive_elsewhere",
-      "owner_voter_elsewhere",
       "owner_auto_elsewhere",
       "tax_owner_mailing_differs_from_situs",
     ],
@@ -314,18 +312,13 @@ function _has_clear_absentee_context(active_paths: ReadonlySet<string>): boolean
     ],
     active_paths,
   );
-  return (
-    direct_drive_pair ||
-    legal_pair ||
-    (absentee_owner_context && ranked_nonowner_context)
-  );
+  return direct_drive_pair || (absentee_owner_context && ranked_nonowner_context);
 }
 
 function _has_absentee_owner_context(active_paths: ReadonlySet<string>): boolean {
   return _intersects(
     [
       "owner_drive_elsewhere",
-      "owner_voter_elsewhere",
       "owner_auto_elsewhere",
       "owner_loan_elsewhere",
       "owner_trace_elsewhere",
@@ -341,7 +334,6 @@ function _has_strong_rental_use_context(active_paths: ReadonlySet<string>): bool
   return _intersects(
     [
       "nonowner_drive_at_subject",
-      "nonowner_voter_at_subject",
       "nonowner_auto_at_subject",
       "nonowner_loan_renter_at_subject",
       "unrelated_nonowner_legal_presence",
@@ -383,7 +375,6 @@ function _has_nonowner_occupancy(active_paths: ReadonlySet<string>): boolean {
   return _intersects(
     [
       "nonowner_drive_at_subject",
-      "nonowner_voter_at_subject",
       "nonowner_auto_at_subject",
       "nonowner_loan_renter_at_subject",
       "nonowner_utility_at_subject",
@@ -397,7 +388,6 @@ function _has_owner_present_context(active_paths: ReadonlySet<string>): boolean 
   return _intersects(
     [
       "owner_drive_at_subject",
-      "owner_voter_at_subject",
       "owner_auto_at_subject",
       "owner_loan_own_at_subject",
       "owner_utility_at_subject",
@@ -440,7 +430,7 @@ function _lower_tier_nonowner_only(
   if (sources.size === 0) {
     return false;
   }
-  return [...sources].every((source) => source === "voter" || source === "utility");
+  return [...sources].every((source) => source === "drive" || source === "utility");
 }
 
 function _weighted_why_not_higher(args: {
@@ -460,7 +450,7 @@ function _weighted_why_not_higher(args: {
       reasons.push("No ranked owner-elsewhere plus ranked non-owner/renter combination.");
     }
     if (_lower_tier_nonowner_only(adjustments)) {
-      reasons.push("Non-owner evidence is limited to lower-tier voter/utility sources.");
+      reasons.push("Non-owner evidence is limited to lower-tier drive/utility sources.");
     }
   }
   if (reasons.length === 0) {
