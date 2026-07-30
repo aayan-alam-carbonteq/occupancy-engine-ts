@@ -64,7 +64,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "tax_mailing_situs_analysis",
       "base_subject_owner_alignment",
     ],
-    input_sources: ["tax", "base", "drive", "voter", "auto", "loan", "trace", "utility"],
+    input_sources: ["tax", "base", "drive", "auto", "loan", "trace", "utility"],
     output_fields: [
       "tax_owner_identity",
       "mailing_situs_relationship",
@@ -80,7 +80,6 @@ export const PACKETS: readonly PacketDefinition[] = [
         "tax",
         "base",
         "drive",
-        "voter",
         "auto",
         "loan",
         "trace",
@@ -105,7 +104,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "utility_only_no_dates_discount",
       "trace_only_presence_discount",
     ],
-    input_sources: ["trace", "utility", "tax", "drive", "voter", "auto", "loan", "str_scan"],
+    input_sources: ["trace", "utility", "tax", "drive", "auto", "loan", "str_scan"],
     output_fields: [
       "owner_trace_or_utility_at_subject",
       "nonowner_trace_or_utility_at_subject",
@@ -116,12 +115,12 @@ export const PACKETS: readonly PacketDefinition[] = [
     agent_guidance:
       "Use trace and utility rows as occupancy signals, but explicitly discount them when they are isolated " +
       "or undated. Separate owner-present utility/trace from non-owner utility/trace. Non-owner utility " +
-      "rows with no service dates and no corroboration from base, trace, drive, voter, auto, or loan should " +
+      "rows with no service dates and no corroboration from base, trace, drive, auto, or loan should " +
       "be treated as ambiguous or historical occupancy evidence rather than strong current rental evidence. " +
       "High risk requires dated/current non-owner utility evidence or corroboration from a stronger/current " +
       "source; owner utility plus tax/base/trace owner alignment is mitigating context.",
     gate: makePacketGate({
-      source_scope: ["trace", "utility", "tax", "drive", "voter", "auto", "loan", "str_scan"],
+      source_scope: ["trace", "utility", "tax", "drive", "auto", "loan", "str_scan"],
       minimum_viability:
         "Run when trace or utility rows exist, including trace-only/utility-only cases.",
     }),
@@ -134,30 +133,30 @@ export const PACKETS: readonly PacketDefinition[] = [
     id: "legal_address_presence",
     title: "Legal address presence",
     description:
-      "Review drive, voter, and auto address evidence for owner/non-owner presence, conflicts, and auto-only caveats.",
+      "Review drive and auto address evidence for owner/non-owner presence and auto-only caveats. " +
+      "Treat drive as corroborating rather than independent: in this corpus a drive row is the same " +
+      "physical record as a loan row.",
     atomic_heuristic_ids: [
       "drive_address_subject_analysis",
-      "voter_address_subject_analysis",
       "auto_address_subject_analysis",
       "owner_legal_records_conflict",
       "auto_only_owner_elsewhere_discount",
-      "drive_voter_conflict_same_person",
       "auto_at_subject_but_stronger_legal_elsewhere",
     ],
-    input_sources: ["drive", "voter", "auto", "tax"],
+    input_sources: ["drive", "auto", "tax"],
     output_fields: [
       "owner_legal_at_subject",
       "owner_legal_elsewhere",
       "nonowner_legal_at_subject",
-      "drive_voter_conflicts",
       "auto_only_or_auto_discount",
     ],
     agent_guidance:
-      "Treat drive and voter as stronger legal-address evidence than auto. " +
+      "Treat drive as corroborating rather than independent legal-address evidence: in this " +
+      "corpus a drive row is the same physical record as a loan row. " +
       "Explain whether legal rows support owner presence, owner elsewhere, or unrelated non-owner presence.",
     gate: makePacketGate({
-      source_scope: ["drive", "voter", "auto", "tax"],
-      minimum_viability: "Run when any drive, voter, or auto rows exist.",
+      source_scope: ["drive", "auto", "tax"],
+      minimum_viability: "Run when any drive or auto rows exist.",
     }),
     group: "occupancy_presence",
     category: "risk",
@@ -199,7 +198,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "portfolio_primary_comparison_analysis",
       "tax_ownerrescount_portfolio_pattern",
     ],
-    input_sources: ["tax", "base", "drive", "voter", "auto"],
+    input_sources: ["tax", "base", "drive", "auto"],
     output_fields: [
       "owner_multiple_properties",
       "strongest_owner_primary_elsewhere",
@@ -209,7 +208,7 @@ export const PACKETS: readonly PacketDefinition[] = [
       "Focus on portfolio context only when ownerrescount, multiple liened properties, or owner-primary evidence " +
       "elsewhere materially changes the case.",
     gate: makePacketGate({
-      source_scope: ["tax", "base", "drive", "voter", "auto"],
+      source_scope: ["tax", "base", "drive", "auto"],
       minimum_viability:
         "Run when tax rows exist and portfolio or owner-primary comparison evidence is available.",
     }),
