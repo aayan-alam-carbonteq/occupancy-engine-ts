@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CountingDataClient, DataHttpClient } from "../src/agents/data_client.ts";
+import { RetrievalHeuristicSubagent, error_result } from "../src/agents/subagents.ts";
 import { Diagnostics } from "../src/agents/toolsets/base.ts";
 import { make_toolset } from "../src/agents/toolsets/index.ts";
 import { SqlToolset } from "../src/agents/toolsets/sql_toolset.ts";
@@ -383,5 +384,192 @@ describe("describe_call telemetry", () => {
     expect(new SqlToolset().describe_call("get_records", args, {})).toEqual(
       new TypedToolset().describe_call("get_records", args, {}),
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Task 10 — subagents.ts drives CountingDataClient and reads the SQL refusal channel.
+//
+// D3 claims subagents.ts read the old `validation_logs` "unchanged in shape". It did not: it read
+// `log.errors` (a string[]) and `!log.ok`, and a SqlRefusal has neither field. The mapping asserted
+// here is the real one — reason -> validation_errors, one refusal = one repair attempt — and it has
+// to hold on BOTH paths the telemetry reaches: the normal submit and the error_result stub.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+const REFUSAL = {
+  refused: true,
+  stage: "explain",
+  reason: "Seq Scan on records_legacy (cost=0.00..184000000.00)",
+  hint: "Indexed paths: zip; ssn; phone; email.",
+};
+
+function agentInput(overrides: Record<string, any> = {}) {
+  return {
+    heuristic: { id: "h1", category: "risk", packet: true, context_scope: ["tax"], input_sources: [] },
+    context: { selected: { id: 3342 }, evidence_map: { address_id: 3342 } },
+    max_data_calls: 8,
+    max_output_retries: 2,
+    max_query_repair_attempts: 3,
+    schema_tool_budget: 2,
+    prompt_profile: "compact" as const,
+    plan: null,
+    trace: {},
+    ...overrides,
+  } as any;
+}
+
+/** An LLM stub that emits a scripted tool call per turn. */
+function scriptedLlm(turns: { name: string; args: Record<string, any> }[]) {
+  let turn = 0;
+  return {
+    bindTools() {
+      return {
+        async invoke() {
+          const call = turns[Math.min(turn, turns.length - 1)]!;
+          turn += 1;
+          return { content: "", tool_calls: [{ name: call.name, args: call.args, id: `c${turn}` }] };
+        },
+      };
+    },
+  } as any;
+}
+
+const SUBMIT = {
+  name: "submit_heuristic_result",
+  args: {
+    heuristic_id: "h1",
+    status: "inconclusive",
+    direction: "risk",
+    score: 0,
+    confidence: "low",
+    finding: "Could not reach the property rows.",
+  },
+};
+
+describe("error_result carries the data-call log, not a GraphQL log", () => {
+  test("logs and refusals are surfaced on the structured result", async () => {
+    const s = new FixtureDataService({ resolve: {}, status: 500 });
+    try {
+      const data = counted(s);
+      await data.resolve("a", "").catch(() => {});
+      const r = error_result({ id: "h1" }, "boom", data) as Record<string, any>;
+      expect(r["heuristic_id"]).toBe("h1");
+      expect(r["data_queries"].length).toBe(1);
+      expect(r["data_queries"][0]["operation"]).toBe("resolve");
+      expect(r["tool_errors"][0]).toMatch(/HTTP 500/);
+      expect(r["graphql_queries"]).toBeUndefined();
+    } finally {
+      s.close();
+    }
+  });
+
+  test("a refusal becomes one validation_error and one repair attempt (D3, corrected)", async () => {
+    const s = new FixtureDataService({ sql: REFUSAL });
+    try {
+      const data = counted(s);
+      await data.run_sql("SELECT * FROM records_legacy");
+      await data.run_sql("SELECT * FROM records_legacy WHERE 1=1");
+      const r = error_result({ id: "h1" }, "boom", data) as Record<string, any>;
+      // reason, not `errors`: SqlRefusal has no `errors` field at all. One entry per refusal, NOT
+      // deduped — error_result never deduped this channel (the submit path does, via _merge_strings)
+      // and the counts have to stay comparable with query_repair_attempts.
+      expect(r["validation_errors"]).toEqual([REFUSAL.reason, REFUSAL.reason]);
+      // Every refusal IS a repair attempt — there is no such thing as an `ok` refusal, so the old
+      // `.filter(log => !log.ok)` has no analogue and the count is simply the log length.
+      expect(r["query_repair_attempts"]).toBe(2);
+      expect(r["data_queries"].map((q: any) => q["operation"])).toEqual(["run_sql", "run_sql"]);
+      // A refusal is not a failed call: it must not leak into the tool_errors channel.
+      expect(r["tool_errors"]).toEqual([]);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("no client at all still produces a schema-valid error stub", () => {
+    const r = error_result({ id: "h1" }, "boom") as Record<string, any>;
+    expect(r["data_queries"]).toEqual([]);
+    expect(r["validation_errors"]).toEqual([]);
+    expect(r["query_repair_attempts"]).toBe(0);
+  });
+});
+
+describe("the repair-telemetry contract survives on the submit path", () => {
+  test("a refused run_sql reaches the submitted result as an error + a repair attempt", async () => {
+    const s = new FixtureDataService({ sql: REFUSAL });
+    try {
+      const data = counted(s);
+      const sub = new RetrievalHeuristicSubagent(
+        scriptedLlm([{ name: "run_sql", args: { query: "SELECT * FROM records_legacy" } }, SUBMIT]),
+        new SqlToolset(),
+      );
+      const r = (await sub.run(agentInput(), data)) as Record<string, any>;
+      expect(r["validation_errors"]).toEqual([REFUSAL.reason]);
+      expect(r["query_repair_attempts"]).toBe(1);
+      expect(r["data_queries"][0]["operation"]).toBe("run_sql");
+    } finally {
+      s.close();
+    }
+  });
+
+  test("a refusal recorded on the CLIENT alone still reaches the result", async () => {
+    // Proves refusal_logs is genuinely read on the submit path rather than the result riding on
+    // diagnostics.validation_errors, which the toolset populates independently.
+    const s = new FixtureDataService({ sql: REFUSAL });
+    try {
+      const data = counted(s);
+      await data.run_sql("SELECT * FROM records_legacy");
+      const sub = new RetrievalHeuristicSubagent(scriptedLlm([SUBMIT]), new SqlToolset());
+      const r = (await sub.run(agentInput(), data)) as Record<string, any>;
+      expect(r["validation_errors"]).toEqual([REFUSAL.reason]);
+      expect(r["query_repair_attempts"]).toBe(1);
+    } finally {
+      s.close();
+    }
+  });
+
+  test("budget exhaustion is caveated in the data-call vocabulary", async () => {
+    const s = new FixtureDataService({
+      sql: { columns: [], rows: [], row_count: 0, truncated: false, plan_cost: 1, duration_ms: 1 },
+    });
+    try {
+      const data = counted(s, 1);
+      const sub = new RetrievalHeuristicSubagent(
+        scriptedLlm([
+          { name: "run_sql", args: { query: "SELECT 1" } },
+          { name: "run_sql", args: { query: "SELECT 2" } },
+          SUBMIT,
+        ]),
+        new SqlToolset(),
+      );
+      const r = (await sub.run(agentInput(), data)) as Record<string, any>;
+      expect(r["missing_evidence"]).toContain(
+        "Data call budget was exhausted; result is based on evidence collected before budget exhaustion.",
+      );
+      expect(JSON.stringify(r["missing_evidence"])).not.toContain("GraphQL");
+    } finally {
+      s.close();
+    }
+  });
+
+  test("an unsupported not_triggered verdict is backfilled without naming GraphQL", async () => {
+    const s = new FixtureDataService({});
+    try {
+      const data = counted(s);
+      const sub = new RetrievalHeuristicSubagent(
+        scriptedLlm([
+          {
+            name: "submit_heuristic_result",
+            args: { ...SUBMIT.args, status: "not_triggered", finding: "Nothing supports it." },
+          },
+        ]),
+        new SqlToolset(),
+      );
+      const r = (await sub.run(agentInput(), data)) as Record<string, any>;
+      expect(r["missing_evidence"]).toEqual([
+        "No local records were found that support this heuristic.",
+      ]);
+    } finally {
+      s.close();
+    }
   });
 });
