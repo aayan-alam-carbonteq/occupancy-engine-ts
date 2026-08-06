@@ -197,3 +197,46 @@ describe("POST /fingerprint — zip reaches the probe", () => {
     }
   });
 });
+
+describe("POST /fingerprint — bounded work", () => {
+  test("a whole-request deadline degrades the remaining items to null, still 200", async () => {
+    // Without a deadline a 100-item batch against a slow graph could run for over an hour holding
+    // graph connections. Overrun items become data:null, which the contract already allows.
+    const slow = new (class {
+      async probe(address: string) {
+        await new Promise((r) => setTimeout(r, 40));
+        return rowsFor(address);
+      }
+    })();
+    engine = create_engine_server({
+      port: 0,
+      auth_token: TOKEN,
+      probe: slow,
+      fingerprint_batch_concurrency: 1,
+      fingerprint_timeout_ms: 60,
+    });
+    const res = await post({ items: [{ address: "a" }, { address: "b" }, { address: "c" }, { address: "d" }] });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    // One entry per input is still the contract, even when the deadline cuts the work short.
+    expect(body.items.length).toBe(4);
+    expect(body.items.some((i: any) => i.data === null)).toBe(true);
+  });
+
+  test("concurrent requests past the cap get 503, not unbounded graph load", async () => {
+    const slow = new (class {
+      async probe(address: string) {
+        await new Promise((r) => setTimeout(r, 120));
+        return rowsFor(address);
+      }
+    })();
+    engine = create_engine_server({ port: 0, auth_token: TOKEN, probe: slow, fingerprint_max_concurrency: 1 });
+    const [first, second] = await Promise.all([
+      post({ items: [{ address: "a" }] }),
+      // Fires while the first is still in flight.
+      new Promise<Response>((r) => setTimeout(() => r(post({ items: [{ address: "b" }] })), 10)),
+    ]);
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 503]);
+  });
+});

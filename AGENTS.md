@@ -37,9 +37,11 @@ pre-existing failures that assert those flags are off, i.e. fail by construction
 
     OE_PROSE_REDACT=off OE_PROSE_REGISTER=off bun run verify
 
-**Known-failing on trunk (2026-08-06):** `E2E-1: orchestrator assembly` fails — `_person_name`
-cannot name a utility row (expects `/^Owner /`, gets `owner=…`). It reproduces at the pinned
-`5e8e15f` in a clean worktree, so it is not yours. X-016's `db706c5` fixed it, but that line is
+**Known-failing on trunk (2026-08-06):** `E2E-1: orchestrator assembly` fails at
+`test/e2e/orchestrator.e2e.test.ts:42` — `owner_summaries[0].summaries[0]` expects `/^Owner /` but
+gets the raw `owner=…` bit-string, i.e. the HUMANIZED DISPLAY COPY is not produced. (An earlier note
+here blamed `_person_name` not naming a utility row; that diagnosis was wrong and would misdirect
+whoever fixes it.) It reproduces at the pinned `5e8e15f` in a clean worktree, so it is not yours. X-016's `db706c5` fixed it, but that line is
 abandoned; the fix is recoverable from `origin/feat/typed-data-service`.
 
 ## Hard constraints
@@ -119,9 +121,20 @@ the organization that paid for the run.
 the *inbound* `ExternalEvidence` shape — that is the backend telling us what it is scanning, which is
 fine. The rule is one-directional: **accept them, never emit them.**
 
-Guarded by `test/external_evidence_tenant_neutral.test.ts` and a canary in
-`test/external_evidence_exposure.test.ts`, both asserted on the **serialized** ref set — `data` is a
-`jsonRecord`, so a key-by-key check cannot prove absence.
+`assessment_report_payload` also strips `metrics.run_id`, `metrics.batch_id` and
+`metrics.investigation_id` — `batch_id` is `request.batch_id` verbatim and the other two derive from
+`request.trace_id`, so all three name the caller. The REST of `metrics` (latency, cost, tokens) is
+tenant-neutral and deliberately kept; dropping it would gut the report's operational value.
+
+Guarded by `test/external_evidence_tenant_neutral.test.ts`, a canary in
+`test/external_evidence_exposure.test.ts`, and the metrics case in
+`test/investigation_wire.test.ts` — all asserted on the **serialized** payload, because both `data`
+and `metrics` are loose records and a key-by-key check cannot prove absence.
+
+`POST /fingerprint` is bounded: a whole-request deadline (`fingerprint_timeout_ms`, 60s — overrun
+items degrade to `data: null`) and its own small permit pool (`fingerprint_max_concurrency`, 2 —
+503 when saturated). It sits OUTSIDE the investigation pool so a fingerprint can never starve an
+investigation, which is exactly why it needs its own cap. A 503 or a null is just a cache miss.
 
 ## Refreshing the E2E fixture
 

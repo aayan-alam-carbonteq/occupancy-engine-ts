@@ -40,6 +40,8 @@ export interface EngineServerOptions {
   probe?: DataSourceProbe; // injection seam for deterministic tests; defaults to the GraphQL adapter
   engine_hash?: string; // injection seam; defaults to the real source-tree hash
   fingerprint_batch_concurrency?: number; // default 4 — graph reads in flight per batch
+  fingerprint_timeout_ms?: number; // default 60_000 — whole-request deadline; overrun items => null
+  fingerprint_max_concurrency?: number; // default 2 — concurrent /fingerprint requests, else 503
   investigate?: InvestigationRunner; // injection seam for deterministic tests
 }
 
@@ -55,6 +57,20 @@ const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const DEFAULT_RETRY_AFTER_SECONDS = 2;
 const DEFAULT_FINGERPRINT_CONCURRENCY = 4;
+/**
+ * Whole-request deadline for POST /fingerprint. Without one, a 100-item batch against a slow graph
+ * could run for over an hour holding graph connections: 25 chunks x 9 calls x the 30s tool timeout.
+ * Overrunning items degrade to `data: null`, which the pinned contract already makes a legal
+ * response, so the backend simply misses those and runs the investigation.
+ */
+const DEFAULT_FINGERPRINT_TIMEOUT_MS = 60_000;
+/**
+ * Concurrent /fingerprint requests. The route is deliberately OUTSIDE the investigation permit pool
+ * (a fingerprint must never starve an investigation), but that left it uncapped — N concurrent
+ * requests held 4N graph connections. Small on purpose: this is a cache optimisation, and a 503
+ * here is just a miss.
+ */
+const DEFAULT_FINGERPRINT_MAX_CONCURRENCY = 2;
 
 /** Non-blocking counting semaphore. try_acquire returns false when saturated (→ 503). */
 class PermitPool {
@@ -109,11 +125,24 @@ export function create_engine_server(opts: EngineServerOptions = {}): EngineServ
   // fingerprint describes a different dataset than the run reads. See AGENTS.md.
   const probe: DataSourceProbe = opts.probe ?? new GraphQLDataSourceProbe(new GraphQLHttpTool(graphql_url_default));
   const fingerprint_concurrency = Math.max(1, opts.fingerprint_batch_concurrency ?? DEFAULT_FINGERPRINT_CONCURRENCY);
+  const fingerprint_timeout_ms = Math.max(1, opts.fingerprint_timeout_ms ?? DEFAULT_FINGERPRINT_TIMEOUT_MS);
+  const fingerprint_pool = new PermitPool(
+    Math.max(1, opts.fingerprint_max_concurrency ?? DEFAULT_FINGERPRINT_MAX_CONCURRENCY),
+  );
 
   /** One entry per input, SAME ORDER. Chunked so a batch does not open N graph reads at once. */
   const fingerprint_items = async (items: FingerprintItem[]): Promise<FingerprintResponseItem[]> => {
     const out: FingerprintResponseItem[] = [];
+    const deadline = Date.now() + fingerprint_timeout_ms;
     for (let start = 0; start < items.length; start += fingerprint_concurrency) {
+      // Past the deadline every remaining item degrades to null rather than the request hanging.
+      // Checked BETWEEN chunks so an in-flight chunk is never abandoned mid-read.
+      if (Date.now() >= deadline) {
+        while (out.length < items.length) {
+          out.push({ data: null });
+        }
+        return out;
+      }
       const chunk = items.slice(start, start + fingerprint_concurrency);
       // Promise.all preserves index order within the chunk, and chunks append in order.
       const settled = await Promise.all(
@@ -177,13 +206,24 @@ export function create_engine_server(opts: EngineServerOptions = {}): EngineServ
             400,
           );
         }
-        // From here the response is ALWAYS 200: a per-item probe failure degrades that item to
-        // {data: null}. One bad address in a 500-scan batch costs that scan its lookup, nothing more.
-        const body: FingerprintResponse = {
-          engine: engine_hash,
-          items: await fingerprint_items(parsed_fingerprint.request.items),
-        };
-        return json_response(body, 200);
+        // Capped concurrency. A 503 here is just a cache miss — the backend fails closed on any
+        // non-200 and the investigation runs exactly as it does today.
+        if (!fingerprint_pool.try_acquire()) {
+          return json_response({ error: { message: "fingerprint capacity exhausted" } }, 503, {
+            "retry-after": retry_after,
+          });
+        }
+        try {
+          // From here the response is ALWAYS 200: a per-item probe failure degrades that item to
+          // {data: null}. One bad address in a 500-scan batch costs that scan its lookup, nothing more.
+          const body: FingerprintResponse = {
+            engine: engine_hash,
+            items: await fingerprint_items(parsed_fingerprint.request.items),
+          };
+          return json_response(body, 200);
+        } finally {
+          fingerprint_pool.release();
+        }
       }
 
       if (req.method !== "POST" || url.pathname !== "/investigate") {
