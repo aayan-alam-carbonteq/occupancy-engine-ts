@@ -1,41 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { AgentOrchestrator } from "../../src/agents/orchestrator.ts";
-import { DataHttpClient } from "../../src/agents/data_client.ts";
+import { GraphQLHttpTool } from "../../src/agents/graphql_tool.ts";
 import { AgentInvestigationRequestSchema } from "../../src/agents/models.ts";
 import { RetrievalHeuristicSubagent } from "../../src/agents/subagents.ts";
 import { TypedToolset } from "../../src/agents/toolsets/typed_toolset.ts";
-import { FixtureDataService } from "../support/fixture_data_service.ts";
-import { externalEvidenceFixture, people1104, resolve1104 } from "../support/fixtures.ts";
+import { FixtureGraphQLServer } from "../support/fixture_graphql.ts";
+import { externalEvidenceFixture, loadPreflight1104 } from "../support/fixtures.ts";
 import { ScriptedChatModel } from "../support/scripted_llm.ts";
 import { FakeSubagent, PromptRecordingSubagent } from "../support/subagents.ts";
 
-/**
- * The Contract B/C bodies one investigation needs: op 1 (resolve), op 3 (the clustered people
- * list, D4), op 2 (address records, for a toolset that drills down) and GET /v1/schema, which
- * preflight fetches once in "tools" mode (D5). Anything not listed 404s — that is the point.
- */
-function fixturePlan() {
-  const payload = resolve1104() as any;
-  return {
-    resolve: payload,
-    address_people: people1104(),
-    address_records: { records_by_source: payload.records_by_source, unsupported_shapes: [] },
-    schema: { tables: [], access_paths: [], caveats: [] },
-  };
-}
-
-describe("E2E-1: orchestrator assembly (fixture data service + fake subagent, no LLM)", () => {
+describe("E2E-1: orchestrator assembly (fixture GraphQL + fake subagent, no LLM)", () => {
   test("investigate() assembles a full assessment from the real preflight fixture", async () => {
-    const server = new FixtureDataService(fixturePlan());
+    const server = new FixtureGraphQLServer(loadPreflight1104());
     try {
       const orch = new AgentOrchestrator({
-        data: new DataHttpClient(server.url),
+        graphql: new GraphQLHttpTool(server.url),
         subagent: new FakeSubagent(),
       });
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
+        graphql_url: server.url,
       });
 
       const a = await orch.investigate(request);
@@ -47,7 +32,7 @@ describe("E2E-1: orchestrator assembly (fixture data service + fake subagent, no
       expect(a.adjudication.verdict_band).toBeTruthy();
       expect(typeof a.report).toBe("string");
       expect(a.report.length).toBeGreaterThan(0);
-      expect(server.requests.map((r) => r.path)).toContain("/v1/resolve");
+      expect(server.requests.length).toBeGreaterThanOrEqual(1);
 
       // WIRING REGRESSION GUARD: the real preflight fixture populates owner_summaries with a raw
       // "owner=...; residential=True; ..." bit-string internally; resolved_address must serve the
@@ -68,7 +53,7 @@ describe("E2E-1: orchestrator assembly (fixture data service + fake subagent, no
 
 describe("E2E-2: real subagent driven by scripted LLM (no API)", () => {
   test("investigate() runs the real subagent to a scored submit for one allowlisted packet", async () => {
-    const server = new FixtureDataService(fixturePlan());
+    const server = new FixtureGraphQLServer(loadPreflight1104());
     try {
       const llm = new ScriptedChatModel([
         [
@@ -87,11 +72,11 @@ describe("E2E-2: real subagent driven by scripted LLM (no API)", () => {
         ],
       ]);
       const subagent = new RetrievalHeuristicSubagent(llm as any, new TypedToolset());
-      const orch = new AgentOrchestrator({ data: new DataHttpClient(server.url), subagent });
+      const orch = new AgentOrchestrator({ graphql: new GraphQLHttpTool(server.url), subagent });
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
+        graphql_url: server.url,
         retrieval_mode: "typed_tools",
         heuristic_allowlist: ["property_tax_context"],
       });
@@ -109,14 +94,14 @@ describe("E2E-2: real subagent driven by scripted LLM (no API)", () => {
 
 describe("E2E-3: the parity guard — no payload, behavior unchanged", () => {
   test("investigate() with no payload exposes no external evidence anywhere", async () => {
-    const server = new FixtureDataService(fixturePlan());
+    const server = new FixtureGraphQLServer(loadPreflight1104());
     const subagent = new PromptRecordingSubagent();
     try {
-      const orch = new AgentOrchestrator({ data: new DataHttpClient(server.url), subagent });
+      const orch = new AgentOrchestrator({ graphql: new GraphQLHttpTool(server.url), subagent });
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
+        graphql_url: server.url,
       });
       expect(request.external_evidence).toBeNull(); // the absent payload IS the blind switch
 
@@ -161,15 +146,15 @@ describe("E2E-3: the parity guard — no payload, behavior unchanged", () => {
 
 describe("E2E-4: enriched — a payload reaches exactly the exposed packets", () => {
   test("investigate() folds the payload in and exposes it selectively", async () => {
-    const server = new FixtureDataService(fixturePlan());
+    const server = new FixtureGraphQLServer(loadPreflight1104());
     const subagent = new PromptRecordingSubagent();
     try {
-      const orch = new AgentOrchestrator({ data: new DataHttpClient(server.url), subagent });
+      const orch = new AgentOrchestrator({ graphql: new GraphQLHttpTool(server.url), subagent });
       const a = await orch.investigate(
         AgentInvestigationRequestSchema.parse({
           address: "1104 SPRING RUN RD",
           zip: "40514",
-          data_url: server.url,
+          graphql_url: server.url,
           external_evidence: externalEvidenceFixture(),
         }),
       );
@@ -223,28 +208,6 @@ describe("E2E-4: enriched — a payload reaches exactly the exposed packets", ()
 
       expect(a.heuristics.every((h: any) => h.status !== "error")).toBe(true);
       expect(a.adjudication.verdict_band).toBeTruthy();
-    } finally {
-      server.close();
-    }
-  });
-});
-
-describe("E2E-5: no code path attempts GraphQL", () => {
-  test("a full investigation touches only Contract B/C paths", async () => {
-    const server = new FixtureDataService(fixturePlan());
-    try {
-      const orch = new AgentOrchestrator({ data: new DataHttpClient(server.url), subagent: new FakeSubagent() });
-      const a = await orch.investigate(
-        AgentInvestigationRequestSchema.parse({ address: "1104 SPRING RUN RD", zip: "40514", data_url: server.url }),
-      );
-      // Without this the loop below is vacuous: a run that never reached the service at all would
-      // satisfy "every path starts with /v1/" trivially.
-      expect(a.resolved_address.selected).not.toBeNull();
-      expect(server.requests.map((r) => r.path)).toContain("/v1/resolve");
-      for (const r of server.requests) {
-        expect([r.method, r.path, r.path.startsWith("/v1/")]).toEqual([r.method, r.path, true]);
-      }
-      expect(server.requests.some((r) => r.path === "/graphql")).toBe(false);
     } finally {
       server.close();
     }

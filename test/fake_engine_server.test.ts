@@ -12,7 +12,7 @@ describe("FakeEngineServer emits the pinned NDJSON contract", () => {
       const res = await fetch(`${fake.url}/investigate`, {
         method: "POST",
         headers: { authorization: "Bearer tk", "content-type": "application/json" },
-        body: JSON.stringify({ address: "x", data_url: "http://g" }),
+        body: JSON.stringify({ address: "x", graphql_url: "http://g/graphql" }),
       });
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("application/x-ndjson");
@@ -29,7 +29,7 @@ describe("FakeEngineServer emits the pinned NDJSON contract", () => {
       const res = await fetch(`${fake.url}/investigate`, {
         method: "POST",
         headers: { authorization: "Bearer tk", "content-type": "application/json" },
-        body: JSON.stringify({ address: "x", data_url: "http://g" }),
+        body: JSON.stringify({ address: "x", graphql_url: "http://g/graphql" }),
       });
       const lines = (await res.text()).split("\n").filter((l) => l.length > 0);
       expect(JSON.parse(lines[lines.length - 1]!)).toEqual({ error: { message: "kaput" } });
@@ -44,7 +44,7 @@ describe("FakeEngineServer emits the pinned NDJSON contract", () => {
       const res = await fetch(`${fake.url}/investigate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address: "x", data_url: "http://g" }),
+        body: JSON.stringify({ address: "x", graphql_url: "http://g/graphql" }),
       });
       expect(res.status).toBe(401);
     } finally {

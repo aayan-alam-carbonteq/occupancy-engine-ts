@@ -224,7 +224,7 @@ function _field_gate_owner_identity_and_mailing(
     _has_identity(row, "base"),
   );
   let comparable_rows = 0;
-  for (const source of ["drive", "auto", "loan", "trace", "utility"]) {
+  for (const source of ["drive", "voter", "auto", "loan", "trace", "utility"]) {
     comparable_rows += _count_rows_with(
       _rows(evidence, source),
       (row) => _has_identity(row, source) && _has_address(row, source),
@@ -339,7 +339,7 @@ function _field_gate_legal_address_presence(
   evidence: AddressEvidence,
 ): PacketFieldGateSignal {
   const usable_by_source: Record<string, number> = {};
-  for (const source of ["drive", "auto"]) {
+  for (const source of ["drive", "voter", "auto"]) {
     usable_by_source[source] = _count_rows_with(
       _rows(evidence, source),
       (row) => _has_identity(row, source) && _has_address(row, source),
@@ -348,10 +348,12 @@ function _field_gate_legal_address_presence(
   const presence: Record<string, unknown> = {
     drive_rows: _rows(evidence, "drive").length,
     usable_drive_person_address_rows: usable_by_source["drive"],
+    voter_rows: _rows(evidence, "voter").length,
+    usable_voter_person_address_rows: usable_by_source["voter"],
     auto_rows: _rows(evidence, "auto").length,
     usable_auto_person_address_rows: usable_by_source["auto"],
   };
-  const notes = ["drive", "auto"]
+  const notes = ["drive", "voter", "auto"]
     .filter(
       (source) =>
         _rows(evidence, source).length && !(usable_by_source[source] ?? 0),
@@ -361,7 +363,7 @@ function _field_gate_legal_address_presence(
     return makePacketFieldGateSignal({
       should_run: true,
       reason:
-        "Drive or auto rows include usable person identity plus address fields.",
+        "Drive, voter, or auto rows include usable person identity plus address fields.",
       field_presence: presence,
       deterministic_notes: notes,
     });
@@ -369,11 +371,12 @@ function _field_gate_legal_address_presence(
   return makePacketFieldGateSignal({
     should_run: false,
     reason:
-      "Drive/auto rows are absent or lack usable person identity plus " +
+      "Drive/voter/auto rows are absent or lack usable person identity plus " +
       "address fields for legal-address comparison.",
     field_presence: presence,
     missing_core_fields: [
       "drive.person_identity_address",
+      "voter.person_identity_address",
       "auto.person_identity_address",
     ],
     deterministic_notes: notes,
@@ -447,7 +450,7 @@ function _field_gate_portfolio_and_primary_comparison(
   const ownerrescount_gt_one = ownerrescounts.filter((value) => value > 1).length;
   const owner_elsewhere_hints = evidence.owner_elsewhere_hints.length;
   let usable_owner_elsewhere_rows = 0;
-  for (const source of ["base", "drive", "auto"]) {
+  for (const source of ["base", "drive", "voter", "auto"]) {
     usable_owner_elsewhere_rows += _count_rows_with(
       _rows(evidence, source),
       (row) =>

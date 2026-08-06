@@ -190,15 +190,6 @@ describe("controlled vocabulary is not a leak", () => {
     expect(detect_leaks(s)).toEqual([]);
     expect(redact_prose(s)).toBe(s);
   });
-
-  test("the engine's own result field names track their renames", () => {
-    // HeuristicAgentResult.graphql_queries became .data_queries. The vocabulary is only ever
-    // consulted by lowercased token, so nothing typechecks these strings — a rename that does not
-    // reach this list silently starts redacting a live field name. Both halves are asserted: the
-    // new name must be excluded AND the dead one must no longer be.
-    expect(detect_leaks("data_queries")).toEqual([]);
-    expect(detect_leaks("graphql_queries")).toContain("graphql_queries");
-  });
 });
 
 describe("new leak classes (X-prose-refinement)", () => {

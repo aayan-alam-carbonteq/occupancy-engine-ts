@@ -7,12 +7,12 @@ import {
 import { investigate_address } from "../src/agents/orchestrator.ts";
 import { AgentInvestigationRequestSchema } from "../src/agents/models.ts";
 import { makeMetricEvent } from "../src/observability/models.ts";
-import { FixtureDataService } from "./support/fixture_data_service.ts";
-import { people1104, resolve1104 } from "./support/fixtures.ts";
+import { FixtureGraphQLServer } from "./support/fixture_graphql.ts";
+import { loadPreflight1104 } from "./support/fixtures.ts";
 import { FakeSubagent } from "./support/subagents.ts";
 
 const TOKEN = "test-engine-token";
-const VALID_BODY = { address: "1104 SPRING RUN RD", zip: "40514", data_url: "http://127.0.0.1:9" };
+const VALID_BODY = { address: "1104 SPRING RUN RD", zip: "40514", graphql_url: "http://127.0.0.1:9/graphql" };
 
 let engine: EngineServer | undefined;
 afterEach(async () => {
@@ -22,19 +22,14 @@ afterEach(async () => {
   }
 });
 
-/** A real, deterministic assessment (FakeSubagent + the fixture data service, no LLM). */
+/** A real, deterministic assessment (FakeSubagent + fixture graph, no LLM). */
 async function realAssessment() {
-  const graph = new FixtureDataService({
-    resolve: resolve1104(),
-    address_people: people1104(),
-    address_records: { records_by_source: (resolve1104() as any).records_by_source, unsupported_shapes: [] },
-    schema: { tables: [], access_paths: [], caveats: [] },
-  });
+  const graph = new FixtureGraphQLServer(loadPreflight1104());
   try {
     const request = AgentInvestigationRequestSchema.parse({
       address: "1104 SPRING RUN RD",
       zip: "40514",
-      data_url: graph.url,
+      graphql_url: graph.url,
     });
     return await investigate_address(request, new FakeSubagent(), {});
   } finally {
@@ -119,7 +114,7 @@ describe("POST /investigate — pre-stream rejections", () => {
     const res = await fetch(`${engine.url}/investigate`, {
       method: "POST",
       headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ zip: "40514", data_url: "http://g" }), // missing address
+      body: JSON.stringify({ zip: "40514", graphql_url: "http://g/graphql" }), // missing address
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
@@ -203,7 +198,7 @@ describe("POST /investigate — the engine's own overall timeout flips should_ca
 
 describe("GET /healthz + graceful shutdown", () => {
   test("healthz is 200 when the clients construct", async () => {
-    engine = create_engine_server({ port: 0, auth_token: TOKEN, data_url: "http://graph:8000" });
+    engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: "http://graphql:8000/graphql" });
     const res = await fetch(`${engine.url}/healthz`);
     // 200 when ANTHROPIC_API_KEY (or another provider key) is present; the shape is always {status}.
     const body = (await res.json()) as any;
@@ -223,61 +218,5 @@ describe("GET /healthz + graceful shutdown", () => {
         body: JSON.stringify(VALID_BODY),
       }),
     ).rejects.toThrow(); // socket closed after a graceful stop
-  });
-});
-
-describe("Contract A", () => {
-  // The plan's version of this test asserted only that the issues mention `data_url`. That is the
-  // MISSING-field issue, so it would pass unchanged even if `graphql_url` were quietly re-accepted.
-  // Both halves are asserted here: the retired key is named as an unknown key (with data_url
-  // supplied, so strictness is the only thing that can reject it), and a naked legacy body 400s.
-  test("400s a body still sending graphql_url — as an unknown key, not merely a missing data_url", async () => {
-    const engine = create_engine_server({ port: 0, auth_token: TOKEN, investigate: async () => ({}) as any });
-    try {
-      const post = (body: unknown) =>
-        fetch(`${engine.url}/investigate`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-          body: JSON.stringify(body),
-        });
-
-      const shimmed = await post({ address: "a", data_url: "http://graph:8000", graphql_url: "http://graphql:8000/graphql" });
-      expect(shimmed.status).toBe(400);
-      expect(JSON.stringify(((await shimmed.json()) as any).error.issues)).toContain("graphql_url");
-
-      const legacy = await post({ address: "a", graphql_url: "http://graphql:8000/graphql" });
-      expect(legacy.status).toBe(400);
-      expect(JSON.stringify(((await legacy.json()) as any).error.issues)).toContain("data_url");
-    } finally {
-      await engine.stop();
-    }
-  });
-
-  test("the same body with data_url instead is accepted", async () => {
-    // The mirror of the test above: proves the 400s are about the retired key, not about the
-    // endpoint rejecting everything.
-    const engine = create_engine_server({ port: 0, auth_token: TOKEN, investigate: async () => ({}) as any });
-    try {
-      const res = await fetch(`${engine.url}/investigate`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ address: "a", data_url: "http://graph:8000" }),
-      });
-      expect(res.status).toBe(200);
-    } finally {
-      await engine.stop();
-    }
-  });
-
-  test("healthz constructs the data client from the http://graph:8000 default", async () => {
-    const engine = create_engine_server({ port: 0, auth_token: TOKEN });
-    try {
-      const res = await fetch(`${engine.url}/healthz`);
-      const body = (await res.json()) as any;
-      expect(typeof body.status).toBe("string");
-      expect([200, 503]).toContain(res.status);
-    } finally {
-      await engine.stop();
-    }
   });
 });

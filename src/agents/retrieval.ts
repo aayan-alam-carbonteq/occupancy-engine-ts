@@ -1,45 +1,39 @@
-// Retrieval helpers over CountingDataClient: fetch compact source rows / people for the resolved
-// subject address or a specific person id, via the typed operations of Contract B.
+// Shortcut retrieval helpers over the CountingGraphQLTool: fetch compact source rows / people for
+// the resolved subject address or a specific person id.
 //
 // The limit/offset/sources options default only when omitted (undefined); an explicitly-passed 0 is
 // kept, then the max/min clamping runs.
-import { CountingDataClient, DataClientError, SHAPES, rowRowid, type PersonSummary, type RecordBlock, type SourceRow } from "./data_client.ts";
+import { CountingGraphQLTool, GraphQLToolError } from "./graphql_tool.ts";
 import type { ResolvedAddressContext } from "./models.ts";
 
-/** Shapes servable at an address: all seven the service ships. */
-export const ADDRESS_SHAPES: readonly string[] = [...SHAPES];
-/**
- * Shapes we request for a person id. The service DOES serve `utility` on the person path — op 4
- * shares `select_shapes` with op 2 — so the exclusion is ours, and the reason is citability, not
- * availability. `utility` is the one shape whose projection carries no `id` at all (`id_linked=False`
- * in the service manifest, uniquely), and the owner-elsewhere (`hal:`) traversal emits its record
- * blocks with `with_rowid=False`, so there is no `__rowid` handle either; operation 6 additionally
- * requires an `?address_id=` that a `hal:` person id cannot supply. A person-scoped utility row would
- * therefore be an uncitable name match. Utility rows still reach the model on the address path
- * (op 2), where the bundle position supplies the rowid.
- */
-export const PERSON_SHAPES: readonly string[] = SHAPES.filter((s) => s !== "utility");
+export const ADDRESS_SOURCE_FIELDS: Record<string, string> = {
+  base: "baseRecords",
+  tax: "taxProperties",
+  utility: "utilityRecords",
+  trace: "traceRecords",
+  auto: "autoRecords",
+  loan: "loanRecords",
+  drive: "driveRecords",
+  voter: "voterRecords",
+  criminal: "criminalRecords",
+};
 
-const PERSON_KEYS = [
-  "id",
-  "firstname",
-  "middlename",
-  "lastname",
-  "full_name",
-  "norm_name_key",
-  "sources",
-  "primary_address_id",
-  // Load-bearing: the partner ER graph is 17.9% suspicious and peaks at confidence 40.50. The model
-  // must be able to discount a hal:-sourced identity, so these are never dropped.
-  "identity_confidence",
-  "is_suspicious",
-] as const;
+export const PERSON_SOURCE_FIELDS: Record<string, string> = {
+  base: "baseRecords",
+  tax: "taxRecords",
+  trace: "traceRecords",
+  auto: "autoRecords",
+  loan: "loanRecords",
+  drive: "driveRecords",
+  voter: "voterRecords",
+  criminal: "criminalRecords",
+  linkedin: "linkedinRecords",
+};
 
-function _compact_person(node: Partial<PersonSummary>): Record<string, any> {
-  const src = node as Record<string, any>;
+function _compact_person_node(node: Record<string, any>): Record<string, any> {
   const out: Record<string, any> = {};
-  for (const key of PERSON_KEYS) {
-    const value = src[key];
+  for (const key of ["id", "firstname", "middlename", "lastname", "fullName", "normNameKey", "primaryAddressId"]) {
+    const value = node[key];
     if (value !== null && value !== undefined && value !== "") {
       out[key] = value;
     }
@@ -96,6 +90,9 @@ export const SOURCE_DATA_FIELDS: Record<string, string[]> = {
   auto: ["id", "auto_id", "firstname", "lastname", "address", "zip", "vin", "year", "make", "model", "phone"],
   loan: ["id", "loan_id", "firstname", "lastname", "address", "zip", "own_rent", "loan_amount", "monthly_income", "employer", "occupation"],
   drive: ["id", "drive_id", "firstname", "lastname", "address", "zip", "dl_num", "dl_state"],
+  voter: ["id", "voter_id", "firstname", "lastname", "address", "zip", "gender", "phone", "mobile", "email"],
+  criminal: ["id", "criminal_id", "firstname", "middlename", "lastname", "address", "zip", "category", "offensedesc1", "county", "arrestdate"],
+  linkedin: ["id", "linkedin_id", "firstname", "lastname", "linkedinurl", "summary", "position_title", "position_companyname", "position_description"],
 };
 
 function _compact_record_data(source: string, data: Record<string, any>): Record<string, any> {
@@ -125,205 +122,241 @@ function _record_summary(source: string, data: Record<string, any>): string {
   return bits.join("; ");
 }
 
-/**
- * One wire record -> the internal `{source, table, rowid, summary, data}` envelope that
- * subagents._harvest_evidence_rows turns into an evidence reference.
- *
- * `records.records_block` serves `{**row, "__rowid": n}` — the RAW vendor row, not a
- * `{table, rowid, data}` wrapper — so the row IS the data. `_compact_record_data` selects by
- * SOURCE_DATA_FIELDS, which drops `__rowid` and the `__norm_*` helpers with it; its
- * "first 12 keys" fallback is unreachable here because every caller filters `shape` against
- * ADDRESS_SHAPES / PERSON_SHAPES, and both are subsets of SOURCE_DATA_FIELDS.
- */
-function _compact_source_row(shape: string, row: SourceRow): Record<string, any> {
-  const compact_data = _compact_record_data(shape, row as Record<string, any>);
+function _compact_source_node(source: string, node: Record<string, any>): Record<string, any> {
+  const data = isDict(node["data"]) ? node["data"] : {};
+  const compact_data = _compact_record_data(source, data);
   return {
-    source: shape,
-    // The partner corpus is one physical table, so `table` names the SHAPE — exactly what
-    // GET /v1/source-record itself returns, and what provenance means to the consumer.
-    table: shape,
-    // null, never 0: 0 is a real citable bundle position, and a row reached through entity_links
-    // has none at all.
-    rowid: rowRowid(row),
-    summary: _record_summary(shape, compact_data),
+    source,
+    table: node["table"] || source,
+    rowid: node["rowid"] ?? null,
+    summary: _record_summary(source, compact_data),
     data: compact_data,
   };
 }
 
-/** Map a Contract-B RecordBlock into the internal envelope the typed tools already consume. */
-function _block(shape: string, block: Partial<RecordBlock> | undefined): Record<string, any> {
-  const b = block ?? {};
-  return {
-    totalCount: Math.trunc(Number(b.total_count ?? 0)),
-    hasMore: Boolean(b.has_more),
-    records: asArray(b.records).map((row) => _compact_source_row(shape, row)),
-  };
-}
-
-function _normalize_shapes(requested: string[] | null | undefined, allowed: readonly string[]): [string[], string[]] {
-  const raw = Array.isArray(requested) ? requested : [];
-  const normalized = raw.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase());
-  const wanted = normalized.length > 0 ? normalized : [...allowed];
-  const supported = wanted.filter((s) => allowed.includes(s));
-  return [supported, setDifferenceSorted(wanted, supported)];
-}
-
 export async function fetch_address_records(
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   address_id: number,
   source: string,
   opts: { limit?: number; offset?: number } = {},
 ): Promise<Record<string, any>> {
-  const shape = String(source ?? "").trim().toLowerCase();
+  source = String(source ?? "").trim().toLowerCase();
   const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 20)), 100));
   const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)));
-  if (!ADDRESS_SHAPES.includes(shape)) {
-    return { ok: false, error: `Unsupported address shape: ${shape}`, supported_shapes: [...ADDRESS_SHAPES].sort() };
+  const field = Object.hasOwn(ADDRESS_SOURCE_FIELDS, source) ? ADDRESS_SOURCE_FIELDS[source] : undefined;
+  if (!field) {
+    return { ok: false, error: `Unsupported address source: ${source}`, supported_sources: ["base", ...Object.keys(ADDRESS_SOURCE_FIELDS).sort()] };
   }
+  const query = `
+    query AgentAddressRecordsShortcut($id: Int!, $limit: Int, $offset: Int) {
+      address(id: $id) {
+        ${field}(limit: $limit, offset: $offset) {
+          totalCount
+          hasMore
+          nodes { table rowid data }
+        }
+      }
+    }
+    `;
+  let data: Record<string, any>;
   try {
-    const res = await data.address_records(address_id, { shapes: [shape], limit, offset });
-    return { ok: true, source: shape, ..._block(shape, res.records_by_source[shape]) };
+    data = (await graphql.query(query, { id: address_id, limit, offset }, { result_summary: `shortcut ${source} records at address ${address_id}` })) as Record<string, any>;
   } catch (exc) {
-    if (!(exc instanceof DataClientError)) throw exc;
+    if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc) };
   }
+  const conn = (data["address"] ?? {})[field] ?? {};
+  return {
+    ok: true,
+    source,
+    totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    hasMore: Boolean(conn["hasMore"]),
+    records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
+  };
 }
 
 export async function fetch_address_records_multi(
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   address_id: number,
   opts: { sources?: string[] | null; limit?: number; offset?: number } = {},
 ): Promise<Record<string, any>> {
-  const [supported, unsupported] = _normalize_shapes(opts.sources, ADDRESS_SHAPES);
+  const requested = Array.isArray(opts.sources) ? opts.sources : [];
+  const requestedNorm = requested.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase());
+  const normalized = requestedNorm.length > 0 ? requestedNorm : Object.keys(ADDRESS_SOURCE_FIELDS);
+  const supported = normalized.filter((s) => Object.hasOwn(ADDRESS_SOURCE_FIELDS, s));
+  const unsupported = setDifferenceSorted(normalized, supported);
   const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 25)), 100));
   const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)));
   if (supported.length === 0) {
-    return { ok: false, error: "No supported address shapes requested.", supported_shapes: [...ADDRESS_SHAPES].sort(), unsupported_sources: unsupported };
+    return { ok: false, error: "No supported address sources requested.", supported_sources: Object.keys(ADDRESS_SOURCE_FIELDS).sort(), unsupported_sources: unsupported };
   }
-  try {
-    const res = await data.address_records(address_id, { shapes: supported, limit, offset });
-    const records: Record<string, any> = {};
-    for (const shape of supported) {
-      records[shape] = _block(shape, res.records_by_source[shape]);
+  const selections = supported
+    .map((s) => ADDRESS_SOURCE_FIELDS[s])
+    .map((field) => `${field}(limit: $limit, offset: $offset) { totalCount hasMore nodes { table rowid data } }`)
+    .join("\n");
+  const query = `
+    query AgentAddressRecordsMultiShortcut($id: Int!, $limit: Int, $offset: Int) {
+      address(id: $id) {
+        ${selections}
+      }
     }
-    return {
-      ok: true,
-      records_by_source: records,
-      unsupported_sources: [...new Set([...unsupported, ...(res.unsupported_shapes ?? [])])].sort(),
-    };
+    `;
+  let data: Record<string, any>;
+  try {
+    data = (await graphql.query(query, { id: address_id, limit, offset }, { result_summary: `shortcut multi-source records at address ${address_id}` })) as Record<string, any>;
   } catch (exc) {
-    if (!(exc instanceof DataClientError)) throw exc;
+    if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc), unsupported_sources: unsupported };
   }
+  const address = data["address"] ?? {};
+  const records: Record<string, any> = {};
+  for (const source of supported) {
+    const field = ADDRESS_SOURCE_FIELDS[source]!;
+    const conn = address[field] ?? {};
+    records[source] = {
+      totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+      hasMore: Boolean(conn["hasMore"]),
+      records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
+    };
+  }
+  return { ok: true, records_by_source: records, unsupported_sources: unsupported };
 }
 
 export async function fetch_people_at_address(
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   address_id: number,
   opts: { limit?: number; offset?: number } = {},
 ): Promise<Record<string, any>> {
   const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 25)), 100));
   const offset = Math.max(0, Math.trunc(Number(opts.offset ?? 0)));
+  const query = `
+    query AgentPeopleAtAddressShortcut($id: Int!, $limit: Int, $offset: Int) {
+      peopleAtAddress(addressId: $id, limit: $limit, offset: $offset) {
+        totalCount
+        hasMore
+        nodes { id firstname middlename lastname fullName normNameKey primaryAddressId }
+      }
+    }
+    `;
+  let data: Record<string, any>;
   try {
-    const res = await data.address_people(address_id, { limit, offset });
-    return {
-      ok: true,
-      address_id,
-      totalCount: Math.trunc(Number(res.total_count ?? 0)),
-      hasMore: Boolean(res.has_more),
-      people: asArray(res.people).map((p) => _compact_person(p)),
-    };
+    data = (await graphql.query(query, { id: address_id, limit, offset }, { result_summary: `shortcut people at address ${address_id}` })) as Record<string, any>;
   } catch (exc) {
-    if (!(exc instanceof DataClientError)) throw exc;
+    if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc) };
   }
-}
-
-/**
- * Contract B addendum 3. The `hal:` traversal fetches rows by `(source_table, record_id)` and no
- * index covers `record_id`, so it runs under the statement timeout. Typing the flag only makes it
- * available; the natural `records.length === 0 -> "no records elsewhere"` reading still compiles.
- * Stating the gap is what makes a timeout reach the model as ABSENCE OF KNOWLEDGE rather than as
- * knowledge of absence — the failure mode that would quietly break owner-elsewhere detection.
- * `data_gaps` is the channel D6 already uses for `dropped_counts` / `tax_timed_out`, and both prompt
- * profiles render it.
- */
-function _person_timeout_gap(person_id: string): string {
-  return (
-    `The record lookup for person ${person_id} timed out; some of this person's rows were not ` +
-    "returned. Treat the result as incomplete, NOT as evidence that this person has no records elsewhere."
-  );
+  const conn = data["peopleAtAddress"] ?? {};
+  return {
+    ok: true,
+    address_id,
+    totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    hasMore: Boolean(conn["hasMore"]),
+    people: asArray(conn["nodes"]).map((node) => _compact_person_node(node)),
+  };
 }
 
 export async function fetch_person_records(
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   person_id: string,
   opts: { sources?: string[] | null; limit?: number } = {},
 ): Promise<Record<string, any>> {
-  const id = String(person_id ?? "").trim();
-  if (!id) {
+  person_id = String(person_id ?? "").trim();
+  if (!person_id) {
     return { ok: false, error: "person_id is required." };
   }
-  const [supported, unsupported] = _normalize_shapes(opts.sources, PERSON_SHAPES);
+  const requested = Array.isArray(opts.sources) ? opts.sources : [];
+  const requestedNorm = requested.filter((s) => String(s).trim() !== "").map((s) => String(s).trim().toLowerCase());
+  const normalized = requestedNorm.length > 0 ? requestedNorm : Object.keys(PERSON_SOURCE_FIELDS);
+  const supported = normalized.filter((s) => Object.hasOwn(PERSON_SOURCE_FIELDS, s));
+  const unsupported = setDifferenceSorted(normalized, supported);
   const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 20)), 100));
-  if (supported.length === 0) {
-    return { ok: false, error: "No supported person shapes requested.", supported_shapes: [...PERSON_SHAPES].sort(), unsupported_sources: unsupported };
-  }
-  try {
-    const res = await data.person_records(id, { shapes: supported, limit });
-    const records: Record<string, any> = {};
-    for (const shape of supported) {
-      records[shape] = _block(shape, res.records_by_source[shape]);
+  const selections = supported
+    .map((s) => PERSON_SOURCE_FIELDS[s])
+    .map((field) => `${field}(limit: $limit) { totalCount hasMore nodes { table rowid data } }`)
+    .join("\n");
+  const query = `
+    query AgentPersonRecordsShortcut($personId: String!, $limit: Int) {
+      person(id: $personId) {
+        id
+        firstname
+        middlename
+        lastname
+        fullName
+        ${selections}
+      }
     }
-    const timed_out = Boolean(res.records_timed_out);
-    return {
-      ok: true,
-      person: _compact_person(res.person ?? { id }),
-      records_by_source: records,
-      unsupported_sources: [...new Set([...unsupported, ...(res.unsupported_shapes ?? [])])].sort(),
-      records_timed_out: timed_out,
-      ...(timed_out ? { data_gaps: [_person_timeout_gap(id)] } : {}),
-    };
+    `;
+  let data: Record<string, any>;
+  try {
+    data = (await graphql.query(query, { personId: person_id, limit }, { result_summary: `shortcut person records for ${person_id}` })) as Record<string, any>;
   } catch (exc) {
-    if (!(exc instanceof DataClientError)) throw exc;
+    if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc), unsupported_sources: unsupported };
   }
+  const person = data["person"] ?? {};
+  const records: Record<string, any> = {};
+  for (const source of supported) {
+    const field = PERSON_SOURCE_FIELDS[source]!;
+    const conn = person[field] ?? {};
+    records[source] = {
+      totalCount: Math.trunc(Number(conn["totalCount"] ?? 0)),
+      hasMore: Boolean(conn["hasMore"]),
+      records: asArray(conn["nodes"]).map((node) => _compact_source_node(source, node)),
+    };
+  }
+  return {
+    ok: true,
+    person: _compact_person_node(person),
+    records_by_source: records,
+    unsupported_sources: unsupported,
+  };
 }
 
 export async function fetch_search_people(
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   name: string,
   opts: { limit?: number } = {},
 ): Promise<Record<string, any>> {
-  const q = String(name ?? "").trim();
-  if (!q) {
+  name = String(name ?? "").trim();
+  if (!name) {
     return { ok: false, error: "name is required." };
   }
   const limit = Math.max(1, Math.min(Math.trunc(Number(opts.limit ?? 10)), 50));
+  const query = `
+    query AgentSearchPeopleShortcut($q: String!, $limit: Int) {
+      searchPersons(query: $q, limit: $limit) {
+        totalCount
+        hasMore
+        nodes { matchScore person { id firstname lastname fullName } }
+      }
+    }
+    `;
+  let data: Record<string, any>;
   try {
-    const res = await data.search_people(q, { limit });
-    return {
-      ok: true,
-      source: "people_search",
-      count: Math.trunc(Number(res.total_count ?? 0)),
-      has_more: Boolean(res.has_more),
-      records: asArray(res.results).map((hit) => ({
-        ..._compact_person(hit),
-        match_score: hit.match_score ?? null,
-        record_count: hit.record_count ?? null,
-        // entity_master's canonical address. This is the whole point of a name search — "does the
-        // tax owner live somewhere else" is answered here or nowhere — so it is never compacted
-        // away, even though the address-scoped person shapes (ops 3 and 4) do not carry it.
-        address_line1: hit.address_line1 ?? null,
-        city: hit.city ?? null,
-        state: hit.state ?? null,
-        zip: hit.zip ?? null,
-      })),
-    };
+    data = (await graphql.query(query, { q: name, limit }, { result_summary: `search people '${name}'` })) as Record<string, any>;
   } catch (exc) {
-    if (!(exc instanceof DataClientError)) throw exc;
+    if (!(exc instanceof GraphQLToolError)) throw exc;
     return { ok: false, error: errStr(exc) };
   }
+  const conn = data["searchPersons"] ?? {};
+  const records: Record<string, any>[] = [];
+  for (const node of asArray(conn["nodes"])) {
+    const person = node["person"] ?? {};
+    records.push({
+      id: person["id"] ?? null,
+      firstname: person["firstname"] ?? null,
+      lastname: person["lastname"] ?? null,
+      full_name: person["fullName"] ?? null,
+      match_score: node["matchScore"] ?? null,
+    });
+  }
+  return {
+    ok: true,
+    source: "people_search",
+    count: Math.trunc(Number(conn["totalCount"] ?? 0)),
+    has_more: Boolean(conn["hasMore"]),
+    records,
+  };
 }
 
 export function _resolve_bundle_address_id(context: ResolvedAddressContext): number | null {
@@ -333,7 +366,11 @@ export function _resolve_bundle_address_id(context: ResolvedAddressContext): num
   return context.evidence_map.address_id;
 }
 
-/** A record block's `records` may be absent on the wire; coerce to an array for iteration. */
+function isDict(value: any): value is Record<string, any> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** GraphQL connection nodes may be null; coerce to an array for iteration. */
 function asArray(value: any): any[] {
   return Array.isArray(value) ? value : [];
 }

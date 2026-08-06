@@ -1,32 +1,14 @@
-# Two services: the occupancy data service (Python, port 8000) and the engine (Bun, port 8787).
-# The engine reaches the data service over the compose network at http://graph:8000, which is also
-# the DATA_URL default compiled into investigate_server.ts — the service name IS the contract.
 services:
-  graph:
+  graphql:
     build: ./services/graph
     environment:
-      # The partner corpus. Required: PartnerPool.from_env() raises "PARTNER_DSN is not set" inside
-      # the lifespan, so the container exits rather than serving a broken pool. Never inline it here.
-      PARTNER_DSN: ${PARTNER_DSN}
-      # These three mirror the service's own defaults (source/pool.py) so `docker compose config`
-      # shows the effective values. PARTNER_STATEMENT_TIMEOUT_MS exists for the property_owner scans.
-      PARTNER_STATEMENT_TIMEOUT_MS: ${PARTNER_STATEMENT_TIMEOUT_MS:-20000}
-      PARTNER_POOL_MIN: ${PARTNER_POOL_MIN:-1}
-      PARTNER_POOL_MAX: ${PARTNER_POOL_MAX:-8}
-    # The SQL hatch ceilings (SQL_HATCH_MAX_PLAN_COST / _MAX_RECORDS_SEQSCAN_COST / _MAX_ROWS /
-    # _TIMEOUT_MS) are deliberately NOT restated here: they have code defaults in service/limits.py
-    # derived from measured access paths, and duplicating them in compose would silently pin a stale
-    # ceiling. Set them in the shell (or an env_file) to override. See services/graph/.env.example.
-    #
-    # There is no database volume. The service reads Postgres over PARTNER_DSN; the SQLite bind mount
-    # went away with the storage migration inside the service.
+      GRAPH_SERVICE_DB: /data/graph.sqlite
+    volumes:
+      - "${GRAPH_DB:-../occupancy-engine/data/indexes/graph.sqlite}:/data/graph.sqlite:ro"
     ports:
       - "8000:8000"
     healthcheck:
-      # GET /healthz is the service's own health route and touches no database. A 200 is still a
-      # readiness signal, not just liveness: uvicorn only serves after the lifespan has built the
-      # pool from PARTNER_DSN, so a bad DSN never reaches a passing healthcheck.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request,json; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/graphql', data=json.dumps({'query':'{ __typename }'}).encode(), headers={'content-type':'application/json'}))"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -34,14 +16,11 @@ services:
   agent:
     build: .
     depends_on:
-      graph:
+      graphql:
         condition: service_healthy
     environment:
-      DATA_URL: http://graph:8000
-      # /healthz constructs a chat model with provider "auto", so a missing key is a 503, not a
-      # late failure on the first investigation.
+      GRAPHQL_URL: http://graphql:8000/graphql
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      # Every POST /investigate must send `Authorization: Bearer <this>`.
       ENGINE_AUTH_TOKEN: ${ENGINE_AUTH_TOKEN:-dev-engine-token}
       ENGINE_PORT: "8787"
     ports:
