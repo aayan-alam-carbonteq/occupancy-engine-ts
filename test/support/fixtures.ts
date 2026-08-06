@@ -90,3 +90,98 @@ export function sparsePreflightPayload(): Record<string, unknown> {
     addressByText: address,
   };
 }
+
+/**
+ * The graph payload the fingerprint probe reads. FixtureGraphQLServer answers EVERY query with the
+ * same `data` object, so this carries the UNION of the keys the probe's query shapes select: the real
+ * 1104 preflight (`searchAddresses` / `addressByText`) plus `address` (per-source shortcut rows),
+ * `peopleAtAddress`, and `person` (one person's rows, returned for whichever person is asked for).
+ * Sources not listed under `address` come back empty, exactly as a sparse address would.
+ */
+export function probeGraphPayload(): Record<string, unknown> {
+  const sourceRows = (table: string, rows: Record<string, unknown>[]) => ({
+    totalCount: rows.length,
+    hasMore: false,
+    nodes: rows.map((data, index) => ({ table, rowid: index + 1, data })),
+  });
+  return {
+    ...loadPreflight1104(),
+    address: {
+      baseRecords: sourceRows("base", [
+        {
+          id: "cd146804",
+          firstname: "JESSICA",
+          lastname: "WHISMAN",
+          primaryaddress: "1104 SPRING RUN RD",
+          zip: "40514",
+          lengthofresidence: 6,
+        },
+      ]),
+      taxProperties: sourceRows("tax", [
+        {
+          id: "tx-1",
+          tax_id: "TX1",
+          address: "1104 SPRING RUN RD",
+          zip: "40514",
+          ownername: "WHISMAN JESSICA",
+          owneraddressline1: "1104 SPRING RUN RD",
+          residential: "Y",
+          ownerrescount: 1,
+        },
+      ]),
+      utilityRecords: sourceRows("utility", [
+        {
+          first_name: "JOSIAH",
+          last_name: "CORRELL",
+          address: "1104 SPRING RUN RD",
+          city: "LEXINGTON",
+          state: "KY",
+          zip: "40514",
+        },
+      ]),
+    },
+    // Deliberately NOT in id order — the probe must sort, so the hash cannot depend on arrival order.
+    peopleAtAddress: {
+      totalCount: 2,
+      hasMore: false,
+      nodes: [
+        {
+          id: "cd146889",
+          firstname: "JOSIAH",
+          lastname: "CORRELL",
+          fullName: "JOSIAH  CORRELL",
+          normNameKey: "correll|josiah",
+          primaryAddressId: 3342,
+        },
+        {
+          id: "cd146804",
+          firstname: "JESSICA",
+          lastname: "WHISMAN",
+          fullName: "JESSICA  WHISMAN",
+          normNameKey: "whisman|jessica",
+          primaryAddressId: 3342,
+        },
+      ],
+    },
+    person: {
+      id: "cd146804",
+      firstname: "JESSICA",
+      middlename: null,
+      lastname: "WHISMAN",
+      fullName: "JESSICA  WHISMAN",
+      baseRecords: sourceRows("base", [
+        { id: "cd146804", firstname: "JESSICA", lastname: "WHISMAN", zip: "40514" },
+      ]),
+      voterRecords: sourceRows("voter", [
+        {
+          id: "v-1",
+          voter_id: "V1",
+          firstname: "JESSICA",
+          lastname: "WHISMAN",
+          address: "1104 SPRING RUN RD",
+          zip: "40514",
+        },
+      ]),
+    },
+  };
+}
