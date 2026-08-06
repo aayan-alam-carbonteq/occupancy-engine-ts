@@ -72,6 +72,39 @@ describe("compute_source_hash", () => {
   });
 });
 
+describe("compute_source_hash — runtime flags are part of the engine dimension", () => {
+  test("flipping an OE_ flag changes the hash", () => {
+    // These change prompts / tool behaviour without changing a byte of source. If they did not
+    // enter the hash, reports cached under one setting would keep being served after it flipped —
+    // under-invalidation, the direction that serves a WRONG report.
+    const root = makeTree();
+    const off = compute_source_hash(root, HASHED_ROOTS, { OE_PROSE_REDACT: "off" });
+    const on = compute_source_hash(root, HASHED_ROOTS, { OE_PROSE_REDACT: "on" });
+    expect(on).not.toBe(off);
+  });
+
+  test("a NEW OE_ flag is covered without being named anywhere", () => {
+    // Matched by prefix, not a curated list — a list is one more thing to forget to update.
+    const root = makeTree();
+    const base = compute_source_hash(root, HASHED_ROOTS, {});
+    expect(compute_source_hash(root, HASHED_ROOTS, { OE_SOME_FUTURE_FLAG: "1" })).not.toBe(base);
+  });
+
+  test("non-OE environment variables do NOT affect the hash", () => {
+    // Otherwise every PATH or HOME difference between two machines would drain the cache.
+    const root = makeTree();
+    const base = compute_source_hash(root, HASHED_ROOTS, {});
+    expect(compute_source_hash(root, HASHED_ROOTS, { PATH: "/usr/bin", HOME: "/root" })).toBe(base);
+  });
+
+  test("flag ORDER in the environment does not affect the hash", () => {
+    const root = makeTree();
+    const a = compute_source_hash(root, HASHED_ROOTS, { OE_PROSE_REDACT: "off", OE_SYNTH_AUGMENT: "on" });
+    const b = compute_source_hash(root, HASHED_ROOTS, { OE_SYNTH_AUGMENT: "on", OE_PROSE_REDACT: "off" });
+    expect(a).toBe(b);
+  });
+});
+
 describe("engine_source_hash", () => {
   test("is this repo tree's hash, cached for the process", () => {
     const hash = engine_source_hash();

@@ -60,10 +60,14 @@ describe("GraphQLDataSourceProbe — determinism", () => {
   test("the person hop is bounded and the bound is honoured", async () => {
     const capped = await probeOver(probeGraphPayload(), 1);
     expect(capped).not.toBeNull();
-    const probedPersons = new Set(
-      capped!.filter((r) => r.scope === "person" && r.source !== "identity").map((r) => r.subject_id),
-    );
-    expect(probedPersons.size).toBe(1);
+    const probedPersons = [
+      ...new Set(capped!.filter((r) => r.scope === "person" && r.source !== "identity").map((r) => r.subject_id)),
+    ];
+    // WHICH person, not merely how many. The fixture returns cd146889 FIRST and cd146804 second;
+    // the probe must sort by id, so the capped window is cd146804. Asserting only the count let a
+    // mutation that DELETED the sort pass every test — and without that sort the window follows
+    // arrival order, so the same graph state hashes two ways and the cache never hits.
+    expect(probedPersons).toEqual(["cd146804"]);
     // The identity rows for BOTH people are still fingerprinted — only the record hop is capped.
     expect(capped!.filter((r) => r.source === "identity").length).toBe(2);
   });

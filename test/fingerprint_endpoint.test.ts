@@ -162,3 +162,38 @@ describe("POST /fingerprint — default wiring", () => {
     expect(body.items[0].data).toBeNull();
   });
 });
+
+describe("POST /fingerprint — zip reaches the probe", () => {
+  test("the preflight query carries the zip the caller sent, and null when omitted", async () => {
+    // REGRESSION GUARD. Changing the route to `probe.probe(item.address)` — dropping zip — passed
+    // every other test in this repo, because FixtureGraphQLServer answers every query with the same
+    // payload regardless of variables, so zip was unobservable. zip feeds PREFLIGHT_QUERY and
+    // candidate selection, so losing it silently fingerprints a DIFFERENT address than the run
+    // resolves: the wrong-answer direction.
+    const graph = new FixtureGraphQLServer(probeGraphPayload());
+    try {
+      engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: graph.url });
+      await post({ items: [{ address: "1104 SPRING RUN RD", zip: "40514" }] });
+      const withZip = graph.requests.find(
+        (r) => typeof (r as any)?.variables?.zip === "string",
+      ) as any;
+      expect(withZip).toBeDefined();
+      expect(withZip.variables.zip).toBe("40514");
+    } finally {
+      graph.close();
+    }
+  });
+
+  test("an omitted zip reaches the probe as null, not as a stray string", async () => {
+    const graph = new FixtureGraphQLServer(probeGraphPayload());
+    try {
+      engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: graph.url });
+      await post({ items: [{ address: "1104 SPRING RUN RD" }] });
+      const preflight = graph.requests.find((r) => (r as any)?.variables?.query !== undefined) as any;
+      expect(preflight).toBeDefined();
+      expect(preflight.variables.zip).toBeNull();
+    } finally {
+      graph.close();
+    }
+  });
+});
