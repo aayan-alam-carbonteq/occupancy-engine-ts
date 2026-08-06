@@ -1,5 +1,19 @@
 # AI Job Result Cache — Engine Half (X-015) — Implementation Plan
 
+> **AMENDED 2026-08-06.** X-015 and X-020 ship as ONE round, cross-org from the start, so this plan
+> gained **Part 2 — Tenant-neutral evidence references** (Tasks A and B, before Task 11). Everything
+> above Part 2 is unchanged.
+>
+> **Normative spec:** `../../../../docs/superpowers/specs/2026-08-06-cross-org-ai-result-cache-design.md`.
+> The 2026-07-27 spec cited below remains the architecture reference for Tasks 1–10.
+>
+> **The branch base is now true again.** This plan says to cut from and merge to `main`. When it was
+> written that was correct; between then and 2026-08-06 `main` carried 30 abandoned X-016 commits
+> (typed data service — it deleted `graphql_tool.ts`) that nothing consumed. `main` has since been
+> reverted to the SQLite/GraphQL line (`494aeb3`, tree byte-identical to the pinned `5e8e15f`), and
+> the X-016 work is preserved on `origin/feat/typed-data-service`. So: cut from `main`, merge to
+> `main`, and the backend can bump its submodule pointer to `main` — all as written.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`
 > (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
@@ -1936,6 +1950,309 @@ pre-existing failures that assert those flags are off, i.e. fail by construction
 ```bash
 git add AGENTS.md
 git commit -m "docs(agents): POST /fingerprint contract, the graph-URL ops rule, and the true gate baseline"
+```
+
+---
+
+## Part 2 — Tenant-neutral evidence references (the cross-org delta)
+
+> **Added 2026-08-06.** X-015 and X-020 now ship as ONE round, cross-org from the start — see
+> `../../../../docs/superpowers/specs/2026-08-06-cross-org-ai-result-cache-design.md` §3. That spec is
+> normative; the 2026-07-27 spec remains the architecture reference for everything above.
+>
+> **Why this rides in the same PR.** The cache is what makes one org's report reach another. Ship
+> `POST /fingerprint` without this and the very first cross-org hit serves a report citing a scan the
+> reader cannot open. The two are one change in effect, so they are one change in review.
+
+### The problem, precisely
+
+`src/agents/external_evidence_map.ts:165-196` stamps the **caller's** identity into every evidence
+reference it emits:
+
+| line | what | why it leaks |
+|---|---|---|
+| `:169` → `:174`, `:189` | `scan_key = evidence.scan_id ?? "scan"` → `record_id` | a reused report cites a scan id belonging to another organisation — a dangling audit citation |
+| `:178` | `data.scan_id` | the same identifier, carried a second time |
+| `:179` | `data.scanned_at` | the **source org's scan timestamp** |
+
+`scanned_at` was missed in the first pass at the spec and is the worse of the two. It is
+deliberately **excluded from the cache key** (2026-07-27 spec §7 pins this), so two scans days apart
+still hit — meaning the foreign timestamp can be arbitrarily older than the reader's request and
+directly contradicts the `servedAt` the same report is presented under.
+
+**Do not scrub these after the fact.** `EvidenceReference.data` is a `jsonRecord` (`models.ts:44`), so
+a deep-walk can silently miss an occurrence — the exact objection the 2026-07-27 spec raised. Never
+write them instead.
+
+**Both are free to drop.** `_listing_summary` / `_facts_summary` — the only things rendered into a
+prompt — read neither; `data` is audit detail that compact rendering strips back to `summary`.
+Confirm before starting, so the claim is yours and not inherited:
+
+```bash
+grep -rn "scan_id\|scanned_at" src/          # expect ONLY: external_evidence_map.ts:169,178,179
+                                             # and the schema decls external_evidence.ts:66,67
+sed -n '/function _listing_summary/,/^}/p' src/agents/external_evidence_map.ts | grep -c "scan"
+                                             # expect 0
+```
+
+**The inbound schema stays.** `external_evidence.ts:66-67` declares `scan_id` / `scanned_at` on the
+*incoming* `ExternalEvidence` shape — that is the backend telling the engine what it is scanning,
+which is legitimate. **Do not delete those two lines.** The change is only that the engine stops
+echoing them outward.
+
+---
+
+### Task A: `evidenceDigest` — an evidence-intrinsic record key
+
+Replaces the caller's `scan_id` as the `record_id` prefix with a short content hash of the record
+itself. Reuses `canonicalJson` / `sha256Hex` from **Task 2** — do not write a second hasher.
+
+**Files:**
+- Modify: `src/agents/external_evidence_map.ts` (add `evidenceDigest`, rewrite `external_evidence_refs`)
+- Test: `test/external_evidence_tenant_neutral.test.ts` (new)
+- Modify: `test/external_evidence_map.test.ts:84` — the existing `record_id` assertion **will fail**;
+  see Step 4.
+
+- [ ] **Step 1: Write the failing test**
+
+`test/external_evidence_tenant_neutral.test.ts`:
+
+```ts
+import { describe, expect, test } from "bun:test";
+import { ExternalEvidenceSchema } from "../src/agents/external_evidence.ts";
+import { external_evidence_refs } from "../src/agents/external_evidence_map.ts";
+
+/**
+ * The cross-org guard. A report produced for one organisation is served verbatim to another, so
+ * NOTHING the engine emits may name the organisation that paid for the run.
+ */
+const listing = {
+  platform: "vrbo",
+  listing_url: "https://www.vrbo.com/1234567",
+  bedrooms: 3,
+  baths: 2,
+  guests: 6,
+  address_match_pct: 92,
+};
+const facts = { source_provider: "realtor", home_type: "single_family", area_sqft: 1840 };
+
+// Same property, same evidence — two different organisations, scanned three days apart.
+const orgA = () => ExternalEvidenceSchema.parse({
+  scan_id: "scan_aaa", scanned_at: "2026-07-17T10:00:00Z",
+  str_listings: [listing], address_match_confidence: 83, property_facts: facts,
+});
+const orgB = () => ExternalEvidenceSchema.parse({
+  scan_id: "scan_bbb", scanned_at: "2026-07-20T22:41:03Z",
+  str_listings: [listing], address_match_confidence: 83, property_facts: facts,
+});
+
+describe("external_evidence_refs is tenant-neutral", () => {
+  test("identical evidence yields identical refs across different callers", () => {
+    // THE test. Both fields vary together, which is the real-world case — asserting each
+    // field's absence separately would pass against an implementation that swapped one leak
+    // for the other.
+    expect(external_evidence_refs(orgA())).toEqual(external_evidence_refs(orgB()));
+  });
+
+  test("no emitted ref carries a scan identifier or a scan timestamp, at any depth", () => {
+    const serialized = JSON.stringify(external_evidence_refs(orgA()));
+    // Asserted on the SERIALIZED payload, not on named keys: `data` is a jsonRecord, so a
+    // key-by-key check cannot prove absence.
+    expect(serialized).not.toContain("scan_aaa");
+    expect(serialized).not.toContain("2026-07-17T10:00:00Z");
+    expect(serialized).not.toContain("scan_id");
+    expect(serialized).not.toContain("scanned_at");
+  });
+
+  test("the digest still distinguishes genuinely different evidence", () => {
+    const different = ExternalEvidenceSchema.parse({
+      scan_id: "scan_aaa", scanned_at: "2026-07-17T10:00:00Z",
+      str_listings: [{ ...listing, bedrooms: 4 }],
+      address_match_confidence: 83, property_facts: facts,
+    });
+    expect(external_evidence_refs(different)[0]!.record_id)
+      .not.toBe(external_evidence_refs(orgA())[0]!.record_id);
+  });
+
+  test("record_id stays stable under key reordering within a listing", () => {
+    const reordered = ExternalEvidenceSchema.parse({
+      str_listings: [{ address_match_pct: 92, guests: 6, baths: 2, bedrooms: 3,
+                       listing_url: listing.listing_url, platform: "vrbo" }],
+      address_match_confidence: 83, property_facts: facts,
+    });
+    const base = ExternalEvidenceSchema.parse({
+      str_listings: [listing], address_match_confidence: 83, property_facts: facts,
+    });
+    expect(external_evidence_refs(reordered)[0]!.record_id)
+      .toBe(external_evidence_refs(base)[0]!.record_id);
+  });
+
+  test("two identical listings on one scan stay individually addressable", () => {
+    // The digest is per-record, so duplicates collide — the positional index is what keeps
+    // refs distinct, and dropping it would make two refs indistinguishable in the audit trail.
+    const twins = ExternalEvidenceSchema.parse({
+      str_listings: [listing, listing], address_match_confidence: 83,
+    });
+    const refs = external_evidence_refs(twins);
+    expect(refs[0]!.record_id).not.toBe(refs[1]!.record_id);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test, verify it fails**
+
+Run: `OE_PROSE_REDACT=off OE_PROSE_REGISTER=off bun test test/external_evidence_tenant_neutral.test.ts`
+Expected: FAIL — the first test reports `"scan_aaa:0"` vs `"scan_bbb:0"`.
+
+- [ ] **Step 3: Implementation**
+
+In `src/agents/external_evidence_map.ts`:
+
+```ts
+import { canonicalJson, sha256Hex } from "../fingerprint/canonical.ts";
+
+/**
+ * A short, evidence-intrinsic key for one record.
+ *
+ * Replaces the caller's scan_id as the record_id prefix. Identical evidence MUST produce an
+ * identical digest no matter which organisation paid for the run — reports are reused across
+ * organisations, so anything caller-derived here becomes a cross-tenant leak in a served report.
+ *
+ * 12 hex chars: an audit-trail discriminator among a handful of refs on one property, not a
+ * collision-resistant identity. `canonicalJson` sorts keys at every depth, so a re-ordered record
+ * yields the same digest.
+ */
+function evidenceDigest(record: unknown): string {
+  return sha256Hex(canonicalJson(record)).slice(0, 12);
+}
+```
+
+Then rewrite the two `record_id` sites and drop both `data` fields:
+
+```ts
+export function external_evidence_refs(evidence: ExternalEvidence | null): EvidenceReference[] {
+  if (evidence === null) {
+    return [];
+  }
+  const refs: EvidenceReference[] = evidence.str_listings.map((listing, index) =>
+    EvidenceReferenceSchema.parse({
+      source: "str_scan",
+      table: "str_listing",
+      // Digest, not the caller's scan_id — see evidenceDigest. The index keeps two identical
+      // listings on one scan individually addressable.
+      record_id: `${evidenceDigest(listing)}:${index}`,
+      summary: _listing_summary(listing),
+      // scan_id / scanned_at deliberately NOT carried: they name the organisation that paid for
+      // the run, and this report may be served to a different one.
+      data: { ...listing },
+    }),
+  );
+  const facts = evidence.property_facts;
+  if (facts !== null && facts !== undefined) {
+    refs.push(
+      EvidenceReferenceSchema.parse({
+        source: "property_facts",
+        table: "property_facts",
+        record_id: `${evidenceDigest(facts)}:property_facts`,
+        summary: _facts_summary(facts),
+        data: { ...facts },
+      }),
+    );
+  }
+  return refs;
+}
+```
+
+- [ ] **Step 4: Update the one existing assertion this breaks**
+
+`test/external_evidence_map.test.ts:84` asserts `refs[0]!.record_id).toBe("scan_123:0")`. That
+assertion encodes the leak, so it must change — but **do not weaken it to a regex**. Compute the
+expected digest in the test the same way the source does, so it still pins an exact value:
+
+```ts
+expect(refs[0]!.record_id).toBe(`${sha256Hex(canonicalJson(payload().str_listings[0])).slice(0, 12)}:0`);
+```
+
+Check for other assertions that bake in the old prefix before assuming there is only one:
+
+```bash
+grep -rn "scan_123:\|scan_9:\|:property_facts\|record_id" test/ | grep -v tenant_neutral
+```
+
+- [ ] **Step 5: Run the tests, verify they pass**
+
+Run: `OE_PROSE_REDACT=off OE_PROSE_REGISTER=off bun test test/external_evidence_tenant_neutral.test.ts test/external_evidence_map.test.ts test/external_evidence_exposure.test.ts`
+Expected: all pass.
+
+- [ ] **Step 6: Verify by mutation, not by green**
+
+The guard must be shown to fail when the leak returns. Temporarily restore
+`record_id: \`${evidence.scan_id ?? "scan"}:${index}\``, re-run, and confirm **at least 2** of the
+five tests go red; then restore. A guard that cannot fail is not a guard — the frontend token bug of
+2026-08-06 passed 25 green tests.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/agents/external_evidence_map.ts test/external_evidence_tenant_neutral.test.ts test/external_evidence_map.test.ts
+git commit -m "feat(evidence): key refs by an evidence digest, never the caller's scan"
+```
+
+---
+
+### Task B: Prove the whole outbound surface is clean
+
+Task A fixes the site we found. This proves there is no second one — including in
+`orchestrator.ts:1523-1524`, which builds refs on a different path.
+
+**Files:**
+- Test: `test/external_evidence_exposure.test.ts` (extend — it already composes the full ref set)
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `test/external_evidence_exposure.test.ts`:
+
+```ts
+test("no evidence reference anywhere names the scan that produced it", () => {
+  // Serialize the ENTIRE assembled evidence surface and search for the caller's identifiers.
+  // This is the test that catches a leak on a path nobody thought to check.
+  const evidence = ExternalEvidenceSchema.parse({
+    scan_id: "scan_LEAKCANARY",
+    scanned_at: "2099-12-31T23:59:59Z",
+    str_listings: [{ platform: "vrbo", bedrooms: 3, baths: 2, guests: 6, address_match_pct: 92 }],
+    address_match_confidence: 83,
+    property_facts: { source_provider: "realtor", home_type: "single_family" },
+  });
+  const serialized = JSON.stringify(external_evidence_refs(evidence));
+  expect(serialized).not.toContain("LEAKCANARY");
+  expect(serialized).not.toContain("2099-12-31");
+});
+```
+
+- [ ] **Step 2: Run it, verify it fails before Task A and passes after**
+
+If Task A is already applied this passes immediately — in that case verify it by mutation (Task A
+Step 6) rather than accepting an unearned green.
+
+- [ ] **Step 3: Sweep the other ref-building path**
+
+`src/agents/orchestrator.ts:1523-1524` builds `summary` / `data` for graph-sourced refs. Confirm it
+cannot carry the caller's scan:
+
+```bash
+sed -n '1500,1540p' src/agents/orchestrator.ts
+grep -n "_short_source_summary\|dataSubset" -A 5 src/agents/orchestrator.ts | grep -i "scan"
+```
+
+Expected: nothing — the graph path never sees `ExternalEvidence`. **If it does, stop and add a task**
+rather than patching it inline; that would mean the leak is structural, not local, and the spec's
+"three references in one file" premise is wrong.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add test/external_evidence_exposure.test.ts
+git commit -m "test(evidence): canary guard — no ref names the scan that produced it"
 ```
 
 ---
