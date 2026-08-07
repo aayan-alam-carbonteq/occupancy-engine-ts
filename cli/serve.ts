@@ -22,7 +22,7 @@ function main(): void {
     max_concurrency: intEnv("ENGINE_MAX_CONCURRENCY", 4),
     request_timeout_ms: intEnv("ENGINE_REQUEST_TIMEOUT_MS", 300_000),
     shutdown_drain_ms: intEnv("ENGINE_SHUTDOWN_DRAIN_MS", 300_000),
-    graphql_url,
+    data_url: process.env.DATA_URL,
   });
   const shutdown = () => {
     void server.stop().then(() => process.exit(0));

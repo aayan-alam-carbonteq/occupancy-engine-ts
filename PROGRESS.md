@@ -4,30 +4,60 @@
 
 - **Repo root:** `occupancy-engine-ts/`
 - **Standard startup:** `./init.sh`
-- **Standard verification:** `bun run verify`
+- **Standard verification:** `OE_PROSE_REGISTER=off bun run verify` (the gitignored `.env`
+  sets that flag `on`, which breaks one tautological test by construction;
+  `OE_PROSE_REDACT` must stay `on` or E2E-1 fails). See `AGENTS.md`.
 - **Highest-priority unfinished feature:** `batch-cli` (see `feature_list.json`).
 - **Current blocker:** none.
 
 Baseline facts: the agent pipeline is a faithful port of `occupancy-engine`,
 deterministic-parity-verified vs Python on "1104 SPRING RUN RD"; de-Python cleanup
-done; planner-off default mirrored. Pending features (not built): batch CLI, judge
-package, observability/summaries.
+done; planner-off default mirrored. **The data layer is no longer a port** — X-016
+rewrote it off GraphQL onto the occupancy data service's six typed HTTP operations
+plus a guarded SQL hatch, reached at `DATA_URL` (default `http://graph:8000`), and it
+has no Python counterpart to be faithful to. Pending features (not built): batch CLI,
+judge package, observability/summaries.
 
 ## Session Record
 
 <!-- newest first; one entry per working session -->
 
-### 2026-08-06 — POST /fingerprint + tenant-neutral evidence refs (X-015 engine half)
-- **Goal:** Give the backend the two engine-owned dimensions of its AI-report cache key behind one new endpoint, AND stop stamping the caller's identity into evidence references — because X-015 now ships cross-org from the start (X-020 folded in), so reports are served to organizations that did not pay for the run.
-- **Shipped:** `src/fingerprint/{canonical,source_hash,data_source_probe,graphql_probe,wire}.ts`; `POST /fingerprint` in `investigate_server.ts`; `resolve_subject_address` extracted from `preflight`; startup line now prints engine hash + graph URL; `external_evidence_refs` keyed by an evidence digest.
-- **Gates:** typecheck clean, lint 0 errors (3 pre-existing warnings), **251 pass / 1 fail / 921 expect() across 37 files** (baseline 194/1/763 across 29 — same single failure).
-- **The 1 failure is not ours.** `E2E-1: orchestrator assembly` (`_person_name` cannot name a utility row). Proven pre-existing by checking out the pinned `5e8e15f` in a clean throwaway worktree and reproducing it byte-for-byte. X-016's `db706c5` fixed it, but X-016 was abandoned; recoverable from `origin/feat/typed-data-service`. Now documented in AGENTS.md so the next session does not re-diagnose it.
-- **Parity proven by diff, not asserted.** Task 4 rewrites `preflight`. Rather than trust "tests still pass", the full e2e output was captured with the refactor stashed, restored, and diffed: **byte-identical**, and still identical at the branch tip. That means every e2e assertion behaves the same — NOT that `record_id` values are unchanged (they deliberately changed, and no e2e test asserts on them).
-- **Both new guards verified by mutation, then restored.** Restoring the `scan_id` prefix reddens 3 of 5 tenant-neutral tests; re-adding `scan_id`/`scanned_at` to `data` reddens the exposure canary — a data-only leak the `record_id` tests would NOT catch. That is why both guards exist rather than one.
-- **A leak the spec missed, found by reading the code.** The spec named `scan_id`. `external_evidence_map.ts:179` also emitted `data.scanned_at` — the *source org's* scan timestamp, and the worse of the two: `scanned_at` is deliberately excluded from the cache key, so two scans days apart still hit and the foreign timestamp can be arbitrarily older than the reader's request. Both dropped, never scrubbed (`data` is a `jsonRecord`; a deep-walk can silently miss one). The **inbound** schema fields stay — accept them, never emit them.
-- **Trunk repaired before any of this.** `main` carried 30 abandoned X-016 commits nothing consumed. Preserved as `origin/feat/typed-data-service`, then `main` reverted via `read-tree --reset` so its tree is byte-identical to `5e8e15f` (same tree hash). Two follow-ups the blanket revert caused: `bun install` (X-016 had deleted the `graphql` dep) and cherry-picking `8c810d1` back (pure biome/worktree hygiene, unrelated to X-016).
-- **`/investigate` is byte-frozen.** The only removed lines in `investigate_server.ts` are two header comments and the `create_engine_server` return (required to expose `engine_hash`). Nothing inside the handler body.
-- **Next:** the backend half (`mortgage-compliance-monitoring` `feat/ai-result-cache`, plan `docs/superpowers/plans/2026-08-06-cross-org-ai-result-cache.md`). This endpoint is its hard prerequisite.
+### 2026-07-30 — Typed data service client + SQL hatch (X-016)
+- **Goal:** Move the engine off arbitrary GraphQL onto the occupancy data service: six typed HTTP operations (`POST /v1/resolve`, `GET /v1/address/{id}/records|people`, `GET /v1/person/{id}/records`, `GET /v1/people/search`, `GET /v1/source-record/{shape}/{rowid}?address_id=`) plus a guarded SQL hatch (`POST /v1/sql`, `GET /v1/schema`) over a partner Postgres corpus — someone else's production database, 7.6B rows, read-only guest credentials. Breaking, no shim.
+- **Completed (branch `feat/typed-data-service`, cut from `main`, Tasks 1-22 in 26 commits):**
+  - **Contract A (breaking)** — engine default `http://graphql:8000/graphql` -> `http://graph:8000`; CLI `--graphql-url` -> `--data-url`; env `GRAPHQL_URL` -> `DATA_URL`; compose service `graphql` -> `graph`; body field `graphql_url` -> `data_url`. `AgentInvestigationRequestSchema` is `.strict()`, so a stale key is a 400, not a silent ignore — pinned by `test/models.test.ts` and `test/http_service.test.ts` as an UNKNOWN-KEY error rather than a missing-field one.
+  - **Data layer** — `src/agents/data_client.ts` (`DataHttpClient` + `CountingDataClient`, preserving the per-agent call-budget accounting exactly), `src/agents/toolsets/sql_toolset.ts` (`SqlToolset` COMPOSES `TypedToolset`, so the bounded and exploratory surfaces cannot drift), `schema_guide.ts` revived from dead code as a pure formatter over `GET /v1/schema`. `graphql_tool.ts` (972 lines) and the `graphql` dependency are gone.
+  - **Shapes** — `voter`, `criminal`, `linkedin` dropped; seven live shapes remain (`base, auto, drive, loan, tax, trace, utility`). `get_records` now DEGRADES on a stale scope token rather than failing the whole call.
+  - **Scoring** — `drive` re-weighted 1.15 -> 0.75 and ranked below `loan` (a drive row IS a payday-loan row already counted as loan; the partner corpus has no DMV feed).
+  - **Repair channel** — the pre-execution validator is gone; a 422 from the hatch is a RESULT, not an error. It pushes `reason` onto `diagnostics.validation_errors` and increments `query_repair_attempts`, preserving the repair telemetry on the new channel. `DataHttpClient` accepts 422 for `/v1/sql` and nothing else, so a 500 from the same endpoint still raises.
+  - **Task 20** — deleted `graphql_tool.ts` + the `graphql` dep (verified a leaf: nothing in `node_modules` reverse-depends on it) and cleared the residual GraphQL vocabulary from `src/`.
+  - **Task 21** — `compose.yaml`, `README.md`, `AGENTS.md`, `init.sh` repointed at the data service, every command/env/service/port re-checked against the code.
+  - **Task 22** — this record + `feature_list.json`.
+- **Verification run:** `OE_PROSE_REGISTER=off bun run verify`; `OE_PROSE_REGISTER=off bun run e2e`; `bun test` under the `.env` defaults; `docker compose config`; `bash -n init.sh`; the two DoD greps.
+- **Evidence (verbatim):** `verify` -> exit 0: `tsc --noEmit` clean; `biome check .` -> "Checked 91 files in 304ms. No fixes applied." = **0 warnings** (baseline `8c810d1` had 3, all in files this plan rewrote); `bun test` -> **355 pass / 0 fail / 1348 expect() across 38 files** (baseline 195 / 0 / 765 across 29). `e2e` -> **7 pass / 0 fail / 100 expect() across 2 files** (E2E-1..E2E-5; E2E-5 is the no-GraphQL guard — it asserts no recorded request in the fixture data service has path `/graphql`). Under `.env` (both prose flags on) `bun test` -> **354 pass / 1 fail**, the 1 being the PRE-EXISTING tautological `_prose_register_lines (gated) > is empty by default (flag off) so prompts are byte-identical` — zero real failures in either config. `docker compose config` exit 0 with services `graph` + `agent` and `DATA_URL: http://graph:8000`. `bash -n init.sh` ok.
+- **Drive re-weight, before -> after on the fixed 12-case set** (`test/score_benchmark.test.ts`; goldens pinned BEFORE the change in `e12768b` and re-pinned after in `d52460e` — today's run reproduces every "after" value exactly):
+
+  | case | before | after | band |
+  |---|---|---|---|
+  | no_rows | 0.00 | 0.00 | low_evidence |
+  | tax_only_mailing_elsewhere | 2.50 | 2.50 | monitor |
+  | drive_only_owner_elsewhere | 5.95 | **4.75** | review -> **monitor** |
+  | drive_and_loan_same_row | 7.00 | **5.80** | review |
+  | nonowner_loan_renter_at_subject | 5.65 | 5.65 | review |
+  | auto_only_owner_elsewhere | 4.30 | 4.30 | monitor |
+  | utility_only_nonowner | 4.00 | 4.00 | monitor |
+  | trace_only_presence | 2.50 | 2.50 | monitor |
+  | full_stack_absentee | 18.25 | **17.05** | high_priority_review |
+  | drive_at_subject_nonowner | 9.40 | **7.00** | hpr -> **review** |
+  | drive_and_loan_nonowner_at_subject | 16.00 | **13.30** | high_priority_review |
+  | loan_only_owner_elsewhere | 3.55 | 3.55 | monitor |
+
+  Five move, seven hold; every case that moved carries a drive row and every case that held carries none. Two cross a band boundary downward: one payday row can no longer reach `review` on its own, and drive alone at the subject no longer reaches `high_priority_review`. `drive_and_loan_nonowner_at_subject` moves by more than the weight change alone (-2.70 vs -2.40) because `repeated_nonowner_cross_source_corroboration` carries both sources and the re-rank now applies loan (3 x 1.05) where it applied drive (3 x 1.15).
+- **OPEN ITEM — the drive double-count is halved, not closed:** `_owner_source_elsewhere` scores `drive` at base 3 (`strong`) against `loan`'s base 1, so one physical payday row still contributes 3 x 0.75 = **2.25** on top of loan's 1.05. Measurable as the `drive_and_loan_same_row` minus `loan_only_owner_elsewhere` gap, which goes **3.45 -> 2.25**, not to zero. **The plan's claim that "the duplicate contributes strictly less than the original" is false as stated.** Closing the rest means demoting drive's path STRENGTH in `src/heuristics/atomic_eval.ts` — a semantic claim about the evidence rather than a weight change, and wider than Task 14 specified. Documented in `src/heuristics/policy.ts`. Not a bug; an unfinished calibration, deliberately unbundled.
+- **Carry-forward items closed this session:** `include_shortcuts` fully retired (it still had a field on `MetricEvent` + `RunMetricsContext` with a hardcoded `false` caller); `retrieval.ts`'s justification for excluding `utility` from `PERSON_SHAPES` replaced — it claimed "utility is address-linked and has no person scope", which is false (op 4 shares `select_shapes` with op 2, so the service does serve it); the real reason is citability, verified against `services/graph@b9332e7`. `query_cache.ts` no longer documents itself as caching GraphQL. `prose_redaction.ts` dropped the dead `voterrecords`/`criminalrecords` entries and `VOTER|CRIMINAL` from `SOURCE_TAGS`.
+- **Plan defects found (in addition to the ~35 the earlier batches found):** (1) the DoD grep `grep -rn "voter|criminal|linkedin" src/` cannot return nothing — five surviving hits are the comments that EXPLAIN why those shapes are absent, and gutting them to satisfy a grep would delete the reason; same for `test/`, whose guard tests must contain the literal strings they search for. Both greps are clean for `src/` in substance: no code, data or prompt string references the dead shapes. (2) `AGENTS.md`'s prose-flag note cited `orchestrator.e2e.test.ts:42`; the assertion that actually depends on `OE_PROSE_REDACT` is line 57. (3) the plan's graph healthcheck used `GET /v1/schema`; the service has a purpose-built `GET /healthz` (`app.py:59`). (4) the README's `docker compose run --rm agent --address …` could not work — the image entrypoint is `cli/serve.ts`, which takes no address arguments.
+- **Risks:** the live engine <-> graph-service run has NOT happened; every gate here is offline against `test/support/fixture_data_service.ts`, which serves the pinned Contract B/C routes over real HTTP and 404s everything else. Contract A is breaking with no shim, so the backend's `submodules/occupancy-engine-ts` pointer bump and its `graphql_url` -> `data_url` payload change must land together. `services/graph` shows as modified in this working tree and is deliberately NOT committed from here — the umbrella sequences the submodule pointer.
+- **Next best action (coordinator):** merge the graph service, then run the umbrella's cross-repo verification steps 2-4 (live engine -> data service on a real address, the hatch adversarial pass, the backend cross-process probe); then merge `feat/typed-data-service` -> engine `main`, bump the backend's engine submodule pointer, and repoint the backend at `data_url`. Next engine cleanup: `heuristics/atomic_eval.ts` `build_evidence` and `engine.ts` `evaluate_address` are dead at runtime and still carry a SQLite `db_path` option.
 
 ### 2026-07-20 — Realtor listing signals -> AI layer (X-014)
 - **Goal:** Forward realtor rental-listing history + transaction facts (last_sold_date/price, list_date, flags) to the AI layer by widening the .strict() ExternalEvidence contract and folding the new fields into the existing rental-market + property-facts channels, entirely additively.

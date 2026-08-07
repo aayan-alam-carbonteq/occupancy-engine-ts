@@ -19,12 +19,13 @@ describe("external evidence source vocabulary", () => {
     // SUBSTANTIVE_SOURCES feeds row pre-seeding, the data-density gate, reliability weights,
     // RANKED_SOURCE_ORDER and _SOURCE_TOKEN_BY_PATH — the deterministic weighted synthesis.
     // Locking its contents makes any accidental widening fail here.
+    // `voter` was here until the partner-corpus move: no voter rows exist in that corpus, so the
+    // source was dropped from the ladder entirely rather than left to score a permanent zero.
     expect([...SUBSTANTIVE_SOURCES]).toEqual([
       "tax",
       "base",
       "loan",
       "drive",
-      "voter",
       "auto",
       "trace",
       "utility",

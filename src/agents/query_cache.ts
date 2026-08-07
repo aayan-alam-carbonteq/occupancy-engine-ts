@@ -1,19 +1,21 @@
-// Single-flight query cache: concurrent identical queries are coalesced by storing the in-flight
-// Promise in a Map before yielding control. Because everything between the cache checks and the
-// `_inflight.set(...)` is synchronous (no `await`), concurrent callers that arrive while a query is
-// running observe the in-flight Promise and await it instead of re-executing. Errors are not cached.
-import { canonicalJson } from "../fingerprint/canonical.ts";
+// Single-flight call cache: concurrent identical data-service calls are coalesced by storing the
+// in-flight Promise in a Map before yielding control. Because everything between the cache checks
+// and the `_inflight.set(...)` is synchronous (no `await`), concurrent callers that arrive while a
+// call is running observe the in-flight Promise and await it instead of re-executing. Errors are
+// not cached.
 
-function cacheKey(query: string, variables: Record<string, unknown> | null | undefined): string {
-  return query.trim() + "\x00" + canonicalJson(variables ?? {});
+function cacheKey(operation: string, params: Record<string, unknown> | null | undefined): string {
+  return operation.trim() + "\x00" + canonicalJson(params ?? {});
 }
 
 /**
- * Per-investigation single-flight + result cache for READ-ONLY GraphQL queries.
+ * Per-investigation single-flight + result cache for READ-ONLY data-service calls.
  *
- * Coalesces identical concurrent queries into one execution and caches results for the
- * investigation's lifetime (the graph DB is read-only during a run). Errors are NOT cached.
- * Cached results are treated as read-only by all consumers.
+ * Keyed by `(operation, params)` — the typed operation name plus its canonicalized arguments, which
+ * is what `CountingDataClient` passes. Coalesces identical concurrent calls into one execution and
+ * caches results for the investigation's lifetime (the partner corpus is read-only during a run —
+ * the service holds guest credentials). Errors are NOT cached. Cached results are treated as
+ * read-only by all consumers.
  */
 export class QueryCache {
   private readonly _results = new Map<string, unknown>();
@@ -23,11 +25,11 @@ export class QueryCache {
   executed = 0; // actually ran the factory
 
   async get_or_execute(
-    query: string,
-    variables: Record<string, unknown> | null | undefined,
+    operation: string,
+    params: Record<string, unknown> | null | undefined,
     factory: () => Promise<unknown> | unknown,
   ): Promise<unknown> {
-    const key = cacheKey(query, variables);
+    const key = cacheKey(operation, params);
     if (this._results.has(key)) {
       this.hits += 1;
       return this._results.get(key);

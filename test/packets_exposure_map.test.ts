@@ -50,13 +50,13 @@ describe("the pinned exposure map", () => {
       "str_scan",
       "property_facts",
     ]);
-    // and the shared constant is unchanged after the catalog is built
+    // and the shared constant is unchanged after the catalog is built.
+    // `voter` left this list with the partner-corpus move — no voter rows exist there.
     expect([...SUBSTANTIVE_SOURCES]).toEqual([
       "tax",
       "base",
       "loan",
       "drive",
-      "voter",
       "auto",
       "trace",
       "utility",
