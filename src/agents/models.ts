@@ -46,15 +46,15 @@ export const EvidenceReferenceSchema = z
   .strict();
 export type EvidenceReference = z.infer<typeof EvidenceReferenceSchema>;
 
-export const DataCallLogSchema = z
+export const GraphQLQueryLogSchema = z
   .object({
-    operation: z.string(),
-    params: jsonRecord.default({}),
+    query_name: z.string(),
+    variables: jsonRecord.default({}),
     result_summary: z.string().default(""),
     error: z.string().nullish().default(null),
   })
   .strict();
-export type DataCallLog = z.infer<typeof DataCallLogSchema>;
+export type GraphQLQueryLog = z.infer<typeof GraphQLQueryLogSchema>;
 
 export const PersonEvidenceSummarySchema = z
   .object({
@@ -138,7 +138,7 @@ export const ResolvedAddressContextSchema = z
     evidence_map: CaseEvidenceMapSchema.default(() => emptyCaseEvidenceMap()),
     schema_guide: z.string().default(""),
     selected_heuristic_ids: z.array(z.string()).default([]),
-    preflight_queries: z.array(DataCallLogSchema).default([]),
+    preflight_queries: z.array(GraphQLQueryLogSchema).default([]),
   })
   .strict();
 export type ResolvedAddressContext = z.infer<typeof ResolvedAddressContextSchema>;
@@ -171,15 +171,15 @@ export const AgentInvestigationRequestSchema = z
   .object({
     address: z.string(),
     zip: z.string().default(""),
-    data_url: z.string(),
+    graphql_url: z.string(),
     provider: z.enum(["auto", "openai", "gemini", "anthropic"]).default("auto"),
     model: z.string().nullish().default(null),
     base_url: z.string().nullish().default(null),
     heuristic_allowlist: z.array(z.string()).nullish().default(null),
     heuristic_blocklist: z.array(z.string()).default([]),
     max_concurrency: z.number().int().min(1).default(8),
-    max_data_calls_per_agent: z.number().int().min(1).default(8),
-    data_timeout_seconds: z.number().gt(0).default(30.0),
+    max_graphql_calls_per_agent: z.number().int().min(1).default(8),
+    graphql_timeout_seconds: z.number().gt(0).default(30.0),
     agent_timeout_seconds: z.number().gt(0).default(120.0),
     max_response_bytes: z.number().int().min(10_000).default(1_000_000),
     max_output_retries: z.number().int().min(0).default(2),
@@ -189,6 +189,7 @@ export const AgentInvestigationRequestSchema = z
     disable_master_planning: z.boolean().default(true),
     prompt_profile: z.enum(["compact", "full"]).default("compact"),
     retrieval_mode: z.enum(["tools", "typed_tools"]).default("tools"),
+    include_shortcuts: z.boolean().default(false),
     metrics_enabled: z.boolean().default(true),
     metrics_debug_payloads: z.boolean().default(false),
     metrics_output_dir: z.string().nullish().default(null),
@@ -204,7 +205,7 @@ export const HeuristicAgentInputSchema = z
   .object({
     heuristic: jsonRecord,
     context: ResolvedAddressContextSchema,
-    max_data_calls: z.number().int(),
+    max_graphql_calls: z.number().int(),
     max_output_retries: z.number().int().default(2),
     max_query_repair_attempts: z.number().int().default(3),
     schema_tool_budget: z.number().int().default(8),
@@ -228,7 +229,7 @@ export const HeuristicAgentResultSchema = z
     evidence_against: z.array(EvidenceReferenceSchema).default([]),
     missing_evidence: z.array(z.string()).default([]),
     evidence_refs: z.array(EvidenceReferenceSchema).default([]),
-    data_queries: z.array(DataCallLogSchema).default([]),
+    graphql_queries: z.array(GraphQLQueryLogSchema).default([]),
     tool_errors: z.array(z.string()).default([]),
     validation_errors: z.array(z.string()).default([]),
     query_repair_attempts: z.number().int().min(0).default(0),

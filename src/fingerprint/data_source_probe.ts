@@ -1,0 +1,67 @@
+// The port the cache key's `data` dimension is taken over.
+//
+// The hash sits inside the ENGINE'S OWN normalized projection, never a source's wire format (spec
+// Decision 3): the partner endpoint's schema is not ours, will not match today's GraphQL schema, and
+// we cannot ask its owners to add anything — but this projection must exist for ANY source, because
+// the prompts depend on a stable record shape. Hashing the projection also immunizes the key against
+// volatile transport fields (cursors, request ids, response timestamps): they cannot poison the hash
+// for the same reason the model never sees them — they do not survive normalization.
+import { canonicalJson, sha256Hex } from "./canonical.ts";
+
+/** One normalized row the engine would reason over, independent of where it was read from. */
+export interface NormalizedRecord {
+  /** "address" for rows hanging off the resolved subject address; "person" for a linked person. */
+  scope: "address" | "person";
+  /** The resolved address id (stringified) or the person id the row hangs off. */
+  subject_id: string;
+  /**
+   * Source key — one of ADDRESS_SOURCE_FIELDS / PERSON_SOURCE_FIELDS in src/agents/retrieval.ts, or
+   * "identity" for a person node itself.
+   */
+  source: string;
+  /** Physical table the row came from; "" when the projection has none (identity rows). */
+  table: string;
+  /** Row identity within the table; null when the source does not expose one. */
+  rowid: number | string | null;
+  /** The compact field projection: SOURCE_DATA_FIELDS output, or a compacted person node. */
+  data: Record<string, unknown>;
+}
+
+export interface DataSourceProbe {
+  /**
+   * Deterministic per-address read → the engine's normalized record model.
+   * `null` means "unavailable" (unresolvable address, or the read failed).
+   * A probe NEVER throws: a throw would turn one bad address in a 500-scan batch into a whole-request
+   * failure, when the contract says it costs that one scan its cache lookup and nothing more.
+   */
+  probe(address: string, zip?: string): Promise<NormalizedRecord[] | null>;
+}
+
+/**
+ * A total order over records, so the hash does not depend on the order the source returned rows in.
+ * This is the same trap the backend's array re-sort closes, and it fails the same silent way: without
+ * it, two identical reads can hash differently and the cache simply never hits. Returns a new array —
+ * the caller's list is not mutated.
+ */
+export function sort_records(records: NormalizedRecord[]): NormalizedRecord[] {
+  return records
+    .map((record) => ({ key: record_key(record), record }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map((item) => item.record);
+}
+
+function record_key(record: NormalizedRecord): string {
+  return [
+    record.scope,
+    record.subject_id,
+    record.source,
+    record.table,
+    record.rowid === null ? "" : String(record.rowid),
+    canonicalJson(record.data),
+  ].join("\u0000");
+}
+
+/** The `data` dimension of the cache key: sha256 over the sorted, canonicalized projection. */
+export function records_fingerprint(records: NormalizedRecord[]): string {
+  return sha256Hex(canonicalJson(sort_records(records)));
+}

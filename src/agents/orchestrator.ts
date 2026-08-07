@@ -1,6 +1,6 @@
 // Top-level investigation orchestration: preflight address resolution + evidence-map build,
 // deterministic packet gating, the master planner LLM, per-group subagent dispatch (bucketing +
-// budget-scaled CountingDataClient + shared QueryCache + a concurrency limiter + per-bucket timeout),
+// budget-scaled CountingGraphQLTool + shared QueryCache + a concurrency limiter + per-bucket timeout),
 // scoring, the master adjudicator LLM (with retries + fallback), conflict/evidence dedup, and the
 // final assessment assembly. The submit_* tools are stubs that return {}: the loop routes by tool
 // name and reads the tool_call args directly, so a tool's own func is never invoked.
@@ -11,13 +11,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
 import { selected_heuristics } from "./catalog.ts";
-import {
-  CountingDataClient,
-  DataHttpClient,
-  rowRowid,
-  type ResolveResponse,
-  type SourceRow,
-} from "./data_client.ts";
+import { CountingGraphQLTool, GraphQLHttpTool } from "./graphql_tool.ts";
 import { createChatModel, resolveProvider, type LlmProvider } from "./llm.ts";
 import {
   AddressCandidateSchema,
@@ -61,7 +55,6 @@ import {
   prompt_context,
 } from "./prompts.ts";
 import { QueryCache } from "./query_cache.ts";
-import { fallbackSchemaGuide, summarizeDataSchema } from "./schema_guide.ts";
 import { scoreResults } from "./scoring.ts";
 import { RetrievalHeuristicSubagent, error_result, type HeuristicSubagent } from "./subagents.ts";
 import { make_toolset } from "./toolsets/index.ts";
@@ -76,6 +69,65 @@ import {
 } from "./prose_redaction.ts";
 import { humanize_evidence_map_for_display } from "./prose_display.ts";
 import type { MetricEvent } from "../observability/models.ts";
+
+const PREFLIGHT_QUERY = `
+query AgentAddressPreflight($query: String!, $zip: String) {
+  searchAddresses(query: $query, zip: $zip, limit: 5) {
+    totalCount
+    nodes {
+      matchScore
+      matchedFields
+      relationCount
+      address { id normAddress zip5 streetNumber streetName unit city state county }
+    }
+  }
+  addressByText(query: $query, zip: $zip) {
+    id
+    normAddress
+    zip5
+    streetNumber
+    streetName
+    unit
+    city
+    state
+    county
+    residents(limit: 10) { totalCount nodes { id firstname lastname fullName } }
+    utilityRecords(limit: 10) { totalCount nodes { table rowid data } }
+    taxProperties(limit: 5) { totalCount nodes { table rowid data } }
+    traceRecords(limit: 10) { totalCount nodes { table rowid data } }
+    autoRecords(limit: 10) { totalCount nodes { table rowid data } }
+    loanRecords(limit: 10) { totalCount nodes { table rowid data } }
+    driveRecords(limit: 10) { totalCount nodes { table rowid data } }
+    voterRecords(limit: 10) { totalCount nodes { table rowid data } }
+    criminalRecords { totalCount }
+  }
+}
+`;
+
+const ADDRESS_BY_ID_QUERY = `
+query AgentAddressById($id: Int!) {
+  address(id: $id) {
+    id
+    normAddress
+    zip5
+    streetNumber
+    streetName
+    unit
+    city
+    state
+    county
+    residents(limit: 10) { totalCount nodes { id firstname lastname fullName } }
+    utilityRecords(limit: 10) { totalCount nodes { table rowid data } }
+    taxProperties(limit: 5) { totalCount nodes { table rowid data } }
+    traceRecords(limit: 10) { totalCount nodes { table rowid data } }
+    autoRecords(limit: 10) { totalCount nodes { table rowid data } }
+    loanRecords(limit: 10) { totalCount nodes { table rowid data } }
+    driveRecords(limit: 10) { totalCount nodes { table rowid data } }
+    voterRecords(limit: 10) { totalCount nodes { table rowid data } }
+    criminalRecords { totalCount }
+  }
+}
+`;
 
 // ── Master submit tools (native tool calls) ──
 
@@ -132,7 +184,7 @@ export interface InvestigationHooks {
 }
 
 export class AgentOrchestrator {
-  data: DataHttpClient;
+  graphql: GraphQLHttpTool;
   subagent: HeuristicSubagent;
   master_llm: any | null;
   max_concurrency: number;
@@ -141,7 +193,7 @@ export class AgentOrchestrator {
   should_cancel: () => boolean;
 
   constructor(opts: {
-    data: DataHttpClient;
+    graphql: GraphQLHttpTool;
     subagent: HeuristicSubagent;
     master_llm?: any | null;
     max_concurrency?: number;
@@ -149,7 +201,7 @@ export class AgentOrchestrator {
     on_metric_event?: (event: MetricEvent) => void;
     should_cancel?: () => boolean;
   }) {
-    this.data = opts.data;
+    this.graphql = opts.graphql;
     this.subagent = opts.subagent;
     this.master_llm = opts.master_llm ?? null;
     this.max_concurrency = opts.max_concurrency ?? 8;
@@ -178,6 +230,7 @@ export class AgentOrchestrator {
         provider: _report_provider(request.provider),
         model: request.model || "",
         prompt_profile: request.prompt_profile,
+        include_shortcuts: request.include_shortcuts,
       },
       {
         enabled: request.metrics_enabled,
@@ -326,7 +379,7 @@ export class AgentOrchestrator {
       query: {
         address: request.address,
         zip: request.zip,
-        data_url: request.data_url,
+        graphql_url: request.graphql_url,
         provider: _report_provider(request.provider),
         model: request.model,
         retrieval_mode: request.retrieval_mode,
@@ -352,42 +405,26 @@ export class AgentOrchestrator {
   }
 
   async preflight(request: AgentInvestigationRequest): Promise<ResolvedAddressContext> {
-    // Budget 2: the two typed operations below. The curated schema does NOT come out of this
-    // ceiling — CountingDataClient.schema() spends the separate schema-tool counter — so the
-    // budget stays exactly as tight as the number of data calls preflight is allowed to make.
-    const data = new CountingDataClient(this.data, { max_calls: 2, agent_id: "orchestrator" });
-    const resolved = await data.resolve(request.address, request.zip);
-    const candidates = (resolved.candidates ?? []).map((node) => _candidate(node as unknown as Record<string, any>));
-    const selected = _selected_candidate(resolved, candidates);
-    let people: Record<string, any>[] = [];
-    if (selected !== null) {
-      // D4. Op 1 returns rows but not the clustered people list; op 3 does, and the clustering is
-      // what the evidence map's person entries have always been built from. Both are bundle-backed,
-      // so the second call is memory-speed. Never fatal: the record shapes still carry names.
-      try {
-        const res = await data.address_people(selected.id, { limit: 10 });
-        people = (res.people ?? []) as unknown as Record<string, any>[];
-      } catch {
-        people = [];
-      }
-    }
-    let schema_guide = "";
-    if (request.retrieval_mode === "tools") {
-      // D5. Fetched once here so every hatch worker starts with the access paths without spending
-      // its own schema-tool budget; `typed_tools` mode has no hatch, so it fetches nothing and its
-      // prompts are unchanged. Never fatal: a missing schema degrades to the fallback text.
-      try {
-        schema_guide = summarizeDataSchema(await data.schema({ max_calls: 1 }));
-      } catch (exc) {
-        schema_guide = fallbackSchemaGuide(errStr(exc));
-      }
-    }
-    const source_counts = { ...(resolved.source_counts ?? {}) };
+    const graphql = new CountingGraphQLTool(this.graphql, { max_calls: 3, agent_id: "orchestrator" });
+    const schema_guide = "";
+    // Shared with the fingerprint probe — see resolve_subject_address. Same queries, same order,
+    // same result_summary strings, so `preflight_queries` below is byte-identical to before.
+    const { address_data, candidates, selected } = await resolve_subject_address(
+      graphql,
+      request.address,
+      request.zip,
+    );
+    const source_counts = _source_counts((address_data ?? {}) as Record<string, any>);
     // Absent payload => empty, exactly as today: the blind (benchmarking) configuration.
     const external_evidence = request.external_evidence ?? null;
     // CONTEXT-level only. evidence_map.property_types stays [] — see _evidence_map below.
     const property_types = property_types_from_external(external_evidence);
-    const evidence_map = _evidence_map(resolved, people, selected, source_counts, external_evidence);
+    const evidence_map = _evidence_map(
+      (address_data ?? {}) as Record<string, any>,
+      selected,
+      source_counts,
+      external_evidence,
+    );
     const ambiguous = selected === null || _is_ambiguous(candidates);
     return ResolvedAddressContextSchema.parse({
       input_address: request.address,
@@ -399,7 +436,7 @@ export class AgentOrchestrator {
       property_types,
       evidence_map,
       schema_guide,
-      preflight_queries: data.logs,
+      preflight_queries: graphql.logs,
     });
   }
 
@@ -490,7 +527,7 @@ export class AgentOrchestrator {
       return {
         heuristic,
         context,
-        max_data_calls: request.max_data_calls_per_agent,
+        max_graphql_calls: request.max_graphql_calls_per_agent,
         max_output_retries: request.max_output_retries,
         max_query_repair_attempts: request.max_query_repair_attempts,
         schema_tool_budget: request.schema_tool_budget,
@@ -510,8 +547,8 @@ export class AgentOrchestrator {
       const firstId = ids[0]!;
       const worker_id = solo ? `heuristic:${firstId}` : `group:${ids.join("+")}`;
       // Budgets scale with bucket size so each grouped packet keeps its full solo allowance.
-      const data = new CountingDataClient(this.data, {
-        max_calls: request.max_data_calls_per_agent * bucket.length,
+      const graphql = new CountingGraphQLTool(this.graphql, {
+        max_calls: request.max_graphql_calls_per_agent * bucket.length,
         agent_id: worker_id,
         heuristic_id: solo ? firstId : "",
         cache: query_cache,
@@ -528,7 +565,7 @@ export class AgentOrchestrator {
             heuristic_id: solo ? firstId : ids.join("+"),
             metadata: _worker_span_metadata(bucket, worker_index, workers_total),
           },
-          async () => await _dispatch_bucket(this.subagent, agent_inputs, data),
+          async () => await _dispatch_bucket(this.subagent, agent_inputs, graphql),
         );
       };
 
@@ -537,7 +574,7 @@ export class AgentOrchestrator {
       try {
         // Site 3: before launching each bucket. Cancelled buckets never invoke a subagent.
         if (this.should_cancel()) {
-          return bucket.map((h) => error_result(h, "investigation cancelled before launch", data));
+          return bucket.map((h) => error_result(h, "investigation cancelled before launch", graphql));
         }
         return await withTimeout(
           runnable.invoke(
@@ -560,7 +597,7 @@ export class AgentOrchestrator {
         );
       } catch (exc) {
         // Any failure (including a bucket timeout) is reported as structured error results.
-        return bucket.map((h) => error_result(h, errStr(exc), data));
+        return bucket.map((h) => error_result(h, errStr(exc), graphql));
       } finally {
         semaphore.release();
       }
@@ -683,8 +720,8 @@ export async function investigate_address(
   subagent: HeuristicSubagent | null = null,
   hooks: InvestigationHooks = {},
 ): Promise<OccupancyAgentAssessment> {
-  const data = new DataHttpClient(request.data_url, {
-    timeout_seconds: request.data_timeout_seconds,
+  const graphql = new GraphQLHttpTool(request.graphql_url, {
+    timeout_seconds: request.graphql_timeout_seconds,
     max_response_bytes: request.max_response_bytes,
   });
   let master_llm: any | null;
@@ -699,7 +736,7 @@ export async function investigate_address(
       // the heuristic subagent (both use this one instance) score reproducibly.
       temperature: 0,
     });
-    const toolset = make_toolset(request.retrieval_mode);
+    const toolset = make_toolset(request.retrieval_mode, request.include_shortcuts);
     resolvedSubagent = new RetrievalHeuristicSubagent(llm, toolset, hooks.should_cancel);
     master_llm = llm;
   } else {
@@ -707,7 +744,7 @@ export async function investigate_address(
     master_llm = null;
   }
   const orchestrator = new AgentOrchestrator({
-    data,
+    graphql,
     subagent: resolvedSubagent,
     master_llm,
     max_concurrency: request.max_concurrency,
@@ -913,17 +950,17 @@ export function _bucket_by_group(heuristics: Record<string, any>[]): Record<stri
 async function _dispatch_bucket(
   subagent: HeuristicSubagent,
   agent_inputs: HeuristicAgentInput[],
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
 ): Promise<HeuristicAgentResult[]> {
   // Use the grouped path when available; fall back to sequential run() for subagents that predate
   // run_group (the HeuristicSubagent interface and run-only test fakes).
   const run_group = (subagent as any).run_group;
   if (typeof run_group === "function") {
-    return await (subagent as any).run_group(agent_inputs, data);
+    return await (subagent as any).run_group(agent_inputs, graphql);
   }
   const results: HeuristicAgentResult[] = [];
   for (const ai of agent_inputs) {
-    results.push(await subagent.run(ai, data));
+    results.push(await subagent.run(ai, graphql));
   }
   return results;
 }
@@ -1179,7 +1216,7 @@ function _agent_metrics(opts: {
     skipped_packets: plan.skipped.length,
     launched_subagents: results.length,
     workers_total,
-    data_call_count: results.reduce((acc, result) => acc + result.data_queries.length, 0),
+    graphql_query_count: results.reduce((acc, result) => acc + result.graphql_queries.length, 0),
     tool_error_count: results.reduce((acc, result) => acc + result.tool_errors.length, 0),
     validation_error_count: results.reduce((acc, result) => acc + result.validation_errors.length, 0),
     query_repair_attempts: results.reduce((acc, result) => acc + result.query_repair_attempts, 0),
@@ -1191,14 +1228,68 @@ function _agent_metrics(opts: {
 
 // ── Preflight builders ──
 
+/** What preflight's address-resolution step produced, before any evidence-map building. */
+export interface SubjectAddressResolution {
+  address_data: Record<string, any> | null;
+  candidates: AddressCandidate[];
+  selected: AddressCandidate | null;
+}
+
+/**
+ * The ONE address-resolution path in the engine. `AgentOrchestrator.preflight` calls it, and so does
+ * the fingerprint probe (src/fingerprint/graphql_probe.ts) — so a fingerprint can never describe a
+ * different address than the investigation reads. Two queries at most: the preflight search, plus the
+ * by-id fallback only when `addressByText` came back null and there is a candidate to fall back to.
+ */
+export async function resolve_subject_address(
+  graphql: CountingGraphQLTool,
+  address: string,
+  zip: string,
+): Promise<SubjectAddressResolution> {
+  const data = await graphql.query(
+    PREFLIGHT_QUERY,
+    { query: address, zip: zip || null },
+    { result_summary: "address search and source counts" },
+  );
+  const search = (data["searchAddresses"] ?? {}) as Record<string, any>;
+  const nodes = (search["nodes"] ?? []) as any[];
+  const candidates = nodes.map((node) => _candidate(node as Record<string, any>));
+  let address_data: Record<string, any> | null = (data["addressByText"] ?? null) as Record<string, any> | null;
+  if (address_data === null && candidates.length > 0) {
+    const by_id = await graphql.query(
+      ADDRESS_BY_ID_QUERY,
+      { id: candidates[0]!.id },
+      { result_summary: "fallback address by id" },
+    );
+    address_data = (by_id["address"] ?? null) as Record<string, any> | null;
+  }
+  return { address_data, candidates, selected: _selected_candidate(address_data, candidates) };
+}
+
+/**
+ * The address id preflight puts on `evidence_map.address_id` — i.e. the id `_resolve_bundle_address_id`
+ * hands the agents, and therefore the subject the probe must read. Mirrors `_evidence_map`'s own rule.
+ */
+export function resolved_address_id(resolution: SubjectAddressResolution): number | null {
+  if (resolution.selected !== null) {
+    return resolution.selected.id;
+  }
+  const raw = resolution.address_data?.["id"];
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  return Math.trunc(Number(raw)) || 0;
+}
+
 function _candidate(node: Record<string, any>): AddressCandidate {
+  const address = isRecord(node["address"]) ? node["address"] : {};
   return AddressCandidateSchema.parse({
-    id: Math.trunc(Number(node["address_id"])) || 0,
-    norm_address: node["norm_address"] || "",
-    zip5: node["zip5"] || "",
-    match_score: Number(node["match_score"] || 0),
-    relation_count: Math.trunc(Number(node["relation_count"])) || 0,
-    matched_fields: [...(Array.isArray(node["matched_fields"]) ? node["matched_fields"] : [])],
+    id: Math.trunc(Number(address["id"])) || 0,
+    norm_address: address["normAddress"] || "",
+    zip5: address["zip5"] || "",
+    match_score: Number(node["matchScore"] || 0),
+    relation_count: Math.trunc(Number(node["relationCount"])) || 0,
+    matched_fields: [...(Array.isArray(node["matchedFields"]) ? node["matchedFields"] : [])],
   });
 }
 
@@ -1211,33 +1302,22 @@ function _report_provider(provider: string): string {
   }
 }
 
-/**
- * The service resolves, not the engine: `address_id` IS the selection. There is no by-id fallback
- * any more — operation 1 returns the selection and its rows in one round-trip — and no
- * "first candidate wins" guess, which would silently investigate a different address whenever the
- * service ranked a candidate ahead of the one it actually resolved.
- */
 function _selected_candidate(
-  resolved: ResolveResponse,
+  address_data: Record<string, any> | null,
   candidates: AddressCandidate[],
 ): AddressCandidate | null {
-  const id = resolved.address_id;
-  if (id === null || id === undefined) {
-    return null;
-  }
-  // Prefer the service's own candidate row so match/relation counts survive.
-  const chosen = candidates.find((c) => c.id === id);
-  return (
-    chosen ??
-    AddressCandidateSchema.parse({
-      id: Math.trunc(Number(id)) || 0,
-      norm_address: "",
-      zip5: "",
+  if (address_data !== null && Object.keys(address_data).length > 0) {
+    const ad = address_data as Record<string, any>;
+    return AddressCandidateSchema.parse({
+      id: Math.trunc(Number(ad["id"])) || 0,
+      norm_address: ad["normAddress"] || "",
+      zip5: ad["zip5"] || "",
       match_score: 1.0,
       relation_count: 0,
       matched_fields: ["address"],
-    })
-  );
+    });
+  }
+  return candidates.length > 0 ? candidates[0]! : null;
 }
 
 function _is_ambiguous(candidates: AddressCandidate[]): boolean {
@@ -1250,63 +1330,58 @@ function _is_ambiguous(candidates: AddressCandidate[]): boolean {
   return candidates[0]!.match_score < 1.0 || candidates[1]!.match_score === candidates[0]!.match_score;
 }
 
-/**
- * One shape's rows out of a resolve payload. `records.records_block` serves `{**row, "__rowid": n}`
- * — the RAW vendor row, not a `{table, rowid, data}` envelope — so the row IS the data.
- */
-function _rows_of(resolved: ResolveResponse, shape: string): Record<string, any>[] {
-  const block = resolved.records_by_source?.[shape];
-  return Array.isArray(block?.records) ? (block.records as Record<string, any>[]) : [];
-}
-
-/**
- * D6. `dropped_counts` ("the quality gate refused N rows") and `tax_timed_out` are new signal: an
- * absence caused by either is NOT an absence in the corpus, and silently discarding them would let
- * the model read one as a fact. They are APPENDED to the zero-count gaps rather than replacing
- * them — both statements are true at once, and both prompt profiles render the whole list.
- */
-function _quality_gaps(resolved: ResolveResponse): string[] {
-  const gaps: string[] = [];
-  const dropped = Object.entries(resolved.dropped_counts ?? {}).sort(([a], [b]) => (a < b ? -1 : 1));
-  for (const [shape, count] of dropped) {
-    // The service reports `{"tax": 0}` on every clean resolve; zero refused rows is not a gap.
-    if (Math.trunc(Number(count)) > 0) {
-      gaps.push(`${count} ${shape} rows were refused by the data-quality gate and are not counted.`);
-    }
+function _source_counts(address_data: Record<string, any>): Record<string, number> {
+  const mapping: Record<string, string> = {
+    base: "residents",
+    utility: "utilityRecords",
+    tax: "taxProperties",
+    trace: "traceRecords",
+    auto: "autoRecords",
+    loan: "loanRecords",
+    drive: "driveRecords",
+    voter: "voterRecords",
+    criminal: "criminalRecords",
+  };
+  const counts: Record<string, number> = {};
+  for (const [source, field] of Object.entries(mapping)) {
+    const value = address_data[field] ?? {};
+    counts[source] = Math.trunc(Number(value["totalCount"])) || 0;
   }
-  if (resolved.tax_timed_out) {
-    gaps.push("The tax lookup timed out; tax rows may be incomplete.");
-  }
-  return gaps;
+  return counts;
 }
 
 function _evidence_map(
-  resolved: ResolveResponse,
-  people: Record<string, any>[],
+  address_data: Record<string, any>,
   selected: AddressCandidate | null,
   source_counts: Record<string, number>,
   external_evidence: ExternalEvidence | null = null,
 ): CaseEvidenceMap {
-  const normalized_address = (selected ? selected.norm_address : "") || "";
-  const zip5 = (selected ? selected.zip5 : "") || "";
-  const tax_rows = _rows_of(resolved, "tax");
-  const owners = _owner_summaries(tax_rows, normalized_address);
-  const people_summaries = _people_at_address_summaries(resolved, people, owners);
+  const normalized_address = (selected ? selected.norm_address : address_data["normAddress"]) || "";
+  const zip5 = (selected ? selected.zip5 : address_data["zip5"]) || "";
+  const owners = _owner_summaries(address_data, normalized_address);
+  const people = _people_at_address_summaries(address_data, owners);
   // External refs are built first so they lead the list: compact_evidence_map's refs.slice(0, 8)
   // caps AFTER scope filtering, and the ordering is what keeps a citation a heuristic needs from
   // being crowded out. (compact_evidence_map re-asserts the ordering; this is where they enter.)
-  const refs = [...external_evidence_refs(external_evidence), ..._source_refs(tax_rows, "tax", 5)];
-  const owner_presence_hints = _owner_presence_hints(people_summaries, owners, normalized_address);
-  const nonowner_hints = _nonowner_occupancy_hints(people_summaries);
-  const data_gaps = [
-    ...Object.entries(source_counts)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .filter(([, count]) => count === 0)
-      .map(([source]) => `No ${source} rows found at selected address.`),
-    ..._quality_gaps(resolved),
+  const refs = [
+    ...external_evidence_refs(external_evidence),
+    ..._source_refs(address_data, "taxProperties", "tax", 5),
   ];
-  const freshness_hints = _freshness_hints(tax_rows);
-  const address_id: number | null = selected ? selected.id : null;
+  const owner_presence_hints = _owner_presence_hints(address_data, owners, normalized_address);
+  const nonowner_hints = _nonowner_occupancy_hints(address_data, owners);
+  const data_gaps = Object.entries(source_counts)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .filter(([, count]) => count === 0)
+    .map(([source]) => `No ${source} rows found at selected address.`);
+  const freshness_hints = _freshness_hints(address_data);
+  let address_id: number | null;
+  if (selected) {
+    address_id = selected.id;
+  } else if (address_data["id"] !== null && address_data["id"] !== undefined) {
+    address_id = Math.trunc(Number(address_data["id"])) || 0;
+  } else {
+    address_id = null;
+  }
   return {
     address_id,
     normalized_address,
@@ -1318,7 +1393,7 @@ function _evidence_map(
     property_types: [],
     rental_market_summary: rental_market_summary_lines(external_evidence),
     owner_summaries: owners,
-    people_at_address: people_summaries,
+    people_at_address: people,
     owner_presence_hints,
     owner_elsewhere_hints: _owner_elsewhere_hints(owners, normalized_address),
     nonowner_occupancy_hints: nonowner_hints,
@@ -1328,10 +1403,11 @@ function _evidence_map(
   };
 }
 
-function _owner_summaries(tax_rows: Record<string, any>[], normalized_address: string): OwnerEvidenceSummary[] {
+function _owner_summaries(address_data: Record<string, any>, normalized_address: string): OwnerEvidenceSummary[] {
   const summaries: OwnerEvidenceSummary[] = [];
   const seen = new Set<string>();
-  for (const data of tax_rows.slice(0, 5)) {
+  for (const node of _source_nodes(address_data, "taxProperties").slice(0, 5)) {
+    const data = node["data"] ?? {};
     const owner = String(data["ownername"] || "Unknown owner").trim();
     if (!owner || seen.has(owner)) {
       continue;
@@ -1366,86 +1442,58 @@ function _owner_summaries(tax_rows: Record<string, any>[], normalized_address: s
   return summaries;
 }
 
-/** Shapes whose ROWS carry a person name. `base` and `tax` reach this map through op 3's clusters. */
-const PERSON_BEARING_SHAPES = ["drive", "auto", "loan", "trace", "utility"] as const;
-
-/**
- * D4. Operation 3's clustered people lead, then the record shapes.
- *
- * Op 1 returns rows but not the clustered identities, which is why preflight spends a second call:
- * the `base` (and now `tax`) entries here have always been built from clustering, not from raw rows.
- * A cluster's `sources` is the set of shapes it was actually drawn from — service-side
- * `people_for_bundle` clusters across base/trace/loan/drive/auto/utility/tax — so it is NOT
- * hard-coded to "base". Labelling a utility-only cluster `base` would assert base-file provenance
- * the corpus does not have, and prompts.ts renders this field verbatim to the model.
- */
 function _people_at_address_summaries(
-  resolved: ResolveResponse,
-  people: Record<string, any>[],
+  address_data: Record<string, any>,
   owners: OwnerEvidenceSummary[],
 ): PersonEvidenceSummary[] {
   const owner_tokens = _owner_name_tokens(owners);
-  // Keyed on the identity key, NOT the display name. The same human arrives on both paths with two
-  // different spellings — op 3's cluster carries the middle initial ("JOHN H PIERCE"), the raw row
-  // it was clustered from does not ("JOHN PIERCE") — and a display-name key would file those as two
-  // residents. Resident counts feed the occupancy heuristics, so that duplicate is not cosmetic.
   const grouped = new Map<string, PersonEvidenceSummary>();
-  const add = (key: string, name: string, source: string, data: Record<string, any>): void => {
-    let current = grouped.get(key);
-    if (current === undefined) {
-      current = {
-        name,
-        relationship_to_owner: _relationship_to_owner(name, owner_tokens),
-        sources: [],
-        summaries: [],
-      };
-      grouped.set(key, current);
-    }
-    if (!current.sources.includes(source)) {
-      current.sources.push(source);
-    }
-    const summary_bits = [source];
-    for (const key of ["own_rent", "ownRent", "address", "zip", "dob", "dob_year", "year", "make", "model"]) {
-      if (data[key] !== null && data[key] !== undefined && data[key] !== "") {
-        summary_bits.push(`${key}=${data[key]}`);
+  const fields: [string, string][] = [
+    ["residents", "base"],
+    ["driveRecords", "drive"],
+    ["voterRecords", "voter"],
+    ["autoRecords", "auto"],
+    ["loanRecords", "loan"],
+    ["traceRecords", "trace"],
+    ["utilityRecords", "utility"],
+  ];
+  for (const [field, source] of fields) {
+    const nodes = _source_nodes(address_data, field).slice(0, 10);
+    for (const node of nodes) {
+      // Use the nested `data` blob when it has fields; otherwise fall back to the node's own fields.
+      const rawData = node["data"];
+      const data = isRecord(rawData) && Object.keys(rawData).length > 0 ? rawData : node;
+      const name = _person_name(data);
+      if (!name) {
+        continue;
       }
-    }
-    // One summary per source keeps the bit-string's lead a single source code, which is what
-    // prose_display.humanize_person_summary parses.
-    current.summaries.push(summary_bits.join("; "));
-  };
-
-  // The clustered people lead, so their richer spelling wins the display name for anyone reached
-  // both ways: op 3's `full_name` is the service's own canonical rendering of the identity.
-  for (const person of people.slice(0, 10)) {
-    const name = _person_name(person);
-    const key = _person_identity_key(person);
-    if (!name || !key) {
-      continue;
-    }
-    const sources = (Array.isArray(person["sources"]) ? person["sources"] : [])
-      .map((source) => String(source))
-      .filter((source) => source !== "");
-    for (const source of sources.length > 0 ? sources : ["base"]) {
-      add(key, name, source, person);
-    }
-  }
-  for (const shape of PERSON_BEARING_SHAPES) {
-    for (const row of _rows_of(resolved, shape).slice(0, 10)) {
-      const name = _person_name(row);
-      const key = _person_identity_key(row);
-      if (name && key) {
-        add(key, name, shape, row);
+      let current = grouped.get(name);
+      if (current === undefined) {
+        current = {
+          name,
+          relationship_to_owner: _relationship_to_owner(name, owner_tokens),
+          sources: [],
+          summaries: [],
+        };
+        grouped.set(name, current);
       }
+      if (!current.sources.includes(source)) {
+        current.sources.push(source);
+      }
+      const summary_bits = [source];
+      for (const key of ["own_rent", "ownRent", "address", "zip", "dob", "dob_year", "year", "make", "model"]) {
+        if (data[key] !== null && data[key] !== undefined && data[key] !== "") {
+          summary_bits.push(`${key}=${data[key]}`);
+        }
+      }
+      current.summaries.push(summary_bits.join("; "));
     }
   }
   return [...grouped.values()].slice(0, 20);
 }
 
-// Both hint builders take the ALREADY-BUILT person summaries: they used to re-derive them from the
-// payload on every call, which is now three passes over the same rows for three identical results.
 function _owner_presence_hints(
-  people: PersonEvidenceSummary[],
+  address_data: Record<string, any>,
   owners: OwnerEvidenceSummary[],
   normalized_address: string,
 ): string[] {
@@ -1453,7 +1501,7 @@ function _owner_presence_hints(
   if (owners.some((owner) => Boolean(owner.mailing_matches_subject))) {
     hints.push("At least one tax owner mailing address matches the selected address.");
   }
-  for (const person of people) {
+  for (const person of _people_at_address_summaries(address_data, owners)) {
     if (person.relationship_to_owner === "owner") {
       hints.push(`Owner-like name appears in ${person.sources.join(", ")}: ${person.name}.`);
     }
@@ -1475,9 +1523,9 @@ function _owner_elsewhere_hints(owners: OwnerEvidenceSummary[], _normalized_addr
   return hints.slice(0, 8);
 }
 
-function _nonowner_occupancy_hints(people: PersonEvidenceSummary[]): string[] {
+function _nonowner_occupancy_hints(address_data: Record<string, any>, owners: OwnerEvidenceSummary[]): string[] {
   const hints: string[] = [];
-  for (const person of people) {
+  for (const person of _people_at_address_summaries(address_data, owners)) {
     if (["likely_family", "unrelated", "unknown"].includes(person.relationship_to_owner)) {
       hints.push(`${person.relationship_to_owner} person at address via ${person.sources.join(", ")}: ${person.name}.`);
     }
@@ -1485,9 +1533,10 @@ function _nonowner_occupancy_hints(people: PersonEvidenceSummary[]): string[] {
   return hints.slice(0, 10);
 }
 
-function _freshness_hints(tax_rows: Record<string, any>[]): string[] {
+function _freshness_hints(address_data: Record<string, any>): string[] {
   const hints: string[] = [];
-  for (const data of tax_rows.slice(0, 5)) {
+  for (const node of _source_nodes(address_data, "taxProperties").slice(0, 5)) {
+    const data = node["data"] ?? {};
     if (data["recordingdate"]) {
       hints.push(`Tax recordingdate=${data["recordingdate"]}`);
     }
@@ -1495,31 +1544,37 @@ function _freshness_hints(tax_rows: Record<string, any>[]): string[] {
   return hints.slice(0, 10);
 }
 
-function _source_refs(rows: Record<string, any>[], source: string, limit: number): EvidenceReference[] {
+function _source_refs(
+  address_data: Record<string, any>,
+  field: string,
+  source: string,
+  limit: number,
+): EvidenceReference[] {
   const refs: EvidenceReference[] = [];
-  for (const row of rows.slice(0, limit)) {
+  for (const node of _source_nodes(address_data, field).slice(0, limit)) {
+    const data = node["data"] ?? {};
     const dataSubset: Record<string, any> = {};
-    // The record IS the raw vendor row, so the service's derived keys (`__rowid`, `__norm_*`) sit
-    // alongside the evidence. They are plumbing — drop them before taking the first 12 rather than
-    // letting key order decide whether the model sees them.
-    for (const key of Object.keys(row).filter((key) => !key.startsWith("__")).slice(0, 12)) {
-      dataSubset[key] = row[key];
+    for (const key of Object.keys(data).slice(0, 12)) {
+      dataSubset[key] = data[key];
     }
     refs.push(
       EvidenceReferenceSchema.parse({
         source,
-        // The partner corpus is one physical table, so `table` names the SHAPE — exactly what
-        // GET /v1/source-record returns, and what provenance means to the consumer.
-        table: source,
-        // Contract B addendum 2: `__rowid` is the row's bundle position, the handle operation 6
-        // takes. null (not 0) when the row has none — 0 is a real, citable position.
-        rowid: rowRowid(row as SourceRow),
-        summary: _short_source_summary(source, row),
+        table: node["table"] || source,
+        rowid: node["rowid"] ?? null,
+        summary: _short_source_summary(source, data),
         data: dataSubset,
       }),
     );
   }
   return refs;
+}
+
+function _source_nodes(address_data: Record<string, any>, field: string): Record<string, any>[] {
+  const value = address_data[field] ?? {};
+  const nodes = isRecord(value) ? value["nodes"] : null;
+  const list = Array.isArray(nodes) ? nodes : [];
+  return list.filter((node) => isRecord(node));
 }
 
 function _short_source_summary(source: string, data: Record<string, any>): string {
@@ -1532,78 +1587,17 @@ function _short_source_summary(source: string, data: Record<string, any>): strin
   return parts.join("; ");
 }
 
-/**
- * The name FIELDS a person-bearing record can carry, in the service's own precedence.
- *
- * `source/people.py::_names` reads `firstname` OR `first_name` — the seven live shapes do not agree
- * on a spelling, and `utility` (the most populous shape at a typical address) is the snake_case one:
- * SOURCE_DATA_FIELDS.utility is `first_name`/`last_name`/`middle_name`. Reading only the camel/flat
- * spellings made every utility row anonymous to this map. `firstName`/`lastName` are the retired
- * camelCase spellings of the previous data surface, kept because nothing guarantees a caller's
- * payload is service-shaped.
- */
-const _FIRST_NAME_KEYS = ["firstname", "first_name", "firstName"] as const;
-const _LAST_NAME_KEYS = ["lastname", "last_name", "lastName"] as const;
-
-function _first_present(data: Record<string, any>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const value = data[key];
-    if (value !== null && value !== undefined && String(value).trim() !== "") {
-      return String(value).trim();
-    }
-  }
-  return "";
-}
-
 function _person_name(data: Record<string, any>): string {
-  // `full_name` is the clustered person's field (Contract B); `fullName` is the retired spelling.
-  const full = data["full_name"] || data["fullName"];
-  if (full) {
-    return String(full).trim().toUpperCase();
+  if (data["fullName"]) {
+    return String(data["fullName"]).trim().toUpperCase();
   }
-  const name = [_first_present(data, _FIRST_NAME_KEYS), _first_present(data, _LAST_NAME_KEYS)]
-    .filter((part) => part !== "")
+  const first = data["firstname"] || data["firstName"];
+  const last = data["lastname"] || data["lastName"];
+  const name = [first, last]
+    .filter((part) => Boolean(part))
+    .map((part) => String(part).trim())
     .join(" ");
   return name.toUpperCase();
-}
-
-/**
- * The identity a person is GROUPED by — deliberately not the display name.
- *
- * Mirrors `normalize.name_key`: `normalize_text(first)|normalize_text(last)`, i.e. first and last
- * only, whitespace-collapsed and case-folded. The middle name is excluded on purpose. Op 3's
- * `full_name` is `first middle last` (`source/people.py:51`) while the row it was clustered from
- * renders `first last`, so "JOHN H PIERCE" and "JOHN PIERCE" are one human seen twice; keying on the
- * rendered name would double them and inflate the resident count the occupancy heuristics read.
- *
- * The service's own key is preferred when the payload carries it — `norm_name_key` on an op 3
- * person (`handlers._PERSON_KEYS`), `__norm_name_key` on a projected row (`source/project.py:81`) —
- * so the engine's grouping cannot drift from the clustering that produced the people list. The
- * local computation is the fallback for payloads without it (e.g. a `hal:` search result).
- */
-function _person_identity_key(data: Record<string, any>): string {
-  const served = data["norm_name_key"] ?? data["__norm_name_key"];
-  if (typeof served === "string" && served !== "" && served !== "|") {
-    return served;
-  }
-  let first = _first_present(data, _FIRST_NAME_KEYS);
-  let last = _first_present(data, _LAST_NAME_KEYS);
-  if (first === "" && last === "") {
-    // Only a rendered name to go on: take the outer tokens, dropping any middle names between them.
-    const parts = String(data["full_name"] ?? data["fullName"] ?? "").trim().split(/\s+/).filter((p) => p !== "");
-    if (parts.length === 0) {
-      return "";
-    }
-    first = parts[0]!;
-    last = parts.length > 1 ? parts[parts.length - 1]! : "";
-  }
-  const key = `${_normalize_name_text(first)}|${_normalize_name_text(last)}`;
-  return key === "|" ? "" : key;
-}
-
-/** `normalize.normalize_text`: collapse internal whitespace, trim, case-fold. */
-function _normalize_name_text(value: string): string {
-  return value.trim().split(/\s+/).join(" ").toLowerCase();
 }
 
 function _owner_name_tokens(owners: OwnerEvidenceSummary[]): Set<string> {

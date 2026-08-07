@@ -1,18 +1,16 @@
 // The retrieval-mode factory the orchestrator uses to build the subagent toolset.
-//   "tools"       — the typed operations PLUS the guarded SQL hatch (exploratory; the default).
-//   "typed_tools" — the typed operations only (bounded; no ad-hoc query surface at all).
-import type { RetrievalToolset } from "./base.ts";
-import { SqlToolset } from "./sql_toolset.ts";
+import { GraphQLToolset } from "./graphql_toolset.ts";
 import { TypedToolset } from "./typed_toolset.ts";
+import type { RetrievalToolset } from "./base.ts";
 
 export { Diagnostics } from "./base.ts";
 export type { RetrievalToolset } from "./base.ts";
-export { SqlToolset } from "./sql_toolset.ts";
+export { GraphQLToolset } from "./graphql_toolset.ts";
 export { TypedToolset } from "./typed_toolset.ts";
 
-export function make_toolset(retrieval_mode: string): RetrievalToolset {
+export function make_toolset(retrieval_mode: string, include_shortcuts: boolean): RetrievalToolset {
   if (retrieval_mode === "typed_tools") {
     return new TypedToolset();
   }
-  return new SqlToolset();
+  return new GraphQLToolset({ include_shortcuts });
 }

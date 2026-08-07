@@ -8,7 +8,7 @@ import { HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messag
 import type { MessageContent } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import type { CountingDataClient } from "./data_client.ts";
+import type { CountingGraphQLTool } from "./graphql_tool.ts";
 import {
   CONFIDENCE,
   HEURISTIC_DIRECTION,
@@ -58,12 +58,10 @@ function _bind_worker_tools(llm: any, tools: any[]): any {
 }
 
 /**
- * Extract {source, table, rowid, summary} for every record row in a retrieval tool result, by
- * recursively collecting any dict that carries a rowid.
+ * Extract {source, table, rowid, summary} for every record row in a retrieval tool result.
  *
- * run_sql returns column/row ARRAYS and carries NO provenance, so nothing from a SQL result is
- * harvested here — rows come only from the typed tools' record payloads and from get_source_record,
- * which is exactly why that tool exists.
+ * Handles typed_tools shapes (records_by_source / records) AND the tools-mode execute_graphql shape
+ * (rows nested under 'data'), by recursively collecting any dict that carries a rowid.
  */
 function _harvest_evidence_rows(content: any): Record<string, any>[] {
   const rows: Record<string, any>[] = [];
@@ -76,8 +74,8 @@ function _harvest_evidence_rows(content: any): Record<string, any>[] {
     }
     const source = node["source"] || node["table"];
     if (!source) {
-      // Not a source-record row (a nested dict that happens to carry a rowid but no source/table)
-      // — skip it; an empty source is an invalid EvidenceReference.
+      // Not a source-record row (e.g. a raw-GraphQL association/edge node that has a rowid but no
+      // source/table) — skip it; an empty source is an invalid EvidenceReference.
       return;
     }
     const key = JSON.stringify([String(source), rowid ?? null]);
@@ -118,7 +116,7 @@ function _harvest_evidence_rows(content: any): Record<string, any>[] {
 
 /** Structural contract for a heuristic subagent; RetrievalHeuristicSubagent conforms structurally. */
 export interface HeuristicSubagent {
-  run(agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<HeuristicAgentResult>;
+  run(agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<HeuristicAgentResult>;
 }
 
 export class RetrievalHeuristicSubagent {
@@ -129,7 +127,7 @@ export class RetrievalHeuristicSubagent {
     public should_cancel: () => boolean = () => false,
   ) {}
 
-  async run(agent_input: HeuristicAgentInput, data: CountingDataClient): Promise<HeuristicAgentResult> {
+  async run(agent_input: HeuristicAgentInput, graphql: CountingGraphQLTool): Promise<HeuristicAgentResult> {
     const diagnostics = new Diagnostics();
     if (typeof this.llm.bindTools !== "function") {
       throw new Error("Native tool calls are required, but this LLM does not support bind_tools.");
@@ -145,7 +143,7 @@ export class RetrievalHeuristicSubagent {
     ];
     const model = _bind_worker_tools(this.llm, [...this.toolset.tool_definitions(), submit_heuristic_result_compact]);
     const max_turns =
-      agent_input.max_data_calls +
+      agent_input.max_graphql_calls +
       agent_input.schema_tool_budget +
       agent_input.max_output_retries +
       agent_input.max_query_repair_attempts +
@@ -186,7 +184,7 @@ export class RetrievalHeuristicSubagent {
       const tool_calls = _response_tool_calls(response);
       if (tool_calls.length > 0) {
         messages.push(response);
-        const final_result = await this._handle_tool_calls(tool_calls, messages, agent_input, data, diagnostics);
+        const final_result = await this._handle_tool_calls(tool_calls, messages, agent_input, graphql, diagnostics);
         if (final_result !== null) {
           return final_result;
         }
@@ -213,13 +211,13 @@ export class RetrievalHeuristicSubagent {
    */
   async run_group(
     agent_inputs: HeuristicAgentInput[],
-    data: CountingDataClient,
+    graphql: CountingGraphQLTool,
   ): Promise<HeuristicAgentResult[]> {
     if (agent_inputs.length === 0) {
       return [];
     }
     if (agent_inputs.length === 1) {
-      return [await this.run(agent_inputs[0]!, data)];
+      return [await this.run(agent_inputs[0]!, graphql)];
     }
 
     const diagnostics = new Diagnostics();
@@ -260,7 +258,7 @@ export class RetrievalHeuristicSubagent {
     const model = _bind_worker_tools(this.llm, [...this.toolset.tool_definitions(), submit_heuristic_result_compact]);
     // Budget scales with group size: each packet needs room to submit (and correct).
     const max_turns =
-      base.max_data_calls +
+      base.max_graphql_calls +
       base.schema_tool_budget +
       (base.max_output_retries + 2) * agent_inputs.length +
       base.max_query_repair_attempts +
@@ -312,7 +310,7 @@ export class RetrievalHeuristicSubagent {
             inputs_by_id,
             results_by_id,
             pending,
-            data,
+            graphql,
             diagnostics,
             group_id,
             group_dispatch_input,
@@ -345,7 +343,7 @@ export class RetrievalHeuristicSubagent {
           group_error !== null
             ? `Grouped subagent raised before this packet was submitted: ${group_error}`
             : "Grouped subagent did not submit a result for this packet within the turn budget.";
-        results_by_id.set(hid, error_result(inputs_by_id.get(hid)!.heuristic, message, data));
+        results_by_id.set(hid, error_result(inputs_by_id.get(hid)!.heuristic, message, graphql));
       }
     }
     return agent_inputs.map((ai) => results_by_id.get(String(ai.heuristic["id"]))!);
@@ -357,7 +355,7 @@ export class RetrievalHeuristicSubagent {
     inputs_by_id: Map<string, HeuristicAgentInput>,
     results_by_id: Map<string, HeuristicAgentResult>,
     pending: Set<string>,
-    data: CountingDataClient,
+    graphql: CountingGraphQLTool,
     diagnostics: Diagnostics,
     group_id: string,
     group_dispatch_input: HeuristicAgentInput,
@@ -378,7 +376,7 @@ export class RetrievalHeuristicSubagent {
           this._record_tool_result(call, content, start, recorder, messages, group_id, `group:${group_id}`);
           continue;
         }
-        const result = _validate_compact_final_result(args, agent_input, data, diagnostics);
+        const result = _validate_compact_final_result(args, agent_input, graphql, diagnostics);
         if (!("ok" in result)) {
           results_by_id.set(submitted_id, result);
           pending.delete(submitted_id);
@@ -407,7 +405,7 @@ export class RetrievalHeuristicSubagent {
         this._record_tool_result(call, result, start, recorder, messages, group_id, `group:${group_id}`);
         continue;
       }
-      const content = await this.toolset.dispatch(name, args, group_dispatch_input, data, diagnostics);
+      const content = await this.toolset.dispatch(name, args, group_dispatch_input, graphql, diagnostics);
       diagnostics.fetched_rows.push(..._harvest_evidence_rows(content));
       this._record_tool_result(call, content, start, recorder, messages, group_id, `group:${group_id}`);
     }
@@ -417,7 +415,7 @@ export class RetrievalHeuristicSubagent {
     tool_calls: Record<string, any>[],
     messages: any[],
     agent_input: HeuristicAgentInput,
-    data: CountingDataClient,
+    graphql: CountingGraphQLTool,
     diagnostics: Diagnostics,
   ): Promise<HeuristicAgentResult | null> {
     const recorder = currentRecorder();
@@ -432,7 +430,7 @@ export class RetrievalHeuristicSubagent {
         const args = isRecord(call["args"]) ? call["args"] : {};
         let content: any;
         if (name === "submit_heuristic_result") {
-          const result = _validate_compact_final_result(args, agent_input, data, diagnostics);
+          const result = _validate_compact_final_result(args, agent_input, graphql, diagnostics);
           if (!("ok" in result)) {
             recorder.record_tool_call({
               tool_name: name,
@@ -449,7 +447,7 @@ export class RetrievalHeuristicSubagent {
           }
           content = result;
         } else {
-          content = await this.toolset.dispatch(name, args, agent_input, data, diagnostics);
+          content = await this.toolset.dispatch(name, args, agent_input, graphql, diagnostics);
           diagnostics.fetched_rows.push(..._harvest_evidence_rows(content));
         }
         this._record_tool_result(call, content, start, recorder, messages, hid);
@@ -464,7 +462,7 @@ export class RetrievalHeuristicSubagent {
       starts.push(performance.now());
       const name = String(call["name"] || "");
       const args = isRecord(call["args"]) ? call["args"] : {};
-      coros.push(this.toolset.dispatch(name, args, agent_input, data, diagnostics));
+      coros.push(this.toolset.dispatch(name, args, agent_input, graphql, diagnostics));
     }
     const contents = await Promise.all(coros);
     for (let i = 0; i < tool_calls.length; i++) {
@@ -624,11 +622,11 @@ function _coerce_status_to_valid(result: Record<string, any>): void {
 function _validate_compact_final_result(
   args: Record<string, any>,
   agent_input: HeuristicAgentInput,
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   diagnostics: Diagnostics,
 ): HeuristicAgentResult | ValidationErrorPayload {
   const result: Record<string, any> = isRecord(args["result"]) ? { ...args["result"] } : { ...args };
-  _coerce_result_payload(result, agent_input, data, diagnostics);
+  _coerce_result_payload(result, agent_input, graphql, diagnostics);
   try {
     return HeuristicAgentResultSchema.parse(result);
   } catch (exc) {
@@ -658,7 +656,7 @@ function _validate_compact_final_result(
 function _coerce_result_payload(
   result: Record<string, any>,
   agent_input: HeuristicAgentInput,
-  data: CountingDataClient,
+  graphql: CountingGraphQLTool,
   diagnostics: Diagnostics,
 ): void {
   if (!("heuristic_id" in result)) {
@@ -673,16 +671,13 @@ function _coerce_result_payload(
   if (result["status"] === "neutral") {
     result["status"] = "context";
   }
-  const runtime_validation_errors = _refusal_reasons(data);
-  result["data_queries"] = _merge_data_logs(null, data);
+  const runtime_validation_errors = _validation_errors_from_logs(graphql);
+  result["graphql_queries"] = _merge_graphql_logs(null, graphql);
   result["tool_errors"] = _merge_strings(null, diagnostics.tool_errors);
   result["validation_errors"] = _merge_strings(null, [...diagnostics.validation_errors, ...runtime_validation_errors]);
   result["query_repair_attempts"] = Math.max(
     diagnostics.query_repair_attempts,
-    // Every refusal IS a repair attempt: a SqlRefusal has no `ok` flag to filter on because an
-    // "ok refusal" does not exist. The old `validation_logs.filter(log => !log.ok).length` had a
-    // filter only because a validate() call could succeed; a 422 never can.
-    data.refusal_logs.length,
+    _query_repair_attempts_from_logs(graphql),
   );
   result["raw_model_failures"] = _merge_strings(null, diagnostics.raw_model_failures);
   let evidence_refs = _coerce_evidence_refs(result["evidence_refs"]);
@@ -694,9 +689,9 @@ function _coerce_result_payload(
   );
   evidence_refs = evidence_refs.map((ref) => _strip_ref_data(ref));
   result["missing_evidence"] = _coerce_string_list(result["missing_evidence"]);
-  if (diagnostics.data_budget_exhausted) {
+  if (diagnostics.graphql_budget_exhausted) {
     result["missing_evidence"] = _merge_strings(result["missing_evidence"], [
-      "Data call budget was exhausted; result is based on evidence collected before budget exhaustion.",
+      "GraphQL query budget was exhausted; result is based on evidence collected before budget exhaustion.",
     ]);
   }
   const status = String(result["status"] || "");
@@ -741,7 +736,7 @@ function _coerce_result_payload(
     (result["evidence_against"] as any[]).length === 0 &&
     (result["missing_evidence"] as any[]).length === 0
   ) {
-    result["missing_evidence"] = ["No local records were found that support this heuristic."];
+    result["missing_evidence"] = ["No local GraphQL evidence was found that supports this heuristic."];
   }
   if (status === "inconclusive") {
     result["score"] = 0;
@@ -871,19 +866,17 @@ function _coerce_interpretation(value: any, result: Record<string, any>): Record
 export function error_result(
   heuristic: Record<string, any>,
   message: string,
-  data: CountingDataClient | null = null,
+  graphql: CountingGraphQLTool | null = null,
 ): HeuristicAgentResult {
   const msg = String(message || "").trim() || "Heuristic agent failed without an error message.";
   const category = heuristic["category"] || "risk";
   const direction = ["risk", "mitigation", "context", "quality"].includes(category) ? category : "quality";
-  // D3, as the code actually reads rather than as the decision recorded it: the old validation_logs
-  // carried `{ok, errors: string[]}` and this read `.errors` / `!log.ok`. A SqlRefusal is
-  // `{refused, stage, reason, hint}` and has NEITHER field, so the repair telemetry is remapped —
-  // `reason` is the one human-readable string a refusal carries, and the log length is the attempt
-  // count. Same two output fields, same meaning, new channel.
-  const refusal_logs = data ? data.refusal_logs : [];
-  const validation_errors = refusal_logs.map((refusal) => refusal.reason);
-  const logs = data ? data.logs : [];
+  let validation_errors: string[] = [];
+  if (graphql) {
+    validation_errors = graphql.validation_logs.flatMap((log) => log.errors);
+  }
+  const logs = graphql ? graphql.logs : [];
+  const validation_logs = graphql ? graphql.validation_logs : [];
   return HeuristicAgentResultSchema.parse({
     heuristic_id: String(heuristic["id"]),
     status: "error",
@@ -892,10 +885,10 @@ export function error_result(
     confidence: "low",
     finding: `Heuristic agent failed: ${msg}`,
     missing_evidence: ["Heuristic execution failed before a defensible conclusion could be reached."],
-    data_queries: logs.map((log) => ({ ...log })),
+    graphql_queries: logs.map((log) => ({ ...log })),
     tool_errors: logs.filter((log) => Boolean(log.error)).map((log) => log.error as string),
     validation_errors,
-    query_repair_attempts: refusal_logs.length,
+    query_repair_attempts: validation_logs.filter((log) => !log.ok).length,
     caveats: [],
     needs_second_pass: false,
     error: msg,
@@ -909,8 +902,8 @@ function _repair_result_text(result: Record<string, any>): void {
   }
 }
 
-function _merge_data_logs(existing: any, data: CountingDataClient): Record<string, any>[] {
-  const logs = data.logs.map((log) => ({ ...log }) as Record<string, any>);
+function _merge_graphql_logs(existing: any, graphql: CountingGraphQLTool): Record<string, any>[] {
+  const logs = graphql.logs.map((log) => ({ ...log }) as Record<string, any>);
   if (!Array.isArray(existing)) {
     return logs;
   }
@@ -920,11 +913,9 @@ function _merge_data_logs(existing: any, data: CountingDataClient): Record<strin
     if (!isRecord(item)) {
       continue;
     }
-    // DataCallLog's identity is {operation, params}; the old key read {query_name, variables},
-    // which no log carries any more — leaving it would collapse every distinct call onto one key.
     const key = JSON.stringify([
-      String(item["operation"] || ""),
-      stableStringify(item["params"] ?? {}),
+      String(item["query_name"] || ""),
+      stableStringify(item["variables"] ?? {}),
       item["error"] ?? null,
     ]);
     if (seen.has(key)) {
@@ -936,9 +927,12 @@ function _merge_data_logs(existing: any, data: CountingDataClient): Record<strin
   return merged;
 }
 
-/** The hatch's repair channel: one reason per 422 refusal (D3). */
-function _refusal_reasons(data: CountingDataClient): string[] {
-  return data.refusal_logs.map((refusal) => refusal.reason);
+function _validation_errors_from_logs(graphql: CountingGraphQLTool): string[] {
+  return graphql.validation_logs.flatMap((log) => log.errors);
+}
+
+function _query_repair_attempts_from_logs(graphql: CountingGraphQLTool): number {
+  return graphql.validation_logs.filter((log) => !log.ok).length;
 }
 
 function _merge_strings(existing: any, additions: string[]): string[] {

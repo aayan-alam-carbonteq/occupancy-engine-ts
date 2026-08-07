@@ -1,0 +1,546 @@
+{
+  "searchAddresses": {
+    "totalCount": 1,
+    "nodes": [
+      {
+        "matchScore": 1,
+        "matchedFields": [
+          "address"
+        ],
+        "relationCount": 22,
+        "address": {
+          "id": 3342,
+          "normAddress": "1104 SPRING RUN RD",
+          "zip5": "40514",
+          "streetNumber": "1104",
+          "streetName": "SPRING RUN RD",
+          "unit": null,
+          "city": "Lexington",
+          "state": "KY",
+          "county": null
+        }
+      }
+    ]
+  },
+  "addressByText": {
+    "id": 3342,
+    "normAddress": "1104 SPRING RUN RD",
+    "zip5": "40514",
+    "streetNumber": "1104",
+    "streetName": "SPRING RUN RD",
+    "unit": null,
+    "city": "Lexington",
+    "state": "KY",
+    "county": null,
+    "residents": {
+      "totalCount": 2,
+      "nodes": [
+        {
+          "id": "cd146804",
+          "firstname": "JESSICA",
+          "lastname": "WHISMAN",
+          "fullName": "JESSICA  WHISMAN"
+        },
+        {
+          "id": "cd146889",
+          "firstname": "JOSIAH",
+          "lastname": "CORRELL",
+          "fullName": "JOSIAH  CORRELL"
+        }
+      ]
+    },
+    "utilityRecords": {
+      "totalCount": 15,
+      "nodes": [
+        {
+          "table": "utility",
+          "rowid": 56138,
+          "data": {
+            "first_name": "JENNIFER",
+            "last_name": "HOWARD",
+            "middle_name": "",
+            "dob": "19780600",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "8592238658",
+            "__norm_firstname": "jennifer",
+            "__norm_lastname": "howard",
+            "__norm_name_key": "jennifer|howard",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "8592238658"
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 74458,
+          "data": {
+            "first_name": "AMY",
+            "last_name": "WILSON",
+            "middle_name": "",
+            "dob": "19680125",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "8034786758",
+            "__norm_firstname": "amy",
+            "__norm_lastname": "wilson",
+            "__norm_name_key": "amy|wilson",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "8034786758"
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 183321,
+          "data": {
+            "first_name": "SUSAN",
+            "last_name": "PIERCE",
+            "middle_name": "R",
+            "dob": "19550901",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "",
+            "__norm_firstname": "susan",
+            "__norm_lastname": "pierce",
+            "__norm_name_key": "susan|pierce",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": ""
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 296261,
+          "data": {
+            "first_name": "KENNETH",
+            "last_name": "WORTHINGTON",
+            "middle_name": "S",
+            "dob": "19650101",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "6062240200",
+            "__norm_firstname": "kenneth",
+            "__norm_lastname": "worthington",
+            "__norm_name_key": "kenneth|worthington",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "6062240200"
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 341786,
+          "data": {
+            "first_name": "TAMIE",
+            "last_name": "WORTHINGTON",
+            "middle_name": "L",
+            "dob": "19680101",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "6062240200",
+            "__norm_firstname": "tamie",
+            "__norm_lastname": "worthington",
+            "__norm_name_key": "tamie|worthington",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "6062240200"
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 393286,
+          "data": {
+            "first_name": "KENNETH",
+            "last_name": "WORTHINGTON",
+            "middle_name": "S",
+            "dob": "19650101",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "5152626434",
+            "__norm_firstname": "kenneth",
+            "__norm_lastname": "worthington",
+            "__norm_name_key": "kenneth|worthington",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "5152626434"
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 723971,
+          "data": {
+            "first_name": "TAMIE",
+            "last_name": "WORTHINGTON",
+            "middle_name": "L",
+            "dob": "19700901",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "",
+            "__norm_firstname": "tamie",
+            "__norm_lastname": "worthington",
+            "__norm_name_key": "tamie|worthington",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": ""
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 756034,
+          "data": {
+            "first_name": "PATRICK",
+            "last_name": "WILSON",
+            "middle_name": "A",
+            "dob": "19610901",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "",
+            "__norm_firstname": "patrick",
+            "__norm_lastname": "wilson",
+            "__norm_name_key": "patrick|wilson",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": ""
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 962689,
+          "data": {
+            "first_name": "SUSAN",
+            "last_name": "PIERCE",
+            "middle_name": "R",
+            "dob": "19560401",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "2063610360",
+            "__norm_firstname": "susan",
+            "__norm_lastname": "pierce",
+            "__norm_name_key": "susan|pierce",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "2063610360"
+          }
+        },
+        {
+          "table": "utility",
+          "rowid": 962690,
+          "data": {
+            "first_name": "JOHN",
+            "last_name": "PIERCE",
+            "middle_name": "H",
+            "dob": "19550201",
+            "dod": "",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "county": "FAYETTE",
+            "state": "KY",
+            "zip": "40514",
+            "phone": "",
+            "__norm_firstname": "john",
+            "__norm_lastname": "pierce",
+            "__norm_name_key": "john|pierce",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": ""
+          }
+        }
+      ]
+    },
+    "taxProperties": {
+      "totalCount": 1,
+      "nodes": [
+        {
+          "table": "tax",
+          "rowid": 50075,
+          "data": {
+            "id": "cd146889",
+            "tax_id": "cd146889",
+            "address": "1104 SPRING RUN RD",
+            "addressformal": "1104 SPRING RUN ROAD",
+            "housenumber": "1104",
+            "city": "LEXINGTON",
+            "state": "KY",
+            "zip": "40514",
+            "county": "FAYETTE",
+            "firstname": "REBECCA",
+            "lastname": "CORRELL",
+            "ownername": "CORRELL, REBECCA CHRISTINE; CORRELL, JOSIAH STEEL",
+            "ownercompany": "",
+            "owneraddressline1": "3360 RAVINIA CIR",
+            "ownercity": "AURORA",
+            "ownerstate": "IL",
+            "ownerzipcode": "60504",
+            "residential": "True",
+            "condo": "False",
+            "yearbuilt": "1981",
+            "buildingarea": "1134.0",
+            "totalmarketvalue": "195000.0",
+            "totalassessedvalue": "195000.0",
+            "taxvalue": "2122.77",
+            "lendername": "USAA FED SAV BK",
+            "buyeridcode": "ID",
+            "recordingdate": "20180627",
+            "totalliencount": "1",
+            "totallienbalance": "185250.0",
+            "equitycurrentestbal": "118158.0",
+            "ltvcurrentestcombined": "61.0564",
+            "totalfinancinghistcount": "1",
+            "foreclosecode": "",
+            "forecloserecorddate": "",
+            "ownerrescount": "1",
+            "__norm_firstname": "rebecca",
+            "__norm_lastname": "correll",
+            "__norm_name_key": "rebecca|correll",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_owneraddressline1": "3360 RAVINIA CIR"
+          }
+        }
+      ]
+    },
+    "traceRecords": {
+      "totalCount": 4,
+      "nodes": [
+        {
+          "table": "trace",
+          "rowid": 238542,
+          "data": {
+            "id": "cd146889",
+            "trace_id": "cd146889",
+            "phone": "9794926685",
+            "cellphone": "",
+            "email": "JOSIAHCORRELL@YAHOO.COM",
+            "email_02": "",
+            "email_03": "",
+            "housenumber": "1104",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "state": "KY",
+            "zip": "40514",
+            "county": "",
+            "firstname": "JOSIAH",
+            "middlename": "",
+            "lastname": "CORRELL",
+            "dob_day": "29",
+            "dob_month": "08",
+            "dob_year": "1983",
+            "credit_capacity": "",
+            "home_built_year": "",
+            "home_purchase_date": "",
+            "income_description": "",
+            "__norm_firstname": "josiah",
+            "__norm_lastname": "correll",
+            "__norm_name_key": "josiah|correll",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "9794926685",
+            "__norm_cellphone": "",
+            "__norm_email": "josiahcorrell@yahoo.com",
+            "__norm_email_02": "",
+            "__norm_email_03": ""
+          }
+        },
+        {
+          "table": "trace",
+          "rowid": 238543,
+          "data": {
+            "id": "cd146889",
+            "trace_id": "cd146889",
+            "phone": "2238658859",
+            "cellphone": "",
+            "email": "",
+            "email_02": "",
+            "email_03": "",
+            "housenumber": "1104",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "state": "KY",
+            "zip": "40514",
+            "county": "FAYETTE",
+            "firstname": "JOSIAH",
+            "middlename": "",
+            "lastname": "CORRELL",
+            "dob_day": "1",
+            "dob_month": "1",
+            "dob_year": "1983",
+            "credit_capacity": "C",
+            "home_built_year": "0",
+            "home_purchase_date": "000",
+            "income_description": "N",
+            "__norm_firstname": "josiah",
+            "__norm_lastname": "correll",
+            "__norm_name_key": "josiah|correll",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "2238658859",
+            "__norm_cellphone": "",
+            "__norm_email": "",
+            "__norm_email_02": "",
+            "__norm_email_03": ""
+          }
+        },
+        {
+          "table": "trace",
+          "rowid": 317914,
+          "data": {
+            "id": "cd146804",
+            "trace_id": "cd146804",
+            "phone": "",
+            "cellphone": "",
+            "email": "",
+            "email_02": "",
+            "email_03": "",
+            "housenumber": "1104",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "state": "KY",
+            "zip": "40514",
+            "county": "FAYETTE",
+            "firstname": "JESSICA",
+            "middlename": "",
+            "lastname": "WHISMAN",
+            "dob_day": "",
+            "dob_month": "",
+            "dob_year": "",
+            "credit_capacity": "",
+            "home_built_year": "",
+            "home_purchase_date": "",
+            "income_description": "$51,948",
+            "__norm_firstname": "jessica",
+            "__norm_lastname": "whisman",
+            "__norm_name_key": "jessica|whisman",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "",
+            "__norm_cellphone": "",
+            "__norm_email": "",
+            "__norm_email_02": "",
+            "__norm_email_03": ""
+          }
+        },
+        {
+          "table": "trace",
+          "rowid": 317915,
+          "data": {
+            "id": "cd146804",
+            "trace_id": "cd146804",
+            "phone": "",
+            "cellphone": "",
+            "email": "",
+            "email_02": "",
+            "email_03": "",
+            "housenumber": "1104",
+            "address": "1104 SPRING RUN RD",
+            "city": "LEXINGTON",
+            "state": "KY",
+            "zip": "40514",
+            "county": "FAYETTE",
+            "firstname": "JESSICA",
+            "middlename": "",
+            "lastname": "WHISMAN",
+            "dob_day": "",
+            "dob_month": "",
+            "dob_year": "",
+            "credit_capacity": "",
+            "home_built_year": "",
+            "home_purchase_date": "",
+            "income_description": "",
+            "__norm_firstname": "jessica",
+            "__norm_lastname": "whisman",
+            "__norm_name_key": "jessica|whisman",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "",
+            "__norm_cellphone": "",
+            "__norm_email": "",
+            "__norm_email_02": "",
+            "__norm_email_03": ""
+          }
+        }
+      ]
+    },
+    "autoRecords": {
+      "totalCount": 1,
+      "nodes": [
+        {
+          "table": "auto",
+          "rowid": 51079,
+          "data": {
+            "id": "cd146803",
+            "auto_id": "cd146803",
+            "vin": "5TFFY5F1XAX097524",
+            "zip": "40514",
+            "city": "LEXINGTON",
+            "make": "TOYOTA",
+            "model": "TOYOTA",
+            "year": "2010",
+            "phone": "8593389070",
+            "address": "1104 SPRING RUN RD",
+            "housenumber": "1104",
+            "firstname": "BRANDON",
+            "lastname": "MORGISON",
+            "__norm_firstname": "brandon",
+            "__norm_lastname": "morgison",
+            "__norm_name_key": "brandon|morgison",
+            "__norm_address": "1104 SPRING RUN RD",
+            "__norm_address_zip_key": "1104 SPRING RUN RD|40514",
+            "__norm_phone": "8593389070"
+          }
+        }
+      ]
+    },
+    "loanRecords": {
+      "totalCount": 0,
+      "nodes": []
+    },
+    "driveRecords": {
+      "totalCount": 0,
+      "nodes": []
+    },
+    "voterRecords": {
+      "totalCount": 0,
+      "nodes": []
+    },
+    "criminalRecords": {
+      "totalCount": 0
+    }
+  }
+}

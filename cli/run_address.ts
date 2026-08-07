@@ -16,44 +16,8 @@ import { investigate_address } from "../src/agents/orchestrator.ts";
 import type { MetricEvent, RunMetricsSummary } from "../src/observability/models.ts";
 import { writeRunMetrics } from "../src/observability/writers.ts";
 
-export function resolveDataUrl(flag: string | undefined, env: string | undefined): string | undefined {
+export function resolveGraphqlUrl(flag: string | undefined, env: string | undefined): string | undefined {
   return flag ?? env ?? undefined;
-}
-
-/**
- * The flag → request-field mapping, exported so it can be asserted against the strict request
- * schema. AgentInvestigationRequestSchema is `.strict()`, so one stale key here throws a ZodError
- * on every CLI run; nothing else in the suite drives this mapping.
- */
-export function cliRequestPayload(
-  values: Record<string, any>,
-  dataUrl: string,
-  externalEvidence: ExternalEvidence | null,
-): Record<string, unknown> {
-  return {
-    address: values.address,
-    zip: values.zip,
-    data_url: dataUrl,
-    external_evidence: externalEvidence,
-    provider: values.provider,
-    model: values.model ?? null,
-    base_url: values["base-url"] ?? null,
-    heuristic_allowlist: values["allow-heuristic"] ?? null,
-    heuristic_blocklist: values["block-heuristic"] ?? [],
-    max_concurrency: Number.parseInt(values["max-concurrency"]!, 10),
-    max_data_calls_per_agent: Number.parseInt(values["max-data-calls-per-agent"]!, 10),
-    data_timeout_seconds: Number.parseFloat(values["data-timeout-seconds"]!),
-    agent_timeout_seconds: Number.parseFloat(values["agent-timeout-seconds"]!),
-    max_output_retries: Number.parseInt(values["max-output-retries"]!, 10),
-    max_query_repair_attempts: Number.parseInt(values["max-query-repair-attempts"]!, 10),
-    schema_tool_budget: Number.parseInt(values["schema-tool-budget"]!, 10),
-    disable_master_planning: values["enable-master-planning"] ? false : values["disable-master-planning"],
-    prompt_profile: values["prompt-profile"],
-    retrieval_mode: values["retrieval-mode"],
-    metrics_debug_payloads: values["metrics-debug-payloads"],
-    batch_id: values["batch-id"] ?? null,
-    trace_id: values["trace-id"] ?? null,
-  };
 }
 
 /**
@@ -110,15 +74,15 @@ async function main(argv: string[]): Promise<number> {
     options: {
       address: { type: "string" },
       zip: { type: "string", default: "" },
-      "data-url": { type: "string" },
+      "graphql-url": { type: "string" },
       provider: { type: "string", default: "auto" },
       model: { type: "string" },
       "base-url": { type: "string" },
       "allow-heuristic": { type: "string", multiple: true },
       "block-heuristic": { type: "string", multiple: true, default: [] },
       "max-concurrency": { type: "string", default: "8" },
-      "max-data-calls-per-agent": { type: "string", default: "8" },
-      "data-timeout-seconds": { type: "string", default: "30" },
+      "max-graphql-calls-per-agent": { type: "string", default: "8" },
+      "graphql-timeout-seconds": { type: "string", default: "30" },
       "agent-timeout-seconds": { type: "string", default: "120" },
       "max-output-retries": { type: "string", default: "2" },
       "max-query-repair-attempts": { type: "string", default: "3" },
@@ -127,6 +91,7 @@ async function main(argv: string[]): Promise<number> {
       "enable-master-planning": { type: "boolean", default: false },
       "prompt-profile": { type: "string", default: "compact" },
       "retrieval-mode": { type: "string", default: "tools" },
+      "include-shortcuts": { type: "boolean", default: false },
       "metrics-debug-payloads": { type: "boolean", default: false },
       "batch-id": { type: "string" },
       "evidence-file": { type: "string" },
@@ -137,14 +102,14 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: false,
   });
 
-  const dataUrl = resolveDataUrl(values["data-url"], process.env.DATA_URL);
+  const graphqlUrl = resolveGraphqlUrl(values["graphql-url"], process.env.GRAPHQL_URL);
 
   if (!values.address) {
     process.stderr.write("--address is required\n");
     return 2;
   }
-  if (!dataUrl) {
-    process.stderr.write("--data-url is required (or set DATA_URL)\n");
+  if (!graphqlUrl) {
+    process.stderr.write("--graphql-url is required (or set GRAPHQL_URL)\n");
     return 2;
   }
 
@@ -158,9 +123,31 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  const request = AgentInvestigationRequestSchema.parse(
-    cliRequestPayload(values, dataUrl, externalEvidence),
-  );
+  const request = AgentInvestigationRequestSchema.parse({
+    address: values.address,
+    zip: values.zip,
+    graphql_url: graphqlUrl,
+    external_evidence: externalEvidence,
+    provider: values.provider,
+    model: values.model ?? null,
+    base_url: values["base-url"] ?? null,
+    heuristic_allowlist: values["allow-heuristic"] ?? null,
+    heuristic_blocklist: values["block-heuristic"] ?? [],
+    max_concurrency: Number.parseInt(values["max-concurrency"]!, 10),
+    max_graphql_calls_per_agent: Number.parseInt(values["max-graphql-calls-per-agent"]!, 10),
+    graphql_timeout_seconds: Number.parseFloat(values["graphql-timeout-seconds"]!),
+    agent_timeout_seconds: Number.parseFloat(values["agent-timeout-seconds"]!),
+    max_output_retries: Number.parseInt(values["max-output-retries"]!, 10),
+    max_query_repair_attempts: Number.parseInt(values["max-query-repair-attempts"]!, 10),
+    schema_tool_budget: Number.parseInt(values["schema-tool-budget"]!, 10),
+    disable_master_planning: values["enable-master-planning"] ? false : values["disable-master-planning"],
+    prompt_profile: values["prompt-profile"],
+    retrieval_mode: values["retrieval-mode"],
+    include_shortcuts: values["include-shortcuts"],
+    metrics_debug_payloads: values["metrics-debug-payloads"],
+    batch_id: values["batch-id"] ?? null,
+    trace_id: values["trace-id"] ?? null,
+  });
 
   // --progress: stream one NDJSON line per metric event to stdout so a parent
   // process can render live per-agent progress. The report still goes to --out.

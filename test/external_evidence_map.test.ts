@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ExternalEvidenceSchema } from "../src/agents/external_evidence.ts";
+import { canonicalJson, sha256Hex } from "../src/fingerprint/canonical.ts";
 import {
   external_evidence_refs,
   property_types_from_external,
@@ -81,7 +82,12 @@ describe("external_evidence_refs", () => {
   test("one str_scan ref per listing plus one property_facts ref; detail survives in data", () => {
     const refs = external_evidence_refs(payload());
     expect(refs.map((r) => r.source)).toEqual(["str_scan", "property_facts"]);
-    expect(refs[0]!.record_id).toBe("scan_123:0");
+    // Was "scan_123:0" — the caller's scan_id. Reports are reused across organisations, so refs are
+    // keyed by an evidence-intrinsic digest instead. Still pinned to an EXACT value (computed the
+    // same way the source computes it) rather than weakened to a regex.
+    expect(refs[0]!.record_id).toBe(
+      `${sha256Hex(canonicalJson(payload().str_listings[0])).slice(0, 12)}:0`,
+    );
     expect(refs[0]!.summary).toContain("platform=vrbo");
     // data is preserved in the assessment's evidence map for audit; compact rendering strips it.
     expect(refs[0]!.data["listing_url"]).toBe("https://www.vrbo.com/1234567");

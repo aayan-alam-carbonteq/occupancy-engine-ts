@@ -1,0 +1,101 @@
+// The `engine` dimension of the backend's AI-report cache key: a content hash of this engine's own
+// source tree. DERIVED, never declared — a version string somebody has to remember to bump is the
+// exact failure mode this feature must not have.
+//
+// Why a tree walk and not a git SHA: .dockerignore excludes .git, so no build SHA is readable at
+// runtime inside the image. Why a whole-tree walk and not a curated file list: a curated list is one
+// more thing to keep in sync, and forgetting an entry means serving a report computed by code the
+// list does not cover.
+//
+// An engine deploy changes this hash and drains the cache. That is INTENDED: over-invalidation costs
+// a rerun, under-invalidation serves a wrong report.
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+
+/**
+ * Everything the running engine's behaviour is made of, relative to the repo root. `test/**` and
+ * `docs/**` are deliberately absent — they cannot change what an investigation produces, and
+ * including them would drain the cache on every progress-note commit. All four ship in the image
+ * (asserted by test/source_hash.test.ts against .dockerignore).
+ */
+export const HASHED_ROOTS = ["src", "cli", "package.json", "bun.lock"] as const;
+
+/**
+ * Runtime flags are part of "what this engine does", so they are part of the `engine` dimension.
+ *
+ * `OE_PROSE_REGISTER`, `OE_SYNTH_AUGMENT`, `OE_FORCE_TOOL_CALL` and `OE_PROSE_REDACT` each change
+ * prompts or tool behaviour WITHOUT changing a byte of source. Hashing only the tree would leave
+ * reports cached under one setting being served after it flipped — under-invalidation, the one
+ * direction that serves a WRONG report, and precisely what the derived-never-declared design exists
+ * to prevent.
+ *
+ * Matched by PREFIX rather than a curated list, deliberately: a named list is one more thing to keep
+ * in sync, and forgetting an entry is the same silent failure. Any new OE_* flag is covered for free.
+ */
+const FLAG_PREFIX = "OE_";
+
+// This file lives at <root>/src/fingerprint/source_hash.ts. Bun runs TS from source in both dev and
+// the image (no bundling), so import.meta.dir is the real on-disk location in both.
+const REPO_ROOT = resolve(import.meta.dir, "..", "..");
+
+let cached: string | null = null;
+
+/** The process-wide engine source hash. Computed once (at server startup), free thereafter. */
+export function engine_source_hash(): string {
+  if (cached === null) {
+    cached = compute_source_hash(REPO_ROOT);
+  }
+  return cached;
+}
+
+/**
+ * sha256 over the sorted `relpath\0sha256(content)` lines of every file under `entries`.
+ * Sorting the lines is what makes the result independent of directory-read order.
+ * Exported so tests can drive it over a temp tree.
+ */
+export function compute_source_hash(
+  root: string,
+  entries: readonly string[] = HASHED_ROOTS,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const files: string[] = [];
+  for (const entry of entries) {
+    collect(resolve(root, entry), files);
+  }
+  const lines = files
+    .map((absolute) => `${relative(root, absolute).split(sep).join("/")}\u0000${sha256File(absolute)}`)
+    .sort();
+  // Flags are appended as a sorted NAME=value block, so the digest covers behaviour the tree does
+  // not. Sorted, so environment iteration order cannot change the hash.
+  const flags = Object.keys(env)
+    .filter((name) => name.startsWith(FLAG_PREFIX))
+    .sort()
+    .map((name) => `${name}=${env[name] ?? ""}`);
+  const payload = [...lines, ...(flags.length > 0 ? ["\u0000flags", ...flags] : [])].join("\n");
+  return createHash("sha256").update(payload, "utf8").digest("hex");
+}
+
+/** Depth-first collect of every regular file under `path`. An absent path contributes nothing. */
+function collect(path: string, out: string[]): void {
+  let stats: Stats;
+  try {
+    stats = statSync(path);
+  } catch {
+    return; // e.g. a checkout with no bun.lock — hash the tree that IS there rather than crash at boot
+  }
+  if (stats.isFile()) {
+    out.push(path);
+    return;
+  }
+  if (!stats.isDirectory()) {
+    return;
+  }
+  for (const item of readdirSync(path, { withFileTypes: true })) {
+    collect(join(path, item.name), out);
+  }
+}
+
+function sha256File(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}

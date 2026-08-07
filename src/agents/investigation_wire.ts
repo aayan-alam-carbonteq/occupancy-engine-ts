@@ -39,11 +39,31 @@ export function formatProgressLine(event: MetricEvent): string {
  * The serializable report payload: the assessment with the telemetry buffer removed. metrics_events is
  * dropped from output (it is the raw event log); every other field is preserved in order.
  */
+/**
+ * Caller-supplied identifiers that must never leave this process inside a report.
+ *
+ * `metrics.batch_id` is `request.batch_id` verbatim; `run_id` and `investigation_id` derive from
+ * `request.trace_id`. Reports are REUSED ACROSS ORGANIZATIONS, so a report produced for one org and
+ * served to another would otherwise carry the first org's batch and trace ids.
+ *
+ * The rest of `metrics` — latency, cost, tokens, per-phase counts — is tenant-neutral and stays;
+ * dropping it would be over-correction and would gut the report's operational value.
+ */
+const CALLER_METRIC_IDENTIFIERS = ["run_id", "batch_id", "investigation_id"] as const;
+
 export function assessment_report_payload(
   assessment: OccupancyAgentAssessment,
 ): Record<string, unknown> {
   const { metrics_events, ...rest } = assessment as OccupancyAgentAssessment & { metrics_events?: unknown };
   void metrics_events;
+  const metrics = rest["metrics"];
+  if (metrics !== null && typeof metrics === "object" && !Array.isArray(metrics)) {
+    const scrubbed: Record<string, unknown> = { ...(metrics as Record<string, unknown>) };
+    for (const key of CALLER_METRIC_IDENTIFIERS) {
+      delete scrubbed[key];
+    }
+    return { ...rest, metrics: scrubbed };
+  }
   return rest;
 }
 

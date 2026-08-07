@@ -377,6 +377,7 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
       field("tax", "addressformal", "formal address", { required: false }),
       field("tax", "ownername", "tax owner name", { required: false }),
       field("drive", "address", "driver address evidence", { required: false }),
+      field("voter", "address", "voter address evidence", { required: false }),
       field("auto", "address", "auto address evidence", { required: false }),
       field("loan", "ownRent", "loan tenure evidence", { required: false }),
       field("trace", "address", "trace address evidence", { required: false }),
@@ -526,6 +527,7 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
       field("tax", "lastname", "owner last name", { required: false }),
       field("tax", "ownercompany", "owner company", { required: false }),
       field("drive", "lastname", "driver last name", { required: false }),
+      field("voter", "lastname", "voter last name", { required: false }),
       field("auto", "lastname", "auto last name", { required: false }),
       field("base", "lastname", "base last name", { required: false }),
       field("loan", "lastname", "loan last name", { required: false }),
@@ -673,6 +675,7 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
       field("tax", "state", "situs state", { required: false }),
       field("tax", "zip", "situs zip", { required: false }),
       field("drive", "address", "driver address", { required: false }),
+      field("voter", "address", "voter address", { required: false }),
       field("auto", "address", "auto address", { required: false }),
     ],
     reasoning_paths: [
@@ -722,7 +725,7 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
         predicate: "Tax mailing matches subject, but owner legal records point elsewhere.",
         positive_indicators: [
           "tax mailing matches subject",
-          "owner drive/auto address differs from subject",
+          "owner drive/voter/auto address differs from subject",
         ],
         verdict_contributions: [
           contribution(
@@ -1017,6 +1020,79 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
     ],
   }),
   family({
+    id: "voter_address_subject_analysis",
+    title: "Voter registration subject analysis",
+    role: "risk",
+    group: "legal_address",
+    description:
+      "Classify voter records as owner-at-subject, owner-elsewhere, or non-owner-at-subject evidence.",
+    input_fields: [
+      field("voter", "firstname", "voter first name"),
+      field("voter", "lastname", "voter last name"),
+      field("voter", "address", "voter address"),
+      field("tax", "ownername", "tax owner name"),
+      field("voter", "zip", "voter zip", { required: false }),
+    ],
+    reasoning_paths: [
+      path({
+        id: "owner_voter_at_subject",
+        title: "Owner voter registration at subject",
+        role: "support",
+        predicate: "A tax owner has voter registration evidence at the subject.",
+        positive_indicators: [
+          "owner identity resolves to voter row",
+          "voter address matches subject",
+        ],
+        verdict_contributions: [
+          contribution(
+            "decrease",
+            "Owner government-record presence counters absentee interpretation.",
+            "clear_absentee_rental",
+          ),
+        ],
+        confidence: "high",
+      }),
+      path({
+        id: "owner_voter_elsewhere",
+        title: "Owner voter registration elsewhere",
+        role: "risk",
+        predicate: "A tax owner has voter registration evidence at a non-subject address.",
+        positive_indicators: [
+          "owner identity resolves to voter row",
+          "voter address differs from subject",
+        ],
+        verdict_contributions: [
+          contribution(
+            "increase",
+            "Strong owner-elsewhere government record supports absentee interpretation.",
+            "clear_absentee_rental",
+          ),
+        ],
+        confidence: "high",
+      }),
+      path({
+        id: "nonowner_voter_at_subject",
+        title: "Non-owner voter registration at subject",
+        role: "risk",
+        predicate: "A non-owner has voter registration evidence at the subject.",
+        positive_indicators: [
+          "voter address matches subject",
+          "voter person is not resolved as tax owner",
+        ],
+        verdict_contributions: [
+          contribution(
+            "increase",
+            "Strong third-party government record supports rental or non-owner occupancy.",
+            "clear_absentee_rental",
+            "family_household_rental",
+            "ambiguous_nonowner_occupancy",
+          ),
+        ],
+        confidence: "high",
+      }),
+    ],
+  }),
+  family({
     id: "auto_address_subject_analysis",
     title: "Auto registration subject analysis",
     role: "risk",
@@ -1100,6 +1176,7 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
     description: "Owner legal records point to multiple distinct addresses.",
     input_fields: [
       field("drive", "address", "driver address"),
+      field("voter", "address", "voter address", { required: false }),
       field("auto", "address", "auto address", { required: false }),
       field("tax", "ownername", "tax owner name"),
     ],
@@ -1128,13 +1205,14 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
     input_fields: [
       field("auto", "address", "auto address"),
       field("drive", "address", "driver address", { required: false }),
+      field("voter", "address", "voter address", { required: false }),
       field("tax", "ownername", "tax owner name"),
     ],
     reasoning:
       "Discount owner-elsewhere conclusions when only vehicle registration points away and stronger legal sources are absent.",
     positive_indicators: [
       "owner auto address differs from subject",
-      "no owner drive elsewhere corroboration",
+      "no owner drive/voter elsewhere corroboration",
     ],
     verdict_contributions: [
       contribution(
@@ -1364,21 +1442,50 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
     confidence: "high",
   }),
   heuristic({
+    id: "drive_voter_conflict_same_person",
+    title: "Driver voter conflict same person",
+    role: "quality",
+    group: "mitigation_ambiguity",
+    description: "Driver license and voter registration disagree for the same person.",
+    input_fields: [
+      field("drive", "address", "driver address"),
+      field("voter", "address", "voter address"),
+      field("drive", "firstname", "driver first name"),
+      field("drive", "lastname", "driver last name"),
+      field("voter", "firstname", "voter first name"),
+      field("voter", "lastname", "voter last name"),
+    ],
+    reasoning: "Conflicting government address records indicate timing or identity uncertainty.",
+    positive_indicators: [
+      "same person is resolved across drive and voter",
+      "drive and voter addresses differ",
+    ],
+    verdict_contributions: [
+      contribution(
+        "qualify",
+        "Legal-source disagreement should be surfaced as mixed evidence.",
+        "mixed_evidence",
+      ),
+    ],
+    confidence: "medium",
+  }),
+  heuristic({
     id: "auto_at_subject_but_stronger_legal_elsewhere",
     title: "Auto at subject but stronger legal elsewhere",
     role: "quality",
     group: "mitigation_ambiguity",
     description:
-      "A person's auto registration is at subject while driver records point elsewhere.",
+      "A person's auto registration is at subject while driver or voter records point elsewhere.",
     input_fields: [
       field("auto", "address", "auto address"),
       field("drive", "address", "driver address", { required: false }),
+      field("voter", "address", "voter address", { required: false }),
     ],
     reasoning:
-      "Vehicle garaging at a property is weaker than driver evidence for primary residence.",
+      "Vehicle garaging at a property is weaker than driver/voter evidence for primary residence.",
     positive_indicators: [
       "auto address matches subject",
-      "drive address differs from subject",
+      "drive or voter address differs from subject",
     ],
     verdict_contributions: [
       contribution(
@@ -1434,6 +1541,7 @@ export const ATOMIC_HEURISTICS: readonly AtomicHeuristicDefinition[] = [
       field("tax", "totalliencount", "lien count", { required: false }),
       field("base", "primaryaddress", "base primary address", { required: false }),
       field("drive", "address", "driver address", { required: false }),
+      field("voter", "address", "voter address", { required: false }),
       field("auto", "address", "auto address", { required: false }),
     ],
     reasoning_paths: [

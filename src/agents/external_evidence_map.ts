@@ -4,8 +4,24 @@
 //
 // Separate from external_evidence.ts so the contract module stays free of a
 // models.ts <-> external_evidence.ts import cycle.
+import { canonicalJson, sha256Hex } from "../fingerprint/canonical.ts";
 import type { ExternalEvidence, PropertyFacts, RentalListing, StrListing } from "./external_evidence.ts";
 import { type EvidenceReference, EvidenceReferenceSchema } from "./models.ts";
+
+/**
+ * A short, evidence-intrinsic key for one record.
+ *
+ * Replaces the caller's scan_id as the record_id prefix. Identical evidence MUST produce an
+ * identical digest no matter which organisation paid for the run — reports are reused across
+ * organisations, so anything caller-derived here becomes a cross-tenant leak in a served report.
+ *
+ * 12 hex chars: an audit-trail discriminator among a handful of refs on one property, not a
+ * collision-resistant identity. `canonicalJson` sorts keys at every depth, so a re-ordered record
+ * yields the same digest.
+ */
+function evidenceDigest(record: unknown): string {
+  return sha256Hex(canonicalJson(record)).slice(0, 12);
+}
 
 // Stated outright rather than left to the model to infer from the field name.
 const ADDRESS_MATCH_SEMANTICS =
@@ -166,18 +182,17 @@ export function external_evidence_refs(evidence: ExternalEvidence | null): Evide
   if (evidence === null) {
     return [];
   }
-  const scan_key = evidence.scan_id ?? "scan";
   const refs: EvidenceReference[] = evidence.str_listings.map((listing, index) =>
     EvidenceReferenceSchema.parse({
       source: "str_scan",
       table: "str_listing",
-      record_id: `${scan_key}:${index}`,
+      // Digest, not the caller's scan_id — see evidenceDigest. The index keeps two identical
+      // listings on one scan individually addressable.
+      record_id: `${evidenceDigest(listing)}:${index}`,
       summary: _listing_summary(listing),
-      data: {
-        ...listing,
-        scan_id: evidence.scan_id ?? null,
-        scanned_at: evidence.scanned_at ?? null,
-      },
+      // scan_id / scanned_at deliberately NOT carried: they name the organisation that paid for
+      // the run, and this report may be served to a different one.
+      data: { ...listing },
     }),
   );
   const facts = evidence.property_facts;
@@ -186,7 +201,7 @@ export function external_evidence_refs(evidence: ExternalEvidence | null): Evide
       EvidenceReferenceSchema.parse({
         source: "property_facts",
         table: "property_facts",
-        record_id: `${scan_key}:property_facts`,
+        record_id: `${evidenceDigest(facts)}:property_facts`,
         summary: _facts_summary(facts),
         data: { ...facts },
       }),
