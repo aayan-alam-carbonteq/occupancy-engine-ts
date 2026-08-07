@@ -31,6 +31,19 @@ the Python source is the correctness bar.
     bun run e2e         # focused: just the E2E suite
     bun run verify      # typecheck + lint + bun test  (bun test already includes E2E)
 
+**True baseline.** The gitignored `.env` sets `OE_PROSE_REGISTER=on` and `OE_PROSE_REDACT=on`, and
+Bun AUTO-LOADS `.env` (`env -u` does not clear it). A bare `bun run verify` therefore shows 2
+pre-existing failures that assert those flags are off, i.e. fail by construction. Always gate with:
+
+    OE_PROSE_REDACT=off OE_PROSE_REGISTER=off bun run verify
+
+**Known-failing on trunk (2026-08-06):** `E2E-1: orchestrator assembly` fails at
+`test/e2e/orchestrator.e2e.test.ts:42` — `owner_summaries[0].summaries[0]` expects `/^Owner /` but
+gets the raw `owner=…` bit-string, i.e. the HUMANIZED DISPLAY COPY is not produced. (An earlier note
+here blamed `_person_name` not naming a utility row; that diagnosis was wrong and would misdirect
+whoever fixes it.) It reproduces at the pinned `5e8e15f` in a clean worktree, so it is not yours. X-016's `db706c5` fixed it, but that line is
+abandoned; the fix is recoverable from `origin/feat/typed-data-service`.
+
 ## Hard constraints
 
 - **Parity first.** Don't change agent logic without a Python-parity reason. The
@@ -70,6 +83,58 @@ Every session ends with: `bun run verify` green, `PROGRESS.md` updated,
 `src/observability/` records per-run metrics sidecars (latency, cost, tokens, cache,
 errors, per-phase counts). Use them to debug runtime behavior — they are the
 harness's introspection surface.
+
+## The fingerprint endpoint (the backend's cache-key surface)
+
+`POST /fingerprint` — bearer auth, same `ENGINE_AUTH_TOKEN` as `/investigate`:
+
+    { "items": [{ "address": "1104 Spring Run Rd", "zip": "40514" }, { "address": "22 Elm St" }] }
+      -> 200 { "engine": "<sha256 of src/**, cli/**, package.json, bun.lock>",
+               "items": [{ "data": "<sha256 of the normalized record projection>" }, { "data": null }] }
+
+- **One entry per input, SAME ORDER** — callers zip by index. `data: null` is a per-item degradation
+  (unresolvable address, or the probe's read failed) and is **never** a whole-request failure.
+  401 on a bad/missing bearer; 400 on a malformed body.
+- **No model id is reported, by design.** The backend keys on its own `config.investigation.model` —
+  the value it already sends in the `/investigate` body — because it owns the model the run actually
+  uses. An engine-reported model could drift from it and key a report on a model the run did not use.
+  Do not add `ENGINE_MODEL`, a `configured_model_id` helper, or a model field to this response.
+- **OPS RULE, load-bearing: `GRAPHQL_URL` on this engine must name the same graph the backend sends
+  as `graphql_url` in its `/investigate` body.** `/fingerprint` carries no `graphql_url` — the probe
+  reads this process's own configured graph. If the two differ, the fingerprint describes a different
+  dataset than the investigation reads, and the cache can serve a report computed over data the run
+  never saw. `bun run serve` prints both the engine hash and the graph URL at startup; check them
+  against the backend's engine config after any deploy on either side.
+- An engine deploy changes `engine` and drains the cache. Intended: over-invalidation costs a rerun,
+  under-invalidation serves a wrong report.
+- **`services/graph` gets no change, now or ever, for this feature** — the fingerprint is a *read*.
+  The hash is taken over the engine's own normalized projection (`src/fingerprint/data_source_probe.ts`),
+  not the source's wire format, so swapping in the partner endpoint is one new `DataSourceProbe`.
+
+## Evidence references are tenant-neutral (cross-org report reuse)
+
+Reports are **reused across organizations** (workspace X-015). So nothing this engine emits may name
+the organization that paid for the run.
+
+`external_evidence_refs` keys each reference by an **evidence-intrinsic digest**, never the caller's
+`scan_id`, and it does **not** echo `scan_id` or `scanned_at` into `data`. Both are still accepted on
+the *inbound* `ExternalEvidence` shape — that is the backend telling us what it is scanning, which is
+fine. The rule is one-directional: **accept them, never emit them.**
+
+`assessment_report_payload` also strips `metrics.run_id`, `metrics.batch_id` and
+`metrics.investigation_id` — `batch_id` is `request.batch_id` verbatim and the other two derive from
+`request.trace_id`, so all three name the caller. The REST of `metrics` (latency, cost, tokens) is
+tenant-neutral and deliberately kept; dropping it would gut the report's operational value.
+
+Guarded by `test/external_evidence_tenant_neutral.test.ts`, a canary in
+`test/external_evidence_exposure.test.ts`, and the metrics case in
+`test/investigation_wire.test.ts` — all asserted on the **serialized** payload, because both `data`
+and `metrics` are loose records and a key-by-key check cannot prove absence.
+
+`POST /fingerprint` is bounded: a whole-request deadline (`fingerprint_timeout_ms`, 60s — overrun
+items degrade to `data: null`) and its own small permit pool (`fingerprint_max_concurrency`, 2 —
+503 when saturated). It sits OUTSIDE the investigation pool so a fingerprint can never starve an
+investigation, which is exactly why it needs its own cap. A 503 or a null is just a cache miss.
 
 ## Refreshing the E2E fixture
 

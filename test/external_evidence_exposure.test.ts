@@ -3,6 +3,7 @@
 // in its rendered prompt — solo, grouped, or under either prompt profile. This guards the whole
 // selective-exposure design.
 import { describe, expect, test } from "bun:test";
+import { ExternalEvidenceSchema } from "../src/agents/external_evidence.ts";
 import {
   external_evidence_refs,
   property_types_from_external,
@@ -210,5 +211,24 @@ describe("the exposed packets do see their sources", () => {
     expect(prompt).toContain("list_date=2026-05-02");
     expect(prompt).not.toContain("Property listed for rent");
     expect(prompt).not.toContain("AppfolioUnits");
+  });
+});
+
+describe("cross-org canary: no evidence reference names the scan that produced it", () => {
+  test("the ENTIRE serialized ref set is free of the caller's scan id and scan timestamp", () => {
+    // Serialize the whole assembled evidence surface and search for the caller's identifiers.
+    // This is the test that catches a leak on a path nobody thought to check — and it is asserted
+    // on the serialized payload because `data` is a jsonRecord, so a key-by-key check on the DTO
+    // type cannot prove absence.
+    const evidence = ExternalEvidenceSchema.parse({
+      scan_id: "scan_LEAKCANARY",
+      scanned_at: "2099-12-31T23:59:59Z",
+      str_listings: [{ platform: "vrbo", bedrooms: 3, baths: 2, guests: 6, address_match_pct: 92 }],
+      address_match_confidence: 83,
+      property_facts: { source_provider: "realtor", home_type: "single_family" },
+    });
+    const serialized = JSON.stringify(external_evidence_refs(evidence));
+    expect(serialized).not.toContain("LEAKCANARY");
+    expect(serialized).not.toContain("2099-12-31");
   });
 });

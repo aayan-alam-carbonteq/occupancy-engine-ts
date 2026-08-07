@@ -407,24 +407,13 @@ export class AgentOrchestrator {
   async preflight(request: AgentInvestigationRequest): Promise<ResolvedAddressContext> {
     const graphql = new CountingGraphQLTool(this.graphql, { max_calls: 3, agent_id: "orchestrator" });
     const schema_guide = "";
-    const data = await graphql.query(
-      PREFLIGHT_QUERY,
-      { query: request.address, zip: request.zip || null },
-      { result_summary: "address search and source counts" },
+    // Shared with the fingerprint probe — see resolve_subject_address. Same queries, same order,
+    // same result_summary strings, so `preflight_queries` below is byte-identical to before.
+    const { address_data, candidates, selected } = await resolve_subject_address(
+      graphql,
+      request.address,
+      request.zip,
     );
-    const search = (data["searchAddresses"] ?? {}) as Record<string, any>;
-    const nodes = (search["nodes"] ?? []) as any[];
-    const candidates = nodes.map((node) => _candidate(node as Record<string, any>));
-    let address_data: Record<string, any> | null = (data["addressByText"] ?? null) as Record<string, any> | null;
-    if (address_data === null && candidates.length > 0) {
-      const by_id = await graphql.query(
-        ADDRESS_BY_ID_QUERY,
-        { id: candidates[0]!.id },
-        { result_summary: "fallback address by id" },
-      );
-      address_data = (by_id["address"] ?? null) as Record<string, any> | null;
-    }
-    const selected = _selected_candidate(address_data, candidates);
     const source_counts = _source_counts((address_data ?? {}) as Record<string, any>);
     // Absent payload => empty, exactly as today: the blind (benchmarking) configuration.
     const external_evidence = request.external_evidence ?? null;
@@ -1238,6 +1227,59 @@ function _agent_metrics(opts: {
 }
 
 // ── Preflight builders ──
+
+/** What preflight's address-resolution step produced, before any evidence-map building. */
+export interface SubjectAddressResolution {
+  address_data: Record<string, any> | null;
+  candidates: AddressCandidate[];
+  selected: AddressCandidate | null;
+}
+
+/**
+ * The ONE address-resolution path in the engine. `AgentOrchestrator.preflight` calls it, and so does
+ * the fingerprint probe (src/fingerprint/graphql_probe.ts) — so a fingerprint can never describe a
+ * different address than the investigation reads. Two queries at most: the preflight search, plus the
+ * by-id fallback only when `addressByText` came back null and there is a candidate to fall back to.
+ */
+export async function resolve_subject_address(
+  graphql: CountingGraphQLTool,
+  address: string,
+  zip: string,
+): Promise<SubjectAddressResolution> {
+  const data = await graphql.query(
+    PREFLIGHT_QUERY,
+    { query: address, zip: zip || null },
+    { result_summary: "address search and source counts" },
+  );
+  const search = (data["searchAddresses"] ?? {}) as Record<string, any>;
+  const nodes = (search["nodes"] ?? []) as any[];
+  const candidates = nodes.map((node) => _candidate(node as Record<string, any>));
+  let address_data: Record<string, any> | null = (data["addressByText"] ?? null) as Record<string, any> | null;
+  if (address_data === null && candidates.length > 0) {
+    const by_id = await graphql.query(
+      ADDRESS_BY_ID_QUERY,
+      { id: candidates[0]!.id },
+      { result_summary: "fallback address by id" },
+    );
+    address_data = (by_id["address"] ?? null) as Record<string, any> | null;
+  }
+  return { address_data, candidates, selected: _selected_candidate(address_data, candidates) };
+}
+
+/**
+ * The address id preflight puts on `evidence_map.address_id` — i.e. the id `_resolve_bundle_address_id`
+ * hands the agents, and therefore the subject the probe must read. Mirrors `_evidence_map`'s own rule.
+ */
+export function resolved_address_id(resolution: SubjectAddressResolution): number | null {
+  if (resolution.selected !== null) {
+    return resolution.selected.id;
+  }
+  const raw = resolution.address_data?.["id"];
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  return Math.trunc(Number(raw)) || 0;
+}
 
 function _candidate(node: Record<string, any>): AddressCandidate {
   const address = isRecord(node["address"]) ? node["address"] : {};
