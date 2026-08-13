@@ -13,7 +13,7 @@ import {
 } from "../agents/investigation_wire.ts";
 import type { AgentInvestigationRequest, OccupancyAgentAssessment } from "../agents/models.ts";
 import { records_fingerprint, type DataSourceProbe } from "../fingerprint/data_source_probe.ts";
-import { GraphQLDataSourceProbe } from "../fingerprint/graphql_probe.ts";
+import { TypedDataSourceProbe } from "../fingerprint/typed_probe.ts";
 import { engine_source_hash } from "../fingerprint/source_hash.ts";
 import {
   parse_fingerprint_request,
@@ -36,6 +36,11 @@ export interface EngineServerOptions {
   retry_after_seconds?: number; // default 2
   data_url?: string; // healthcheck default; investigations carry their own data_url
   investigate?: InvestigationRunner; // injection seam for deterministic tests
+  engine_hash?: string; // injection seam for deterministic tests; default is the real source-tree hash
+  probe?: DataSourceProbe; // injection seam for deterministic tests; default reads THIS engine's data_url
+  fingerprint_batch_concurrency?: number; // default 4 — items probed at once within one request
+  fingerprint_timeout_ms?: number; // default 60_000 — whole-request deadline for POST /fingerprint
+  fingerprint_max_concurrency?: number; // default 2 — concurrent /fingerprint requests before 503
 }
 
 export interface EngineServer {
@@ -113,10 +118,10 @@ export function create_engine_server(opts: EngineServerOptions = {}): EngineServ
 
   // Computed ONCE here, at startup, then free for the life of the process (spec §1).
   const engine_hash = opts.engine_hash ?? engine_source_hash();
-  // The probe reads THIS engine's configured graph. POST /fingerprint carries no graphql_url, so
-  // GRAPHQL_URL must name the same graph the backend sends in its /investigate body — otherwise the
+  // The probe reads THIS engine's configured data service. POST /fingerprint carries no data_url, so
+  // DATA_URL must name the same service the backend sends in its /investigate body — otherwise the
   // fingerprint describes a different dataset than the run reads. See AGENTS.md.
-  const probe: DataSourceProbe = opts.probe ?? new GraphQLDataSourceProbe(new GraphQLHttpTool(graphql_url_default));
+  const probe: DataSourceProbe = opts.probe ?? new TypedDataSourceProbe(new DataHttpClient(data_url_default));
   const fingerprint_concurrency = Math.max(1, opts.fingerprint_batch_concurrency ?? DEFAULT_FINGERPRINT_CONCURRENCY);
   const fingerprint_timeout_ms = Math.max(1, opts.fingerprint_timeout_ms ?? DEFAULT_FINGERPRINT_TIMEOUT_MS);
   const fingerprint_pool = new PermitPool(

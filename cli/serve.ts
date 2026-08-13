@@ -41,8 +41,8 @@ function requireAuthToken(): string {
 function main(): void {
   loadDotenv();
   // Resolved here (rather than defaulted inside the server) so the startup line can print exactly the
-  // graph the fingerprint probe will read.
-  const graphql_url = process.env.GRAPHQL_URL ?? "http://graphql:8000/graphql";
+  // data service the fingerprint probe will read. Mirrors investigate_server.ts's own default.
+  const data_url = process.env.DATA_URL ?? "http://graph:8000";
   const server = create_engine_server({
     port: intEnv("ENGINE_PORT", intEnv("PORT", 8787)),
     auth_token: requireAuthToken(),
@@ -57,9 +57,9 @@ function main(): void {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
   // engine=<hash> is what POST /fingerprint reports; graph=<url> is what its probe reads. The graph
-  // MUST match the graphql_url the backend sends in /investigate — see AGENTS.md.
+  // MUST match the data_url the backend sends in /investigate — see AGENTS.md.
   process.stdout.write(
-    `engine service listening on :${server.port} (engine=${server.engine_hash.slice(0, 12)} graph=${graphql_url})\n`,
+    `engine service listening on :${server.port} (engine=${server.engine_hash.slice(0, 12)} graph=${data_url})\n`,
   );
 }
 
