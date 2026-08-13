@@ -1,9 +1,12 @@
 // Formats the curated GET /v1/schema payload into the guide the agent reads before writing SQL.
 //
-// The access paths lead, deliberately: this corpus has no index on the free-text address, on
-// lat/long, on source_file or on raw_data, so a predicate off an indexed path is refused by the
-// EXPLAIN gate before it ever runs. Dumping columns without saying which predicates are fast would
-// guarantee refused queries.
+// The access paths lead, deliberately: a predicate off an indexed path is refused by the EXPLAIN
+// gate before it ever runs, and dumping columns without saying which predicates are fast would
+// guarantee refused queries. The address is reachable as of 2026-08-11, but ONLY through
+// silver.s5_street_norm(address) with an anchored LIKE prefix — the indexes are on that expression,
+// so a bare `address ILIKE` still scans and is still refused. lat/long, source_file and raw_data
+// remain unindexed. The service ships the exact predicate form in each access path; this module
+// only formats what it is given, so that guidance stays correct without a change here.
 //
 // Field names mirror service/schema_doc.py exactly — an access path is
 // {predicate, table, index, measured, hint_key}, and `measured` is PROSE ("173 ms warm, 24 k rows

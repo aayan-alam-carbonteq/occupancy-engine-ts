@@ -1,7 +1,11 @@
 node_modules/
 bun.lockb
 *.log
+# Every env file EXCEPT the committed templates. `.env` alone was not enough
+# once `.env.prod` became a real filename an operator would create here.
 .env
+.env.*
+!.env*.example
 experiments/
 runs/
 dist/
