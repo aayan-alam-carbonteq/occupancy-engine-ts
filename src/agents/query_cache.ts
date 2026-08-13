@@ -4,12 +4,26 @@
 // call is running observe the in-flight Promise and await it instead of re-executing. Errors are
 // not cached.
 //
-// `canonicalJson` lived in this module until 392466a extracted it to fingerprint/canonical.ts; the
-// import back was never added, so cacheKey threw `ReferenceError: canonicalJson is not defined` on
-// EVERY call. tsc reported it, but the error sat among the pre-existing failures in the dead
-// GraphQL-era test files, so the red gate hid it. At runtime the throw is swallowed by the caller's
-// error handling: the investigation completes, the cache silently never works, and each heuristic
-// worker logs one error per run (32 across a 12-address benchmark).
+// HOW THE IMPORT WENT MISSING, and why the shape of it matters more than the fix.
+//
+// 392466a extracted canonicalJson to fingerprint/canonical.ts and ADDED this import correctly. It
+// was lost later, in a revert pair: 494aeb3 ("Revert X-016") restored the inline copy, then 9b3e901
+// ("Revert the Revert") re-applied the typed-service rename (query->operation, variables->params)
+// and deleted the inline definition WITHOUT re-adding the import. Neither side of that resolution
+// was wrong on its own; combining a deletion from one with a rename from the other produced a file
+// referencing a symbol nothing brought in. Grepping for the extraction commit blames the wrong
+// change — the failure lives in the merge resolution.
+//
+// WHAT IT COST. Not "the cache was slower". cacheKey runs at the top of get_or_execute, BEFORE the
+// factory, so every call through a cache-bearing client threw ReferenceError before any HTTP
+// request was made. Only heuristic workers get a cache (orchestrator.ts, `cache: query_cache`);
+// preflight's client is built without one. So the heuristic workers retrieved NOTHING, and the two
+// data calls a broken run still recorded were preflight's. Any benchmark taken between 9b3e901 and
+// this commit measured heuristics reasoning over zero retrieved data.
+//
+// tsc reported it the whole time. The error sat among the pre-existing failures in the dead
+// GraphQL-era test files, so the red gate hid it — as did the callers, which re-throw
+// non-DataClientError without logging.
 import { canonicalJson } from "../fingerprint/canonical.ts";
 
 function cacheKey(operation: string, params: Record<string, unknown> | null | undefined): string {

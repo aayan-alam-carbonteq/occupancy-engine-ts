@@ -2,11 +2,17 @@
 //
 // The access paths lead, deliberately: a predicate off an indexed path is refused by the EXPLAIN
 // gate before it ever runs, and dumping columns without saying which predicates are fast would
-// guarantee refused queries. The address is reachable as of 2026-08-11, but ONLY through
-// silver.s5_street_norm(address) with an anchored LIKE prefix — the indexes are on that expression,
-// so a bare `address ILIKE` still scans and is still refused. lat/long, source_file and raw_data
-// remain unindexed. The service ships the exact predicate form in each access path; this module
-// only formats what it is given, so that guidance stays correct without a change here.
+// guarantee refused queries.
+//
+// WHICH predicates are fast is the SERVICE's answer, not this module's, and it changes underneath
+// us: the partner owns the indexes and has added them mid-project (an address path landed
+// 2026-08-11, reachable only through silver.s5_street_norm(address) with an anchored LIKE prefix).
+// So this comment deliberately does NOT enumerate the indexed columns — the version of
+// services/graph pinned by any given commit may pre- or post-date such a change, and a list here
+// would be wrong for one of them. `summarizeDataSchema` renders `path.predicate` verbatim from
+// GET /v1/schema, so the agent gets whatever the deployed service actually knows. If you need the
+// current list, read it from the service (service/schema_doc.py) at the pinned submodule commit,
+// not from here.
 //
 // Field names mirror service/schema_doc.py exactly — an access path is
 // {predicate, table, index, measured, hint_key}, and `measured` is PROSE ("173 ms warm, 24 k rows
