@@ -1191,58 +1191,21 @@ function _agent_metrics(opts: {
 
 // ── Preflight builders ──
 
-/** What preflight's address-resolution step produced, before any evidence-map building. */
-export interface SubjectAddressResolution {
-  address_data: Record<string, any> | null;
-  candidates: AddressCandidate[];
-  selected: AddressCandidate | null;
-}
-
-/**
- * The ONE address-resolution path in the engine. `AgentOrchestrator.preflight` calls it, and so does
- * the fingerprint probe (src/fingerprint/graphql_probe.ts) — so a fingerprint can never describe a
- * different address than the investigation reads. Two queries at most: the preflight search, plus the
- * by-id fallback only when `addressByText` came back null and there is a candidate to fall back to.
- */
-export async function resolve_subject_address(
-  graphql: CountingGraphQLTool,
-  address: string,
-  zip: string,
-): Promise<SubjectAddressResolution> {
-  const data = await graphql.query(
-    PREFLIGHT_QUERY,
-    { query: address, zip: zip || null },
-    { result_summary: "address search and source counts" },
-  );
-  const search = (data["searchAddresses"] ?? {}) as Record<string, any>;
-  const nodes = (search["nodes"] ?? []) as any[];
-  const candidates = nodes.map((node) => _candidate(node as Record<string, any>));
-  let address_data: Record<string, any> | null = (data["addressByText"] ?? null) as Record<string, any> | null;
-  if (address_data === null && candidates.length > 0) {
-    const by_id = await graphql.query(
-      ADDRESS_BY_ID_QUERY,
-      { id: candidates[0]!.id },
-      { result_summary: "fallback address by id" },
-    );
-    address_data = (by_id["address"] ?? null) as Record<string, any> | null;
-  }
-  return { address_data, candidates, selected: _selected_candidate(address_data, candidates) };
-}
-
-/**
- * The address id preflight puts on `evidence_map.address_id` — i.e. the id `_resolve_bundle_address_id`
- * hands the agents, and therefore the subject the probe must read. Mirrors `_evidence_map`'s own rule.
- */
-export function resolved_address_id(resolution: SubjectAddressResolution): number | null {
-  if (resolution.selected !== null) {
-    return resolution.selected.id;
-  }
-  const raw = resolution.address_data?.["id"];
-  if (raw === null || raw === undefined) {
-    return null;
-  }
-  return Math.trunc(Number(raw)) || 0;
-}
+// X-035: `SubjectAddressResolution`, `resolve_subject_address` and `resolved_address_id` lived here
+// and are gone. They were X-015's answer to a real invariant — the fingerprint must describe the
+// SAME address the investigation reads — implemented as one shared engine function that preflight
+// and the GraphQL probe both called. Both callers are now gone: `graphql_probe.ts` was deleted with
+// the GraphQL transport, and preflight resolves through `data.resolve()` (line ~359).
+//
+// The invariant did not go with them; it got stronger. Preflight and the typed probe
+// (src/fingerprint/typed_probe.ts) both call `POST /v1/resolve` and take `address_id` from the
+// response — THE SERVICE RESOLVES, NOT THE ENGINE. One resolver on the far side of an HTTP boundary
+// cannot drift from itself, whereas two engine call sites sharing a helper could always grow a
+// second path. Do not reintroduce an engine-side resolver to "share" this logic again.
+//
+// They were left behind by the X-016 un-revert and referenced `CountingGraphQLTool`,
+// `PREFLIGHT_QUERY` and `ADDRESS_BY_ID_QUERY` — all deleted — so they were 4 of the branch's
+// typecheck errors and were unreachable from any live call path.
 
 function _candidate(node: Record<string, any>): AddressCandidate {
   return AddressCandidateSchema.parse({
