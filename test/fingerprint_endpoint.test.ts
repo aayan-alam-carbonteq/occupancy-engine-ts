@@ -6,8 +6,20 @@ import {
 } from "../src/fingerprint/data_source_probe.ts";
 import { engine_source_hash } from "../src/fingerprint/source_hash.ts";
 import { create_engine_server, type EngineServer } from "../src/server/investigate_server.ts";
-import { FixtureGraphQLServer } from "./support/fixture_graphql.ts";
-import { probeGraphPayload } from "./support/fixtures.ts";
+import { FixtureDataService, type FixtureDataPlan } from "./support/fixture_data_service.ts";
+import { people1104, resolve1104 } from "./support/fixtures.ts";
+
+/** A resolvable, fully-wired plan for the default-probe tests: op1/op2/op3/op4 all answer. */
+function typedProbePlan(overrides: FixtureDataPlan = {}): FixtureDataPlan {
+  const payload = resolve1104() as Record<string, any>;
+  return {
+    resolve: payload,
+    address_records: { records_by_source: payload["records_by_source"], unsupported_shapes: [] },
+    address_people: people1104(),
+    person_records: { person: { id: "addr:3342:0" }, records_by_source: {}, records_timed_out: false, unsupported_shapes: [] },
+    ...overrides,
+  };
+}
 
 const TOKEN = "test-engine-token";
 
@@ -140,22 +152,22 @@ describe("POST /fingerprint — per-item degradation, never a request failure", 
 });
 
 describe("POST /fingerprint — default wiring", () => {
-  test("with no injected probe the server reads its OWN configured graph URL", async () => {
-    const graph = new FixtureGraphQLServer(probeGraphPayload());
+  test("with no injected probe the server reads its OWN configured data service", async () => {
+    const data = new FixtureDataService(typedProbePlan());
     try {
-      engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: graph.url });
+      engine = create_engine_server({ port: 0, auth_token: TOKEN, data_url: data.url });
       const res = await post({ items: [{ address: "1104 SPRING RUN RD", zip: "40514" }] });
       expect(res.status).toBe(200);
       const body = (await res.json()) as any;
       expect(typeof body.items[0].data).toBe("string");
       expect(/^[0-9a-f]{64}$/.test(body.items[0].data)).toBe(true);
     } finally {
-      graph.close();
+      data.close();
     }
   });
 
-  test("with no injected probe and an unreachable graph, every item degrades to null — still 200", async () => {
-    engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: "http://127.0.0.1:1/graphql" });
+  test("with no injected probe and an unreachable data service, every item degrades to null — still 200", async () => {
+    engine = create_engine_server({ port: 0, auth_token: TOKEN, data_url: "http://127.0.0.1:1" });
     const res = await post({ items: [{ address: "1104 SPRING RUN RD", zip: "40514" }] });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
@@ -164,36 +176,34 @@ describe("POST /fingerprint — default wiring", () => {
 });
 
 describe("POST /fingerprint — zip reaches the probe", () => {
-  test("the preflight query carries the zip the caller sent, and null when omitted", async () => {
+  test("the resolve call carries the zip the caller sent, and empty string when omitted", async () => {
     // REGRESSION GUARD. Changing the route to `probe.probe(item.address)` — dropping zip — passed
-    // every other test in this repo, because FixtureGraphQLServer answers every query with the same
-    // payload regardless of variables, so zip was unobservable. zip feeds PREFLIGHT_QUERY and
-    // candidate selection, so losing it silently fingerprints a DIFFERENT address than the run
-    // resolves: the wrong-answer direction.
-    const graph = new FixtureGraphQLServer(probeGraphPayload());
+    // every other test in this repo, because FixtureDataService answers POST /v1/resolve with the
+    // same payload regardless of the request body, so zip was unobservable. zip feeds POST
+    // /v1/resolve and the service's own candidate selection, so losing it silently fingerprints a
+    // DIFFERENT address than the run resolves: the wrong-answer direction.
+    const data = new FixtureDataService(typedProbePlan());
     try {
-      engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: graph.url });
+      engine = create_engine_server({ port: 0, auth_token: TOKEN, data_url: data.url });
       await post({ items: [{ address: "1104 SPRING RUN RD", zip: "40514" }] });
-      const withZip = graph.requests.find(
-        (r) => typeof (r as any)?.variables?.zip === "string",
-      ) as any;
-      expect(withZip).toBeDefined();
-      expect(withZip.variables.zip).toBe("40514");
+      const resolveCall = data.requests.find((r) => r.path === "/v1/resolve");
+      expect(resolveCall).toBeDefined();
+      expect((resolveCall!.body as any).zip).toBe("40514");
     } finally {
-      graph.close();
+      data.close();
     }
   });
 
-  test("an omitted zip reaches the probe as null, not as a stray string", async () => {
-    const graph = new FixtureGraphQLServer(probeGraphPayload());
+  test("an omitted zip reaches the probe as an empty string, not undefined", async () => {
+    const data = new FixtureDataService(typedProbePlan());
     try {
-      engine = create_engine_server({ port: 0, auth_token: TOKEN, graphql_url: graph.url });
+      engine = create_engine_server({ port: 0, auth_token: TOKEN, data_url: data.url });
       await post({ items: [{ address: "1104 SPRING RUN RD" }] });
-      const preflight = graph.requests.find((r) => (r as any)?.variables?.query !== undefined) as any;
-      expect(preflight).toBeDefined();
-      expect(preflight.variables.zip).toBeNull();
+      const resolveCall = data.requests.find((r) => r.path === "/v1/resolve");
+      expect(resolveCall).toBeDefined();
+      expect((resolveCall!.body as any).zip).toBe("");
     } finally {
-      graph.close();
+      data.close();
     }
   });
 });
