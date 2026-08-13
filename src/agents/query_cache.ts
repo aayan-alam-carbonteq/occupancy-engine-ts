@@ -3,6 +3,14 @@
 // and the `_inflight.set(...)` is synchronous (no `await`), concurrent callers that arrive while a
 // call is running observe the in-flight Promise and await it instead of re-executing. Errors are
 // not cached.
+//
+// `canonicalJson` lived in this module until 392466a extracted it to fingerprint/canonical.ts; the
+// import back was never added, so cacheKey threw `ReferenceError: canonicalJson is not defined` on
+// EVERY call. tsc reported it, but the error sat among the pre-existing failures in the dead
+// GraphQL-era test files, so the red gate hid it. At runtime the throw is swallowed by the caller's
+// error handling: the investigation completes, the cache silently never works, and each heuristic
+// worker logs one error per run (32 across a 12-address benchmark).
+import { canonicalJson } from "../fingerprint/canonical.ts";
 
 function cacheKey(operation: string, params: Record<string, unknown> | null | undefined): string {
   return operation.trim() + "\x00" + canonicalJson(params ?? {});
