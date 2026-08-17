@@ -4,7 +4,7 @@
 //   GET  /healthz       → 200 once the LLM + data clients construct, else 503.
 // Bun.serve is native — no new dependency. No job store, no persistence.
 import { createChatModel } from "../agents/llm.ts";
-import { DataHttpClient } from "../agents/data_client.ts";
+import { DataHttpClient, resolve_data_url } from "../agents/data_client.ts";
 import { investigate_address, type InvestigationHooks } from "../agents/orchestrator.ts";
 import {
   assessment_report_payload,
@@ -34,7 +34,10 @@ export interface EngineServerOptions {
   request_timeout_ms?: number; // default 300_000 — flips should_cancel for that request
   shutdown_drain_ms?: number; // default = request_timeout_ms (<= engine timeout)
   retry_after_seconds?: number; // default 2
-  data_url?: string; // healthcheck default; investigations carry their own data_url
+  // Test-injection seam ONLY: feeds resolve_data_url exactly like an unset option would (flag/override
+  // > DATA_URL env > default), so it can never diverge from what a real request or /fingerprint probe
+  // resolves. Production never sets this — DATA_URL alone drives it there.
+  data_url?: string;
   investigate?: InvestigationRunner; // injection seam for deterministic tests
   engine_hash?: string; // injection seam for deterministic tests; default is the real source-tree hash
   probe?: DataSourceProbe; // injection seam for deterministic tests; default reads THIS engine's data_url
@@ -112,15 +115,18 @@ export function create_engine_server(opts: EngineServerOptions = {}): EngineServ
   const request_timeout_ms = opts.request_timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const shutdown_drain_ms = opts.shutdown_drain_ms ?? request_timeout_ms;
   const retry_after = String(opts.retry_after_seconds ?? DEFAULT_RETRY_AFTER_SECONDS);
-  const data_url_default = opts.data_url ?? process.env.DATA_URL ?? "http://graph:8000";
+  // The ONE resolution of this engine's data-service address for the whole process: the probe,
+  // /healthz, AND the default investigation runner below all read this same value, so there is no
+  // second source left to drift out of sync (see resolve_data_url's doc comment).
+  const data_url_default = resolve_data_url(opts.data_url);
   const run_investigation: InvestigationRunner =
-    opts.investigate ?? ((request, hooks) => investigate_address(request, null, hooks));
+    opts.investigate ?? ((request, hooks) => investigate_address(request, null, hooks, data_url_default));
 
   // Computed ONCE here, at startup, then free for the life of the process (spec §1).
   const engine_hash = opts.engine_hash ?? engine_source_hash();
   // The probe reads THIS engine's configured data service. POST /fingerprint carries no data_url, so
-  // DATA_URL must name the same service the backend sends in its /investigate body — otherwise the
-  // fingerprint describes a different dataset than the run reads. See AGENTS.md.
+  // data_url_default must name the same service /investigate reads — otherwise the fingerprint
+  // describes a different dataset than the run reads. See AGENTS.md and resolve_data_url.
   const probe: DataSourceProbe = opts.probe ?? new TypedDataSourceProbe(new DataHttpClient(data_url_default));
   const fingerprint_concurrency = Math.max(1, opts.fingerprint_batch_concurrency ?? DEFAULT_FINGERPRINT_CONCURRENCY);
   const fingerprint_timeout_ms = Math.max(1, opts.fingerprint_timeout_ms ?? DEFAULT_FINGERPRINT_TIMEOUT_MS);

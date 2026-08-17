@@ -171,7 +171,10 @@ export const AgentInvestigationRequestSchema = z
   .object({
     address: z.string(),
     zip: z.string().default(""),
-    data_url: z.string(),
+    // No data_url here, deliberately: the engine resolves its OWN data-service address (DATA_URL env,
+    // one resolver — see data_client.ts's resolve_data_url) so a caller's investigation and the
+    // engine's own POST /fingerprint probe can never read two different datasets. A caller that still
+    // sends data_url gets a 400 (strict schema, unrecognised key) rather than a silently ignored field.
     provider: z.enum(["auto", "openai", "gemini", "anthropic"]).default("auto"),
     model: z.string().nullish().default(null),
     base_url: z.string().nullish().default(null),

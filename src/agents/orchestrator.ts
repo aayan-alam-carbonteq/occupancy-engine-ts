@@ -14,6 +14,7 @@ import { selected_heuristics } from "./catalog.ts";
 import {
   CountingDataClient,
   DataHttpClient,
+  resolve_data_url,
   rowRowid,
   type ResolveResponse,
   type SourceRow,
@@ -326,7 +327,12 @@ export class AgentOrchestrator {
       query: {
         address: request.address,
         zip: request.zip,
-        data_url: request.data_url,
+        // The URL this.data actually reads — never request.data_url (that field no longer exists on
+        // the request; the engine resolves its own). Reading it off the constructed client, rather
+        // than re-resolving, guarantees this echoes the SAME address every call this investigation
+        // made used, whether AgentOrchestrator was built by investigate_address's resolver or wired
+        // directly (as tests do) with an explicit DataHttpClient.
+        data_url: this.data.base_url,
         provider: _report_provider(request.provider),
         model: request.model,
         retrieval_mode: request.retrieval_mode,
@@ -682,8 +688,13 @@ export async function investigate_address(
   request: AgentInvestigationRequest,
   subagent: HeuristicSubagent | null = null,
   hooks: InvestigationHooks = {},
+  // Test/CLI-injection seam only — production callers (the HTTP service's default runner) pass
+  // nothing and let this fall through to resolve_data_url's own DATA_URL-env resolution, which is
+  // exactly what /fingerprint's probe and /healthz also resolve. Feed it the SAME resolver, never a
+  // parallel path, or the two-source hazard this replaced comes right back.
+  data_url_override?: string,
 ): Promise<OccupancyAgentAssessment> {
-  const data = new DataHttpClient(request.data_url, {
+  const data = new DataHttpClient(resolve_data_url(data_url_override), {
     timeout_seconds: request.data_timeout_seconds,
     max_response_bytes: request.max_response_bytes,
   });

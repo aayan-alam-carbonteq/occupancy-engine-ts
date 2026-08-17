@@ -11,29 +11,28 @@ import {
   type ExternalEvidence,
   ExternalEvidenceSchema,
 } from "../src/agents/external_evidence.ts";
+import { resolve_data_url } from "../src/agents/data_client.ts";
 import { AgentInvestigationRequestSchema } from "../src/agents/models.ts";
 import { investigate_address } from "../src/agents/orchestrator.ts";
 import type { MetricEvent, RunMetricsSummary } from "../src/observability/models.ts";
 import { writeRunMetrics } from "../src/observability/writers.ts";
 
-export function resolveDataUrl(flag: string | undefined, env: string | undefined): string | undefined {
-  return flag ?? env ?? undefined;
-}
-
 /**
  * The flag → request-field mapping, exported so it can be asserted against the strict request
  * schema. AgentInvestigationRequestSchema is `.strict()`, so one stale key here throws a ZodError
  * on every CLI run; nothing else in the suite drives this mapping.
+ *
+ * data_url is deliberately ABSENT: it is not a request field (the engine resolves its own — see
+ * resolve_data_url). --data-url is resolved separately in main() and passed straight to
+ * investigate_address, since the CLI calls the orchestrator in-process rather than over the wire.
  */
 export function cliRequestPayload(
   values: Record<string, any>,
-  dataUrl: string,
   externalEvidence: ExternalEvidence | null,
 ): Record<string, unknown> {
   return {
     address: values.address,
     zip: values.zip,
-    data_url: dataUrl,
     external_evidence: externalEvidence,
     provider: values.provider,
     model: values.model ?? null,
@@ -137,14 +136,12 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: false,
   });
 
-  const dataUrl = resolveDataUrl(values["data-url"], process.env.DATA_URL);
+  // flag > DATA_URL env > compose-network default — the SAME resolver /investigate and /fingerprint
+  // resolve server-side, so a bare --address run and a `serve` deployment agree by construction.
+  const dataUrl = resolve_data_url(values["data-url"]);
 
   if (!values.address) {
     process.stderr.write("--address is required\n");
-    return 2;
-  }
-  if (!dataUrl) {
-    process.stderr.write("--data-url is required (or set DATA_URL)\n");
     return 2;
   }
 
@@ -159,7 +156,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const request = AgentInvestigationRequestSchema.parse(
-    cliRequestPayload(values, dataUrl, externalEvidence),
+    cliRequestPayload(values, externalEvidence),
   );
 
   // --progress: stream one NDJSON line per metric event to stdout so a parent
@@ -174,7 +171,7 @@ async function main(argv: string[]): Promise<number> {
 
   let assessment: any;
   try {
-    assessment = await investigate_address(request, null, hooks);
+    assessment = await investigate_address(request, null, hooks, dataUrl);
   } catch (exc) {
     process.stderr.write(`agent investigation failed: ${(exc as Error).message ?? exc}\n`);
     return 1;

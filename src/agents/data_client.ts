@@ -19,6 +19,27 @@ export class DataClientError extends Error {
   }
 }
 
+/** Where the data service lives when nothing else names it — the docker-compose service name. */
+const DEFAULT_DATA_URL = "http://graph:8000";
+
+/**
+ * The engine's data-service address, resolved in exactly ONE place. Everything that needs to reach
+ * the graph service — the investigation's DataHttpClient, POST /fingerprint's probe, GET /healthz,
+ * the CLI's --data-url flag — calls this, so there is no second source to drift out of sync with the
+ * first. Precedence: an explicit `override` (a CLI flag, a test-injection seam) beats the `DATA_URL`
+ * env var, which beats the compose-network default.
+ *
+ * Before this, `POST /investigate` took its OWN `data_url` in the request body while `/fingerprint`
+ * and `/healthz` read the engine's `DATA_URL` env var — two independent values a caller had to keep
+ * in sync by hand. `/fingerprint` carries no per-call data_url, so when the two disagreed the
+ * fingerprint silently described a different dataset than the investigation actually read — and that
+ * fingerprint is the backend's AI-report cache key. Silent cache poisoning. There is now exactly one
+ * env var and one resolver; a request can no longer name a data service of its own.
+ */
+export function resolve_data_url(override?: string | null): string {
+  return override ?? process.env.DATA_URL ?? DEFAULT_DATA_URL;
+}
+
 /** The seven shapes the partner corpus actually has (source/manifest.py SHAPES). */
 export const SHAPES: readonly string[] = ["base", "tax", "utility", "trace", "auto", "loan", "drive"];
 

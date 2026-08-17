@@ -1,5 +1,6 @@
 // Long-running engine HTTP service entry. Flips the container from a per-run job to a service.
 import { loadDotenv } from "../src/env.ts";
+import { resolve_data_url } from "../src/agents/data_client.ts";
 import { create_engine_server } from "../src/server/investigate_server.ts";
 
 function intEnv(name: string, fallback: number): number {
@@ -40,16 +41,17 @@ function requireAuthToken(): string {
 
 function main(): void {
   loadDotenv();
-  // Resolved here (rather than defaulted inside the server) so the startup line can print exactly the
-  // data service the fingerprint probe will read. Mirrors investigate_server.ts's own default.
-  const data_url = process.env.DATA_URL ?? "http://graph:8000";
+  // Resolved here (rather than left to the server's own default) so the startup line can print
+  // exactly the data service /fingerprint's probe AND every investigation will read — the same
+  // resolve_data_url() investigate_server.ts calls internally, given the same (absent) override.
+  const data_url = resolve_data_url();
   const server = create_engine_server({
     port: intEnv("ENGINE_PORT", intEnv("PORT", 8787)),
     auth_token: requireAuthToken(),
     max_concurrency: intEnv("ENGINE_MAX_CONCURRENCY", 4),
     request_timeout_ms: intEnv("ENGINE_REQUEST_TIMEOUT_MS", 300_000),
     shutdown_drain_ms: intEnv("ENGINE_SHUTDOWN_DRAIN_MS", 300_000),
-    data_url: process.env.DATA_URL,
+    data_url,
   });
   const shutdown = () => {
     void server.stop().then(() => process.exit(0));
