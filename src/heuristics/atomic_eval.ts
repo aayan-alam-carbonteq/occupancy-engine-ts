@@ -335,14 +335,12 @@ const SUBSTANTIVE_SOURCES: readonly string[] = [
   "base",
   "loan",
   "drive",
-  "voter",
   "auto",
   "trace",
   "utility",
 ];
 const STRONG_OCCUPANCY_SOURCES: readonly string[] = [
   "drive",
-  "voter",
   "auto",
   "loan",
   "trace",
@@ -350,14 +348,12 @@ const STRONG_OCCUPANCY_SOURCES: readonly string[] = [
 ];
 const STRONGER_THAN_UTILITY: readonly string[] = [
   "drive",
-  "voter",
   "auto",
   "loan",
   "trace",
 ];
 const STRONGER_THAN_TRACE: readonly string[] = [
   "drive",
-  "voter",
   "auto",
   "loan",
   "utility",
@@ -445,26 +441,20 @@ const GATES: Record<string, HeuristicGate> = {
     optional_sources: ["tax"],
     minimum_viability: "Run when driver license rows exist.",
   }),
-  voter_address_subject_analysis: _gate({
-    required_sources: ["voter"],
-    optional_sources: ["tax"],
-    minimum_viability: "Run when voter rows exist.",
-  }),
   auto_address_subject_analysis: _gate({
     required_sources: ["auto"],
     optional_sources: ["tax"],
     minimum_viability: "Run when auto registration rows exist.",
   }),
   owner_legal_records_conflict: _gate({
-    required_sources: ["drive", "voter", "auto"],
+    required_sources: ["drive", "auto"],
     optional_sources: ["tax"],
-    minimum_viability: "Run when at least two of drive, voter, and auto have rows.",
+    minimum_viability: "Run when both drive and auto have rows.",
   }),
   auto_only_owner_elsewhere_discount: _gate({
     required_sources: ["auto"],
-    optional_sources: ["drive", "voter", "tax"],
-    minimum_viability:
-      "Run when auto rows exist and both drive and voter rows are absent.",
+    optional_sources: ["drive", "tax"],
+    minimum_viability: "Run when auto rows exist and drive rows are absent.",
   }),
   trace_address_subject_analysis: _gate({
     required_sources: ["trace"],
@@ -486,15 +476,10 @@ const GATES: Record<string, HeuristicGate> = {
     optional_sources: STRONGER_THAN_TRACE,
     minimum_viability: "Run when trace is the only populated occupancy surface.",
   }),
-  drive_voter_conflict_same_person: _gate({
-    required_sources: ["drive", "voter"],
-    minimum_viability: "Run only when both driver license and voter rows exist.",
-  }),
   auto_at_subject_but_stronger_legal_elsewhere: _gate({
     required_sources: ["auto"],
-    optional_sources: ["drive", "voter"],
-    minimum_viability:
-      "Run when auto rows exist and at least one of drive or voter also exists.",
+    optional_sources: ["drive"],
+    minimum_viability: "Run when auto rows exist and drive rows also exist.",
   }),
   single_family_clean_address_context: _gate({
     required_sources: ["tax"],
@@ -502,7 +487,7 @@ const GATES: Record<string, HeuristicGate> = {
   }),
   portfolio_primary_comparison_analysis: _gate({
     required_sources: ["tax"],
-    optional_sources: ["base", "drive", "voter", "auto"],
+    optional_sources: ["base", "drive", "auto"],
     minimum_viability:
       "Run when tax rows suggest multi-property context or comparable owner-primary evidence.",
   }),
@@ -632,7 +617,7 @@ export function build_evidence(
     }
     owner_ids = [...ownerIdSet].sort();
     rows = { ...subject_rows };
-    for (const source of ["base", "loan", "drive", "voter", "auto", "trace"]) {
+    for (const source of ["base", "loan", "drive", "auto", "trace"]) {
       rows[source] = _dedupe_rows([
         ...(rows[source] ?? []),
         ..._id_rows(connection, source, owner_ids, limit_per_source),
@@ -949,7 +934,7 @@ function _gate_decision(
   }
 
   if (heuristic_id === "owner_legal_records_conflict") {
-    const legal_sources = ["drive", "voter", "auto"].filter(
+    const legal_sources = ["drive", "auto"].filter(
       (source) => (counts[source] ?? 0) > 0,
     );
     if (legal_sources.length >= 2) {
@@ -961,7 +946,7 @@ function _gate_decision(
     }
     return [
       "skip",
-      "Fewer than two legal/vehicle source surfaces exist to compare.",
+      "Both drive and auto row surfaces are required to compare.",
       [],
     ];
   }
@@ -969,12 +954,11 @@ function _gate_decision(
   if (heuristic_id === "auto_only_owner_elsewhere_discount") {
     if (
       (counts["auto"] ?? 0) > 0 &&
-      (counts["drive"] ?? 0) === 0 &&
-      (counts["voter"] ?? 0) === 0
+      (counts["drive"] ?? 0) === 0
     ) {
       return [
         "run",
-        "Auto rows exist while drive and voter rows are absent.",
+        "Auto rows exist while drive rows are absent.",
         ["auto_only"],
       ];
     }
@@ -1013,33 +997,18 @@ function _gate_decision(
     ];
   }
 
-  if (heuristic_id === "drive_voter_conflict_same_person") {
-    if ((counts["drive"] ?? 0) > 0 && (counts["voter"] ?? 0) > 0) {
-      return [
-        "run",
-        "Both driver license and voter rows exist.",
-        ["drive_voter_compare"],
-      ];
-    }
-    return [
-      "skip",
-      "Driver license and voter rows are both required for this conflict check.",
-      [],
-    ];
-  }
-
   if (heuristic_id === "auto_at_subject_but_stronger_legal_elsewhere") {
     if (
       (counts["auto"] ?? 0) > 0 &&
-      ((counts["drive"] ?? 0) > 0 || (counts["voter"] ?? 0) > 0)
+      (counts["drive"] ?? 0) > 0
     ) {
       return [
         "run",
-        "Auto rows and at least one stronger legal source are present.",
+        "Auto rows and a stronger legal source are present.",
         ["auto_plus_legal"],
       ];
     }
-    return ["skip", "Requires auto rows plus driver or voter rows.", []];
+    return ["skip", "Requires auto rows plus driver rows.", []];
   }
 
   if (heuristic_id === "portfolio_primary_comparison_analysis") {
@@ -1097,7 +1066,6 @@ function _gate_decision(
   const single_source_gates: Record<string, readonly [string, string]> = {
     base_mortgage_or_refi_at_subject: ["base", "base_rows_present"],
     drive_address_subject_analysis: ["drive", "drive_rows_present"],
-    voter_address_subject_analysis: ["voter", "voter_rows_present"],
     auto_address_subject_analysis: ["auto", "auto_rows_present"],
     trace_address_subject_analysis: ["trace", "trace_rows_present"],
     utility_subject_occupancy_analysis: ["utility", "utility_rows_present"],
@@ -1537,7 +1505,7 @@ function _tax_mailing_subject_but_owner_legal_elsewhere(
   if (_tax_owner_mailing_matches_situs(path, evidence).status !== "context") {
     return _not_triggered(path, "Tax mailing does not match the subject.");
   }
-  const elsewhere = _owner_elsewhere_rows(evidence, ["drive", "voter", "auto"]);
+  const elsewhere = _owner_elsewhere_rows(evidence, ["drive", "auto"]);
   if (elsewhere.length > 0) {
     return _trigger(
       path,
@@ -1713,7 +1681,7 @@ function _owner_source_elsewhere(source: string): Executor {
       return norm !== "" && norm !== evidence.normalized_address;
     });
     if (rows.length > 0) {
-      const strong = source === "drive" || source === "voter";
+      const strong = source === "drive";
       return _trigger(
         path,
         `Owner-linked ${source} row points away from subject.`,
@@ -1743,7 +1711,7 @@ function _nonowner_source_at_subject(source: string): Executor {
     }
     const rows = rowsOf(evidence, source).filter((row) => !_is_owner_row(row, evidence));
     if (rows.length > 0) {
-      const strong = source === "drive" || source === "voter";
+      const strong = source === "drive";
       return _trigger(
         path,
         `Non-owner ${source} row appears at subject.`,
@@ -1764,7 +1732,7 @@ function _owner_legal_records_conflict(
 ): PathEvaluation {
   const addresses = new Map<string, Set<string>>();
   const refs: Array<[string, Record<string, unknown>]> = [];
-  for (const source of ["drive", "voter", "auto"]) {
+  for (const source of ["drive", "auto"]) {
     for (const row of rowsOf(evidence, source).filter((r) => _is_owner_row(r, evidence))) {
       const norm = _normalize_address(row["address"]);
       if (norm) {
@@ -1792,9 +1760,8 @@ function _auto_only_owner_elsewhere_discount(
   evidence: AddressEvidence,
 ): PathEvaluation {
   const owner_auto = _owner_source_elsewhere("auto")(path, evidence);
-  const has_drive_voter_elsewhere =
-    _owner_elsewhere_rows(evidence, ["drive", "voter"]).length > 0;
-  if (owner_auto.status === "triggered" && !has_drive_voter_elsewhere) {
+  const has_drive_elsewhere = _owner_elsewhere_rows(evidence, ["drive"]).length > 0;
+  if (owner_auto.status === "triggered" && !has_drive_elsewhere) {
     return _trigger(
       path,
       "Owner elsewhere evidence is auto-only.",
@@ -1922,36 +1889,6 @@ function _trace_only_presence_discount(
   return _not_triggered(path, "Trace is absent or corroborated by stronger sources.");
 }
 
-function _drive_voter_conflict_same_person(
-  path: ReasoningPath,
-  evidence: AddressEvidence,
-): PathEvaluation {
-  const conflicts: Array<[string, Record<string, unknown>]> = [];
-  for (const drive of rowsOf(evidence, "drive")) {
-    const dkey = _person_key(drive);
-    if (!_anyKey(dkey)) {
-      continue;
-    }
-    for (const voter of rowsOf(evidence, "voter")) {
-      if (
-        _keysEqual(_person_key(voter), dkey) &&
-        _normalize_address(drive["address"]) !== _normalize_address(voter["address"])
-      ) {
-        conflicts.push(["drive", drive], ["voter", voter]);
-      }
-    }
-  }
-  if (conflicts.length > 0) {
-    return _trigger(
-      path,
-      "Driver and voter addresses disagree for the same person.",
-      _refs_multi(conflicts),
-      { strength: "weak", weight: "low" },
-    );
-  }
-  return _not_triggered(path, "No same-person drive/voter address conflict.");
-}
-
 function _auto_at_subject_but_stronger_legal_elsewhere(
   path: ReasoningPath,
   evidence: AddressEvidence,
@@ -1962,7 +1899,7 @@ function _auto_at_subject_but_stronger_legal_elsewhere(
     if (!_anyKey(akey)) {
       continue;
     }
-    for (const source of ["drive", "voter"]) {
+    for (const source of ["drive"]) {
       for (const row of rowsOf(evidence, source)) {
         if (
           _keysEqual(_person_key(row), akey) &&
@@ -1998,7 +1935,7 @@ function _same_surname_family_household_context(
     }
   }
   const rows: Array<[string, Record<string, unknown>]> = [];
-  for (const source of ["base", "loan", "drive", "voter", "auto", "trace", "utility"]) {
+  for (const source of ["base", "loan", "drive", "auto", "trace", "utility"]) {
     for (const row of rowsOf(evidence, source)) {
       const key = _person_key(row);
       if (owner_lasts.has(key[1]) && !_is_owner_row(row, evidence)) {
@@ -2022,7 +1959,7 @@ function _repeated_nonowner_cross_source_corroboration(
   evidence: AddressEvidence,
 ): PathEvaluation {
   const by_person = new Map<string, Array<[string, Record<string, unknown>]>>();
-  for (const source of ["base", "loan", "drive", "voter", "auto", "trace", "utility"]) {
+  for (const source of ["base", "loan", "drive", "auto", "trace", "utility"]) {
     for (const row of rowsOf(evidence, source)) {
       if (_is_owner_row(row, evidence)) {
         continue;
@@ -2068,7 +2005,7 @@ function _unrelated_nonowner_legal_presence(
     }
   }
   const rows: Array<[string, Record<string, unknown>]> = [];
-  for (const source of ["drive", "voter", "auto"]) {
+  for (const source of ["drive", "auto"]) {
     for (const row of rowsOf(evidence, source)) {
       const key = _person_key(row);
       if (key[1] && !owner_lasts.has(key[1]) && !_is_owner_row(row, evidence)) {
@@ -2092,7 +2029,7 @@ function _owner_present_plus_nonowner_renter_context(
   evidence: AddressEvidence,
 ): PathEvaluation {
   const owner_present =
-    ["drive", "voter", "auto", "loan", "trace"].some((source) =>
+    ["drive", "auto", "loan", "trace"].some((source) =>
       rowsOf(evidence, source).some((row) => _is_owner_row(row, evidence)),
     ) || rowsOf(evidence, "utility").some((row) => _is_owner_name_row(row, evidence));
   const nonowner_renter = rowsOf(evidence, "loan").some(
@@ -2114,7 +2051,7 @@ function _portfolio_owner_with_nonowner_occupancy(
   evidence: AddressEvidence,
 ): PathEvaluation {
   const portfolio = _portfolio_rows(evidence);
-  const nonowner = ["drive", "voter", "auto", "loan", "trace"].some((source) =>
+  const nonowner = ["drive", "auto", "loan", "trace"].some((source) =>
     rowsOf(evidence, source).some((row) => !_is_owner_row(row, evidence)),
   );
   if (portfolio.length > 0 && nonowner) {
@@ -2153,7 +2090,7 @@ function _owner_primary_comparison_elsewhere(
   path: ReasoningPath,
   evidence: AddressEvidence,
 ): PathEvaluation {
-  const rows = _owner_elsewhere_rows(evidence, ["drive", "voter", "auto"]);
+  const rows = _owner_elsewhere_rows(evidence, ["drive", "auto"]);
   if (rows.length > 0) {
     return _trigger(
       path,
@@ -2243,7 +2180,7 @@ function _same_person_name_variant_ambiguity(
   evidence: AddressEvidence,
 ): PathEvaluation {
   const seen = new Map<string, Set<string>>();
-  for (const source of ["base", "loan", "drive", "voter", "auto", "trace"]) {
+  for (const source of ["base", "loan", "drive", "auto", "trace"]) {
     for (const row of rowsOf(evidence, source)) {
       const row_id = String(firstTruthy(row["id"], ""));
       if (row_id) {
@@ -2349,9 +2286,6 @@ const PATH_EXECUTORS: Record<string, Executor> = {
   owner_drive_at_subject: _owner_source_at_subject("drive"),
   owner_drive_elsewhere: _owner_source_elsewhere("drive"),
   nonowner_drive_at_subject: _nonowner_source_at_subject("drive"),
-  owner_voter_at_subject: _owner_source_at_subject("voter"),
-  owner_voter_elsewhere: _owner_source_elsewhere("voter"),
-  nonowner_voter_at_subject: _nonowner_source_at_subject("voter"),
   owner_auto_at_subject: _owner_source_at_subject("auto"),
   owner_auto_elsewhere: _owner_source_elsewhere("auto"),
   nonowner_auto_at_subject: _nonowner_source_at_subject("auto"),
@@ -2367,7 +2301,6 @@ const PATH_EXECUTORS: Record<string, Executor> = {
     _owner_utility_plus_nonowner_utility_context,
   utility_only_no_dates_discount: _utility_only_no_dates_discount,
   trace_only_presence_discount: _trace_only_presence_discount,
-  drive_voter_conflict_same_person: _drive_voter_conflict_same_person,
   auto_at_subject_but_stronger_legal_elsewhere:
     _auto_at_subject_but_stronger_legal_elsewhere,
   single_family_clean_address_context: _single_family_clean_address_context,
@@ -2406,13 +2339,11 @@ function _synthesize_case(
   if (!((evidence.source_counts["tax"] ?? 0) > 0)) {
     archetype = "insufficient_ownership_data";
   } else if (
-    _intersects(["owner_drive_elsewhere", "nonowner_drive_at_subject"], active_paths) ||
-    _subset(["owner_voter_elsewhere", "nonowner_voter_at_subject"], active_paths)
+    _intersects(["owner_drive_elsewhere", "nonowner_drive_at_subject"], active_paths)
   ) {
     archetype = "clear_absentee_rental";
   } else if (
     (active_paths.has("owner_drive_elsewhere") ||
-      active_paths.has("owner_voter_elsewhere") ||
       active_paths.has("tax_owner_mailing_differs_from_situs")) &&
     (active_paths.has("nonowner_loan_renter_at_subject") ||
       active_paths.has("unrelated_nonowner_legal_presence"))
@@ -2432,7 +2363,6 @@ function _synthesize_case(
   } else if (
     [
       "nonowner_drive_at_subject",
-      "nonowner_voter_at_subject",
       "nonowner_auto_at_subject",
       "nonowner_loan_renter_at_subject",
       "nonowner_utility_at_subject",
@@ -2443,7 +2373,6 @@ function _synthesize_case(
   } else if (
     [
       "owner_drive_at_subject",
-      "owner_voter_at_subject",
       "owner_utility_at_subject",
       "tax_owner_mailing_matches_situs",
     ].some((p) => active_paths.has(p))
@@ -2533,8 +2462,7 @@ function _why_not_higher(
         "nonowner_loan_renter_at_subject",
         "unrelated_nonowner_legal_presence",
         "nonowner_drive_at_subject",
-        "nonowner_voter_at_subject",
-      ].some((path) => active_paths.has(path))
+        ].some((path) => active_paths.has(path))
     ) {
       reasons.push("No strong deterministic unrelated/non-owner occupant signal.");
     }
@@ -2713,7 +2641,7 @@ function _owner_presence_hints(
     owner_summaries: [],
   });
   const hints: string[] = [];
-  for (const source of ["base", "loan", "drive", "voter", "auto", "trace"]) {
+  for (const source of ["base", "loan", "drive", "auto", "trace"]) {
     if ((rows[source] ?? []).some((row) => _is_owner_row(row, evidence))) {
       hints.push(`Owner-like row appears in ${source}.`);
     }
@@ -2742,7 +2670,7 @@ function _owner_elsewhere_hints(
     return hints;
   }
   const placeholders = owner_ids.map(() => "?").join(",");
-  for (const source of ["drive", "voter", "auto", "trace", "loan"]) {
+  for (const source of ["drive", "auto", "trace", "loan"]) {
     const rows = connection
       .query(
         `SELECT rowid AS __rowid, * FROM "${source}" WHERE id IN (${placeholders}) LIMIT ?`,
@@ -2775,7 +2703,7 @@ function _nonowner_hints(
     owner_summaries: [],
   });
   const hints: string[] = [];
-  for (const source of ["base", "loan", "drive", "voter", "auto", "trace", "utility"]) {
+  for (const source of ["base", "loan", "drive", "auto", "trace", "utility"]) {
     if ((rows[source] ?? []).some((row) => !_is_owner_row(row, evidence))) {
       hints.push(`Non-owner-like row appears in ${source}.`);
     }

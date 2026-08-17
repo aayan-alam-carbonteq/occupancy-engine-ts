@@ -1,16 +1,14 @@
 // Today's DataSourceProbe. Resolves the subject address exactly as an investigation's preflight does
-// (the SAME resolve_subject_address), then reads the subject's source rows and ONE HOP of linked-person
-// rows through the SAME src/agents/retrieval.ts helpers the agents use. Deterministic, no LLM.
+// (POST /v1/resolve — the service resolves, not the engine: `address_id` IS the selection, see
+// orchestrator.ts's `_selected_candidate`), then reads the subject's source rows and ONE HOP of
+// linked-person rows through the SAME src/agents/retrieval.ts helpers the agents' typed tools call.
+// Deterministic, no LLM.
 //
-// The partner adapter that replaces this one calls their read API as an agent would and maps the
-// response into the same NormalizedRecord model — nothing outside this file moves when it arrives.
-import { CountingGraphQLTool, type GraphQLHttpTool } from "../agents/graphql_tool.ts";
-import { resolve_subject_address, resolved_address_id } from "../agents/orchestrator.ts";
-import {
-  fetch_address_records_multi,
-  fetch_people_at_address,
-  fetch_person_records,
-} from "../agents/retrieval.ts";
+// This is the partner adapter the old GraphQL probe's own header comment anticipated: "The partner
+// adapter that replaces this one calls their read API as an agent would and maps the response into the
+// same NormalizedRecord model — nothing outside this file moves when it arrives." Nothing did.
+import { CountingDataClient, DataHttpClient } from "../agents/data_client.ts";
+import { fetch_address_records_multi, fetch_people_at_address, fetch_person_records } from "../agents/retrieval.ts";
 import type { DataSourceProbe, NormalizedRecord } from "./data_source_probe.ts";
 
 /** Address rows per source. Matches the shortcut helper's own default. */
@@ -26,16 +24,16 @@ const PERSON_RECORD_LIMIT = 20;
  */
 export const MAX_PROBED_PERSONS = 5;
 
-export interface GraphQLDataSourceProbeOptions {
+export interface TypedDataSourceProbeOptions {
   max_probed_persons?: number;
 }
 
-export class GraphQLDataSourceProbe implements DataSourceProbe {
-  private readonly tool: GraphQLHttpTool;
+export class TypedDataSourceProbe implements DataSourceProbe {
+  private readonly client: DataHttpClient;
   private readonly max_probed_persons: number;
 
-  constructor(tool: GraphQLHttpTool, opts: GraphQLDataSourceProbeOptions = {}) {
-    this.tool = tool;
+  constructor(client: DataHttpClient, opts: TypedDataSourceProbeOptions = {}) {
+    this.client = client;
     this.max_probed_persons = Math.max(0, opts.max_probed_persons ?? MAX_PROBED_PERSONS);
   }
 
@@ -49,36 +47,37 @@ export class GraphQLDataSourceProbe implements DataSourceProbe {
   }
 
   private async _probe(address: string, zip: string): Promise<NormalizedRecord[] | null> {
-    // Budget: 1 preflight + 1 possible by-id fallback + 1 address-multi + 1 people + one per person.
-    const graphql = new CountingGraphQLTool(this.tool, {
-      max_calls: 4 + this.max_probed_persons,
+    // Budget: 1 resolve + 1 address-multi + 1 people + one per probed person. Unlike the retired
+    // GraphQL preflight, the typed resolve is a single round-trip — there is no by-id fallback call.
+    const data = new CountingDataClient(this.client, {
+      max_calls: 3 + this.max_probed_persons,
       agent_id: "fingerprint_probe",
     });
 
-    const resolution = await resolve_subject_address(graphql, address, zip);
-    const address_id = resolved_address_id(resolution);
-    if (address_id === null) {
+    const resolved = await data.resolve(address, zip);
+    const address_id = resolved.address_id;
+    if (address_id === null || address_id === undefined) {
       return null; // unresolvable address → this item's `data` is null
     }
     const subject = String(address_id);
     const records: NormalizedRecord[] = [];
 
-    const address_records = await fetch_address_records_multi(graphql, address_id, {
+    const address_records = await fetch_address_records_multi(data, address_id, {
       limit: ADDRESS_RECORD_LIMIT,
       offset: 0,
     });
-    // The retrieval helpers swallow GraphQLToolError into {ok:false, error:"<message>"}. Hashing an
-    // error string would mint a fake key from a transient blip — abort to null instead.
+    // retrieval.ts swallows DataClientError into {ok:false, error:"<message>"}. Hashing an error
+    // string would mint a fake key from a transient blip — abort to null instead.
     if (address_records["ok"] !== true) {
       return null;
     }
     for (const [source, bundle] of Object.entries(asRecord(address_records["records_by_source"]))) {
-      for (const node of asArray(asRecord(bundle)["records"])) {
-        records.push(compact_node_record("address", subject, source, node));
+      for (const row of asArray(asRecord(bundle)["records"])) {
+        records.push(compact_row_record("address", subject, source, row));
       }
     }
 
-    const people = await fetch_people_at_address(graphql, address_id, { limit: PEOPLE_LIMIT });
+    const people = await fetch_people_at_address(data, address_id, { limit: PEOPLE_LIMIT });
     if (people["ok"] !== true) {
       return null;
     }
@@ -104,13 +103,13 @@ export class GraphQLDataSourceProbe implements DataSourceProbe {
 
     for (const node of person_nodes.slice(0, this.max_probed_persons)) {
       const person_id = String(asRecord(node)["id"]);
-      const person_records = await fetch_person_records(graphql, person_id, { limit: PERSON_RECORD_LIMIT });
+      const person_records = await fetch_person_records(data, person_id, { limit: PERSON_RECORD_LIMIT });
       if (person_records["ok"] !== true) {
         return null;
       }
       for (const [source, bundle] of Object.entries(asRecord(person_records["records_by_source"]))) {
         for (const row of asArray(asRecord(bundle)["records"])) {
-          records.push(compact_node_record("person", person_id, source, row));
+          records.push(compact_row_record("person", person_id, source, row));
         }
       }
     }
@@ -120,16 +119,17 @@ export class GraphQLDataSourceProbe implements DataSourceProbe {
 }
 
 /**
- * `_compact_source_node` output → NormalizedRecord. `summary` is DROPPED: it is a deterministic
- * rendering of the same `data`, so hashing both would double-weight a change and add no information.
+ * retrieval.ts's `_compact_source_row` output (`{source, table, rowid, summary, data}`) →
+ * NormalizedRecord. `summary` is DROPPED: it is a deterministic rendering of the same `data`, so
+ * hashing both would double-weight a change and add no information.
  */
-function compact_node_record(
+function compact_row_record(
   scope: "address" | "person",
   subject_id: string,
   source: string,
-  node: unknown,
+  row: unknown,
 ): NormalizedRecord {
-  const record = asRecord(node);
+  const record = asRecord(row);
   const rowid = record["rowid"];
   return {
     scope,

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { AgentInvestigationRequestSchema, HeuristicAgentResultSchema, HeuristicInterpretationSchema, EvidenceReferenceSchema } from "../src/agents/models.ts";
+import {
+  AgentInvestigationRequestSchema,
+  DataCallLogSchema,
+  HeuristicAgentResultSchema,
+  HeuristicInterpretationSchema,
+  EvidenceReferenceSchema,
+} from "../src/agents/models.ts";
 
 const base = {
   heuristic_id: "property_tax_context",
@@ -53,7 +59,7 @@ describe("HeuristicAgentResult schema validators", () => {
 });
 
 describe("AgentInvestigationRequest.external_evidence", () => {
-  const req = { address: "1104 SPRING RUN RD", graphql_url: "http://localhost:8000/graphql" };
+  const req = { address: "1104 SPRING RUN RD", data_url: "http://localhost:8000" };
 
   test("defaults to null when absent — the absent payload IS the blind switch", () => {
     expect(AgentInvestigationRequestSchema.parse(req).external_evidence).toBeNull();
@@ -77,5 +83,85 @@ describe("AgentInvestigationRequest.external_evidence", () => {
     expect(() =>
       AgentInvestigationRequestSchema.parse({ ...req, external_evidence: { str_listings: [{ platform: "airbnb" }] } }),
     ).toThrow();
+  });
+});
+
+describe("X-016 request contract", () => {
+  test("accepts data_url and applies the new defaults", () => {
+    const req = AgentInvestigationRequestSchema.parse({
+      address: "1104 SPRING RUN RD",
+      data_url: "http://graph:8000",
+    });
+    expect(req.data_url).toBe("http://graph:8000");
+    expect(req.max_data_calls_per_agent).toBe(8);
+    expect(req.data_timeout_seconds).toBe(30.0);
+    expect(req.retrieval_mode).toBe("tools");
+  });
+
+  test("rejects the retired graphql_url and include_shortcuts keys (schema is strict)", () => {
+    expect(
+      AgentInvestigationRequestSchema.safeParse({ address: "a", graphql_url: "http://g" }).success,
+    ).toBe(false);
+    expect(
+      AgentInvestigationRequestSchema.safeParse({
+        address: "a",
+        data_url: "http://g",
+        include_shortcuts: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  // The assertion above cannot distinguish "graphql_url is an unknown key" from "data_url is
+  // missing" — both make the parse fail. This one supplies data_url so only strictness can reject
+  // it, and names the offending key, so it fails if graphql_url is ever quietly re-accepted.
+  test("graphql_url is rejected as an unknown key, not merely as a missing data_url", () => {
+    const r = AgentInvestigationRequestSchema.safeParse({
+      address: "a",
+      data_url: "http://g",
+      graphql_url: "http://g",
+    });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error!.issues)).toContain("graphql_url");
+  });
+
+  // Same trap on the two renamed budget fields: they must be gone by name, not just renamed in
+  // passing while the old key still slips through .strict().
+  test("the retired budget keys are rejected by name", () => {
+    for (const key of ["max_graphql_calls_per_agent", "graphql_timeout_seconds"]) {
+      const r = AgentInvestigationRequestSchema.safeParse({ address: "a", data_url: "http://g", [key]: 5 });
+      expect(r.success).toBe(false);
+      expect(JSON.stringify(r.error!.issues)).toContain(key);
+    }
+  });
+});
+
+describe("DataCallLogSchema", () => {
+  test("carries operation/params and defaults the rest", () => {
+    const log = DataCallLogSchema.parse({ operation: "resolve", params: { zip: "40514" } });
+    expect(log.operation).toBe("resolve");
+    expect(log.params).toEqual({ zip: "40514" });
+    expect(log.result_summary).toBe("");
+    expect(log.error).toBeNull();
+  });
+
+  test("rejects the retired query_name/variables keys", () => {
+    expect(DataCallLogSchema.safeParse({ query_name: "searchAddresses", variables: {} }).success).toBe(false);
+  });
+});
+
+describe("HeuristicAgentResult", () => {
+  test("exposes data_queries, not graphql_queries", () => {
+    const r = HeuristicAgentResultSchema.parse({
+      heuristic_id: "h",
+      status: "not_triggered",
+      direction: "risk",
+      score: 0,
+      confidence: "low",
+      finding: "f",
+      missing_evidence: ["none"],
+      data_queries: [{ operation: "address_records", params: { shapes: ["tax"] } }],
+    });
+    expect(r.data_queries.length).toBe(1);
+    expect((r as Record<string, unknown>)["graphql_queries"]).toBeUndefined();
   });
 });

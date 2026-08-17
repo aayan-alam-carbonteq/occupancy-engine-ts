@@ -11,18 +11,45 @@ function intEnv(name: string, fallback: number): number {
   return Number.isNaN(value) ? fallback : value;
 }
 
+/** The bearer token guarding POST /investigate and /fingerprint. Never empty. */
+function requireAuthToken(): string {
+  const token = (process.env.ENGINE_AUTH_TOKEN ?? "").trim();
+  if (token === "") {
+    // REFUSE, rather than serve an open endpoint. The guard compares the header against
+    // `Bearer ${auth_token}`, so an empty token does not disable auth — it makes the literal
+    // string "Bearer " (with its trailing space) a valid credential, which is worse than no
+    // check at all because the endpoint still looks protected.
+    //
+    // Empty is a state an operator reaches by accident, not by choice: compose reads
+    // `${ENGINE_AUTH_TOKEN:-dev-engine-token}`, and `:-` substitutes its default when the
+    // variable is EMPTY as well as unset. So an .env with a blank `ENGINE_AUTH_TOKEN=` line
+    // silently publishes the well-known dev token — which appears in compose.yaml, README.md
+    // and several docs — as production's credential. Nothing downstream can tell the
+    // difference, so it has to be caught here.
+    process.stderr.write(
+      "ENGINE_AUTH_TOKEN is empty. It is the bearer token for POST /investigate and " +
+        "POST /fingerprint; serving without it would leave both endpoints open on this port. " +
+        "Set it to a value you generated (openssl rand -hex 32) and restart. Note that a blank " +
+        "line in .env is NOT the same as leaving it out: compose substitutes its published " +
+        "dev default for an empty value.\n",
+    );
+    process.exit(2);
+  }
+  return token;
+}
+
 function main(): void {
   loadDotenv();
   // Resolved here (rather than defaulted inside the server) so the startup line can print exactly the
-  // graph the fingerprint probe will read.
-  const graphql_url = process.env.GRAPHQL_URL ?? "http://graphql:8000/graphql";
+  // data service the fingerprint probe will read. Mirrors investigate_server.ts's own default.
+  const data_url = process.env.DATA_URL ?? "http://graph:8000";
   const server = create_engine_server({
     port: intEnv("ENGINE_PORT", intEnv("PORT", 8787)),
-    auth_token: process.env.ENGINE_AUTH_TOKEN ?? "",
+    auth_token: requireAuthToken(),
     max_concurrency: intEnv("ENGINE_MAX_CONCURRENCY", 4),
     request_timeout_ms: intEnv("ENGINE_REQUEST_TIMEOUT_MS", 300_000),
     shutdown_drain_ms: intEnv("ENGINE_SHUTDOWN_DRAIN_MS", 300_000),
-    graphql_url,
+    data_url: process.env.DATA_URL,
   });
   const shutdown = () => {
     void server.stop().then(() => process.exit(0));
@@ -30,9 +57,9 @@ function main(): void {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
   // engine=<hash> is what POST /fingerprint reports; graph=<url> is what its probe reads. The graph
-  // MUST match the graphql_url the backend sends in /investigate — see AGENTS.md.
+  // MUST match the data_url the backend sends in /investigate — see AGENTS.md.
   process.stdout.write(
-    `engine service listening on :${server.port} (engine=${server.engine_hash.slice(0, 12)} graph=${graphql_url})\n`,
+    `engine service listening on :${server.port} (engine=${server.engine_hash.slice(0, 12)} graph=${data_url})\n`,
   );
 }
 

@@ -6,6 +6,7 @@
 
 import { EXTERNAL_EVIDENCE_SOURCES } from "../heuristics/policy.ts";
 import { CASE_ARCHETYPE_VALUES, VERDICT_BAND } from "./models.ts";
+import { ADDRESS_SHAPES } from "./retrieval.ts";
 
 type Dict = Record<string, any>;
 
@@ -62,16 +63,17 @@ const _PROSE_REGISTER_ENABLED = ["1", "true", "yes", "on"].includes(
 
 // Plain-language names for each source, shared with the reader in the register so the model has
 // consistent replacement language for internal record types.
+// `drive` deliberately does NOT say "driver's-license record": this corpus has no motor-vehicle
+// feed, so a drive row is the same physical record as a loan row (plan D7). The old phrase implied
+// an independent DMV source and invited double-counting in the prose.
 export const SOURCE_HUMAN_PHRASES: Record<string, string> = {
   tax: "property-tax record",
   base: "identity/residence record",
   utility: "utility service record",
-  drive: "driver's-license record",
-  voter: "voter-registration record",
+  drive: "licence-bearing loan record",
   auto: "vehicle-registration record",
   loan: "mortgage/loan application record",
   trace: "address-history record",
-  criminal: "criminal record",
   str_scan: "short-term-rental listing match",
   property_facts: "property listing record",
 };
@@ -97,7 +99,7 @@ export function buildProseRegisterLines(
   return [
     `Writing register (applies to every prose field you submit: ${fields}):`,
     "- Write for a non-technical risk decision-maker in plain, professional English. No data-engineering jargon.",
-    "- Do NOT name internal data structures in prose: no database table names, GraphQL field names, source-bucket codes, or column names. Describe the KIND of record in plain language instead.",
+    "- Do NOT name internal data structures in prose: no database table names, tool names, source-bucket codes, or column names. Describe the KIND of record in plain language instead.",
     `- Use these plain-language record names: ${glossary}.`,
     '- Do NOT quote raw stored values or column=value pairs. Translate them to meaning (e.g. not "own_rent=0" but "the mortgage application lists the occupant as a renter"; not "ownerrescount=3" but "the owner is linked to three properties").',
     "- Keep citing precisely in the STRUCTURED fields (evidence_for, evidence_against, evidence_refs) using source/table/rowid — those are machine anchors, excluded from what the user sees. Cite precisely there; narrate cleanly in the prose.",
@@ -133,37 +135,47 @@ export function _heuristics_scope(heuristics: Dict[]): string[] {
   return seen;
 }
 
-export const GRAPHQL_PRIMER =
-  "Use named read-only query operations with variables. Address ids are Int; person ids are String. " +
-  "Prefer neutral entity associations first: resolveAddress, Address.personAssociations, " +
-  "Address.propertyAssociations, Person.addressAssociations, and sourceRecord for provenance. " +
-  "Connections expose totalCount, hasMore, and nodes. Use describe_schema(target) for unfamiliar fields. " +
-  "Do not use mutations, subscriptions, or GraphQL ID.";
+/**
+ * What the model can actually reach, stated once. Every line here is grounded in the plan's
+ * "What the engine can no longer answer" list:
+ *  - the six typed operations and their fixed arguments (items 4, 5 — no filters, no role facets)
+ *  - the seven live shapes (items 8, 9 — voter/criminal/linkedin do not exist in this corpus)
+ *  - no person→address edge list (item 2 — addresses are read off a person's own record rows)
+ *  - owner-elsewhere off the subject's tax row (item 1 — the property/owner graph is gone, so
+ *    `ownername`/`owneraddressline1` is the ONLY owner path left)
+ *  - drive is not independent of loan (D7)
+ *  - identity_confidence / is_suspicious, which every `hal:`-sourced person carries.
+ */
+export const DATA_SURFACE_PRIMER = [
+  "You read one local occupancy dataset through six typed operations and nothing else: resolve an",
+  "address to an id; read an address's records; list the people at an address; read a person's",
+  "records; search people by name; fetch one source record by shape and rowid.",
+  "Address resolution takes an address and a zip — no filters, no role facets, no free-form search.",
+  "Live record shapes: base, tax, utility, trace, auto, loan, drive. There are no other shapes — do",
+  "not ask for records the dataset does not hold.",
+  "There is no address-association edge list for a person: a person's other addresses are read off",
+  "the address and zip fields of their own record rows, and only for those shapes.",
+  "Owner-elsewhere is the strongest signal this dataset supports, and it is already on the subject's",
+  "own tax row: ownername / owneraddressline1 / ownercity / ownerstate / ownerzipcode. To follow it,",
+  "read the tax row, then resolve that mailing address as a second address and read its records.",
+  "A drive row is NOT independent evidence: this dataset has no motor-vehicle feed, so a drive row is",
+  "the same physical record as a loan row. Never count them as two corroborating sources.",
+  "Person entities carry identity_confidence and is_suspicious. The identity graph is noisy — peak",
+  "confidence is ~40 and roughly one identity in six is flagged suspicious. Discount a low-confidence",
+  "or suspicious identity in your reasoning and say so.",
+].join("\n");
 
-export const MINI_SCHEMA_GUIDE = GRAPHQL_PRIMER;
+export const MINI_SCHEMA_GUIDE = DATA_SURFACE_PRIMER;
 
-export const ADDRESS_SOURCE_FIELDS: Record<string, string> = {
-  base: "baseRecords",
-  tax: "taxProperties",
-  utility: "utilityRecords",
-  trace: "traceRecords",
-  auto: "autoRecords",
-  loan: "loanRecords",
-  drive: "driveRecords",
-  voter: "voterRecords",
-  criminal: "criminalRecords",
-};
-
-export const PERSON_SOURCE_FIELDS: Record<string, string> = {
-  base: "baseRecords",
-  tax: "taxRecords",
-  trace: "traceRecords",
-  auto: "autoRecords",
-  loan: "loanRecords",
-  drive: "driveRecords",
-  voter: "voterRecords",
-  criminal: "criminalRecords",
-};
+/**
+ * The retrieval-requirements block, shared by the single and grouped packet prompts so they cannot
+ * drift apart (the previous versions HAD drifted — the grouped builder carried its own copy).
+ * The second line is the 422 repair channel replacing the pre-execution validator (item 7).
+ */
+const DATA_ACCESS_REQUIREMENTS: readonly string[] = [
+  `- ${DATA_SURFACE_PRIMER}`,
+  "- If run_sql is refused, use the returned reason and hint; do not repeat a refused predicate.",
+];
 
 export const ORCHESTRATOR_REPORT_PROMPT = `You are a senior investigative analyst at True-Occupancy, the mortgage-fraud detection unit of a regional lender. You report to the Director of Risk Investigations.
 
@@ -191,11 +203,11 @@ export const HEURISTIC_SYSTEM_PROMPT = `You are a field analyst at True-Occupanc
 
 Your findings will be reviewed by the Lead Case Adjudicator, who weighs your submission alongside several others. A vague or unsupported submission wastes the adjudicator's time. An overconfident one risks misleading the final verdict. Be precise, be honest about uncertainty, and be complete.
 
-Work only from the local GraphQL database. No external lookups — your value is in rigorous local-evidence analysis, not in reaching beyond your dataset. Follow the schema guide exactly; if a query fails, revise it using the schema guide rather than inventing fields or types.
+Work only from the local occupancy dataset. No external lookups — your value is in rigorous local-evidence analysis, not in reaching beyond your dataset. Use the typed tools first; reach for run_sql only for a question they cannot answer. A refusal is not a failure: read the refusal's reason and hint and move the predicate onto an indexed access path — do not retry the same shape.
 
 Submit your findings using the assigned submission tool — not as free-form text. Your submission is a professional record and will be treated as such by the adjudicator.
 
-Tool workflow: use the provided tools to inspect the local GraphQL database; submit exactly one assigned submission tool call when finished.
+Tool workflow: use the provided tools to inspect the local occupancy dataset; submit exactly one assigned submission tool call when finished.
 
 For evidence citations, cite source/table/rowid/record_id and a compact summary. Do not copy full row payloads into evidence_for, evidence_against, or evidence_refs unless a specific field value is needed to make the finding understandable.
 
@@ -206,7 +218,7 @@ export const TYPED_TOOLS_HEURISTIC_SYSTEM_PROMPT = `You are a field analyst at T
 
 Your findings will be reviewed by the Lead Case Adjudicator. Be precise, honest about uncertainty, and complete.
 
-You investigate using a fixed set of typed retrieval tools, each of which takes only an address (the resolved subject, used by default) or a person id and returns one shape of records. You cannot write raw queries — use the tools provided. To follow an owner who may live elsewhere: get their name from tax records, resolve them with search_people, then pull that person's records with the person id.
+You investigate using a fixed set of typed retrieval tools, each of which takes only an address (the resolved subject, used by default) or a person id and returns one shape of records. You cannot write raw queries — use the tools provided. In this mode you cannot enumerate an owner's other properties: the property rows carry no identifier that reaches the person graph, and no tool you have reaches them. If a heuristic needs that, say so in missing_evidence rather than inferring it. To follow an owner who may live elsewhere: get their name from tax records, resolve them with search_people, then pull that person's records with the person id.
 
 Submit your findings using submit_heuristic_result exactly once when finished.
 
@@ -217,34 +229,19 @@ Output budget: do NOT write analysis text in the message body — every response
 // Prompt builders.
 // ---------------------------------------------------------------------------
 
-export function heuristic_user_prompt(
-  heuristic: Dict,
-  context: Dict,
-  tool_guide: string | null = null,
-  include_shortcuts = false,
-): string {
+export function heuristic_user_prompt(heuristic: Dict, context: Dict, tool_guide: string | null = null): string {
   context = { ...context };
   const plan = context["_heuristic_plan"] ?? null;
   delete context["_heuristic_plan"];
   const schema_context = schema_context_for_heuristic(heuristic);
-  const query_requirements = [
-    `- ${GRAPHQL_PRIMER}`,
-    "- If execute_graphql returns a validation error, revise using its hints and query skeletons. Do not repeat invalid fields.",
-  ];
-  if (include_shortcuts) {
-    query_requirements.splice(
-      1,
-      0,
-      "- Prefer get_address_records/get_people_at_address/get_person_records before custom GraphQL.",
-    );
-  }
+  const query_requirements = DATA_ACCESS_REQUIREMENTS;
   if (heuristic["packet"]) {
     let retrieval_section: string[];
     if (tool_guide != null) {
       retrieval_section = ["Available tools:", tool_guide, ""];
     } else {
       retrieval_section = [
-        "GraphQL Query Requirements",
+        "Data Access Requirements",
         ...query_requirements,
         "",
         "Relevant Schema Context",
@@ -254,7 +251,7 @@ export function heuristic_user_prompt(
     }
     return [
       "You have been assigned the following heuristic packet for review. Investigate it thoroughly",
-      "using the local GraphQL database and submit your findings.",
+      "using the local occupancy dataset and submit your findings.",
       "",
       "Heuristic Brief",
       _heuristic_brief(heuristic),
@@ -281,7 +278,7 @@ export function heuristic_user_prompt(
   }
   let lines = [
     "You have been assigned the following heuristic for review. Investigate it thoroughly",
-    "using the local GraphQL database and submit your findings.",
+    "using the local occupancy dataset and submit your findings.",
     "",
     "Heuristic brief:",
     _heuristic_brief(heuristic),
@@ -297,7 +294,7 @@ export function heuristic_user_prompt(
     lines = lines.concat(["Available tools:", tool_guide, ""]);
   } else {
     lines = lines.concat([
-      "GraphQL query requirements:",
+      "Data access requirements:",
       ...query_requirements,
       "",
       "Relevant schema context:",
@@ -339,7 +336,6 @@ export function grouped_heuristic_user_prompt(
   context: Dict,
   plans: Dict[] | null = null,
   tool_guide: string | null = null,
-  include_shortcuts = false,
 ): string {
   context = { ...context };
   delete context["_heuristic_plan"];
@@ -373,12 +369,8 @@ export function grouped_heuristic_user_prompt(
     }
     const merged_schema = schema_context_for_heuristic({ input_sources: all_sources, context_scope: all_sources });
     retrieval_section = [
-      "GraphQL Query Requirements",
-      `- ${GRAPHQL_PRIMER}`,
-      "- If execute_graphql returns a validation error, revise using its hints and query skeletons. Do not repeat invalid fields.",
-      ...(include_shortcuts
-        ? ["- Prefer get_address_records/get_people_at_address/get_person_records before custom GraphQL."]
-        : []),
+      "Data Access Requirements",
+      ...DATA_ACCESS_REQUIREMENTS,
       "",
       "Relevant Schema Context",
       merged_schema,
@@ -430,72 +422,23 @@ export function grouped_heuristic_user_prompt(
 }
 
 export function schema_context_for_heuristic(heuristic: Dict): string {
-  const sources = _heuristic_sources(heuristic);
-  const source_enums = sources.map((source) => _source_enum_name(source));
+  const shapes = _heuristic_sources(heuristic);
   const lines = [
-    "- Preferred root entrypoints: resolveAddress(query: String!, zip: String), person(id: String), sourceRecord(source: Source!, rowid: Int!).",
-    "- Prefer entity associations over raw source buckets: Address.personAssociations, Address.propertyAssociations, Person.addressAssociations, Person.propertyAssociations, Person.organizationAssociations.",
-    "- Fetch raw source data only as provenance fallback with sourceRecord(source, rowid) or sourceRecords(...).",
-    "- Connection pattern: someConnection(limit: $limit) { totalCount hasMore nodes { ... } }.",
+    "- Start from the resolved subject address; the typed tools default to it.",
+    "- get_records(shapes=[...]) fetches several shapes for one entity in ONE call. Prefer it.",
+    "- To follow a person: get_people or search_people for an id, then get_records(person_id=...).",
+    "- Person ids are addr:<addressId>:<n> (bundle) or hal:<hal_id> (identity graph). hal: ids carry",
+    "  identity_confidence and is_suspicious — read them before trusting a traversal.",
+    "- run_sql is for questions the typed tools cannot answer. Its results carry no provenance:",
+    "  call get_source_record(shape, rowid, address_id) to turn a SQL hit into a citable evidence",
+    "  reference. rowid is a position within ONE address’s rows for that shape, so address_id is",
+    "  required; it defaults to the subject address, and you must pass it explicitly for a rowid you",
+    "  read off another address’s records.",
   ];
-  if (source_enums.length > 0) {
-    lines.push("- Relevant Source enum values: " + [...new Set(source_enums)].join(", ") + ".");
+  if (shapes.length > 0) {
+    lines.push(`- Shapes relevant to this heuristic: ${[...new Set(shapes)].join(", ")}.`);
   }
-  lines.push("");
-  lines.push("Example address association query:");
-  lines.push("```graphql");
-  lines.push("query AddressAssociations($query: String!, $zip: String, $limit: Int = 50) {");
-  lines.push("  resolveAddress(query: $query, zip: $zip) {");
-  lines.push("    id");
-  lines.push("    fullAddress");
-  lines.push("    personAssociations(limit: $limit) {");
-  lines.push("      totalCount");
-  lines.push("      hasMore");
-  lines.push("      nodes {");
-  lines.push("        role");
-  lines.push("        source");
-  lines.push("        confidence");
-  lines.push("        person { id name firstname lastname }");
-  lines.push("        sourceRecord { source rowid recordId summary }");
-  lines.push("      }");
-  lines.push("    }");
-  lines.push("    propertyAssociations(role: SITUS_ADDRESS, limit: 10) {");
-  lines.push("      nodes { property { id propertyKey people(role: OWNER) { nodes { displayName person { id name } provenance { source rowid summary } } } } }");
-  lines.push("    }");
-  lines.push("    sourceRecords(source: UTILITY, role: SERVICE_ADDRESS, limit: 50) {");
-  lines.push("      totalCount");
-  lines.push("      nodes { source rowid recordId summary }");
-  lines.push("    }");
-  lines.push("  }");
-  lines.push("}");
-  lines.push("```");
-  lines.push("");
-  lines.push("Example person elsewhere query:");
-  lines.push("```graphql");
-  lines.push("query PersonElsewhere($personId: String!, $limit: Int = 50) {");
-  lines.push("  person(id: $personId) {");
-  lines.push("    id");
-  lines.push("    name");
-  lines.push("    addressAssociations(limit: $limit) {");
-  lines.push("    totalCount");
-  lines.push("    hasMore");
-  lines.push("      nodes { role source address { id fullAddress } sourceRecord { source rowid summary } }");
-  lines.push("    }");
-  lines.push("  }");
-  lines.push("}");
-  lines.push("```");
-  lines.push("");
-  lines.push("Example raw provenance fallback:");
-  lines.push("```graphql");
-  lines.push("query RawSourceRow($source: Source!, $rowid: Int!) {");
-  lines.push("  sourceRecord(source: $source, rowid: $rowid) { source table rowid recordId summary data }");
-  lines.push("}");
-  lines.push("```");
   return lines.join("\n");
-}
-
-function _source_enum_name(source: string): string {
-  return source.trim().toUpperCase();
 }
 
 function _heuristic_sources(heuristic: Dict): string[] {
@@ -513,10 +456,10 @@ function _heuristic_sources(heuristic: Dict): string[] {
   const normalized: string[] = [];
   for (const value of values) {
     const source = String(value).trim().toLowerCase();
-    if (
-      Object.hasOwn(ADDRESS_SOURCE_FIELDS, source) &&
-      !normalized.includes(source)
-    ) {
+    // Filter against the ONE shape catalogue (retrieval.ts, itself derived from data_client's
+    // SHAPES). The old prompt-local ADDRESS_SOURCE_FIELDS map was a second catalogue that still
+    // listed voter/criminal, so a stale packet scope could reintroduce a shape the corpus lacks.
+    if (ADDRESS_SHAPES.includes(source) && !normalized.includes(source)) {
       normalized.push(source);
     }
   }
@@ -1057,12 +1000,12 @@ function _heuristic_brief(heuristic: Dict): string {
     lines.push("Known caveats: " + caveats.map((c) => String(c)).join("; "));
   }
   lines.push(
-    "Trigger standard: trigger only when local GraphQL evidence directly supports the" +
+    "Trigger standard: trigger only when local record evidence directly supports the" +
       " heuristic after accounting for address normalization, person/name ambiguity," +
       " stale data, and unit/property ambiguity.",
     "Non-trigger standard: use not_triggered with score 0 when evidence is absent," +
       " name-only, stale/ambiguous, or explained by same-property equivalence.",
-    "Evidence standard: cite concrete source rows or GraphQL result summaries in" +
+    "Evidence standard: cite concrete source rows or tool result summaries in" +
       " evidence_refs when possible; do not rely on the prompt context alone for final scoring.",
     "Interpretation standard: always address signal strength, directness," +
       " relationship-to-owner context, owner-presence context, rental-market context," +

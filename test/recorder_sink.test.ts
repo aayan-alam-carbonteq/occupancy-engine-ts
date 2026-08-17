@@ -14,7 +14,6 @@ function makeRecorder(on_event?: (event: MetricEvent) => void): MetricsRecorder 
       provider: "anthropic",
       model: "claude-haiku-4-5",
       prompt_profile: "compact",
-      include_shortcuts: false,
     },
     { enabled: true, on_event },
   );

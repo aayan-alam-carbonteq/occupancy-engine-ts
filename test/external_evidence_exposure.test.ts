@@ -29,7 +29,7 @@ const RENTAL_MARKERS = ["Property listed for rent (realtor history)", "AppfolioU
 // decision of record asserted below.
 const FACTS_TXN_MARKERS = ["last_sold_date", "last_sold_price", "list_date"];
 
-const SOURCE_COUNTS = { tax: 2, base: 1, trace: 1, utility: 1, loan: 1, drive: 1, voter: 0, auto: 0 };
+const SOURCE_COUNTS = { tax: 2, base: 1, trace: 1, utility: 1, loan: 1, drive: 1, auto: 0 };
 
 function enrichedContext(): Record<string, unknown> {
   const evidence = externalEvidenceFixture();
@@ -68,7 +68,7 @@ function agentInput(
   return HeuristicAgentInputSchema.parse({
     heuristic,
     context: enrichedContext(),
-    max_graphql_calls: 8,
+    max_data_calls: 8,
     prompt_profile,
   });
 }

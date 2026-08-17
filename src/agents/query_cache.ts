@@ -1,19 +1,43 @@
-// Single-flight query cache: concurrent identical queries are coalesced by storing the in-flight
-// Promise in a Map before yielding control. Because everything between the cache checks and the
-// `_inflight.set(...)` is synchronous (no `await`), concurrent callers that arrive while a query is
-// running observe the in-flight Promise and await it instead of re-executing. Errors are not cached.
+// Single-flight call cache: concurrent identical data-service calls are coalesced by storing the
+// in-flight Promise in a Map before yielding control. Because everything between the cache checks
+// and the `_inflight.set(...)` is synchronous (no `await`), concurrent callers that arrive while a
+// call is running observe the in-flight Promise and await it instead of re-executing. Errors are
+// not cached.
+//
+// HOW THE IMPORT WENT MISSING, and why the shape of it matters more than the fix.
+//
+// 392466a extracted canonicalJson to fingerprint/canonical.ts and ADDED this import correctly. It
+// was lost later, in a revert pair: 494aeb3 ("Revert X-016") restored the inline copy, then 9b3e901
+// ("Revert the Revert") re-applied the typed-service rename (query->operation, variables->params)
+// and deleted the inline definition WITHOUT re-adding the import. Neither side of that resolution
+// was wrong on its own; combining a deletion from one with a rename from the other produced a file
+// referencing a symbol nothing brought in. Grepping for the extraction commit blames the wrong
+// change — the failure lives in the merge resolution.
+//
+// WHAT IT COST. Not "the cache was slower". cacheKey runs at the top of get_or_execute, BEFORE the
+// factory, so every call through a cache-bearing client threw ReferenceError before any HTTP
+// request was made. Only heuristic workers get a cache (orchestrator.ts, `cache: query_cache`);
+// preflight's client is built without one. So the heuristic workers retrieved NOTHING, and the two
+// data calls a broken run still recorded were preflight's. Any benchmark taken between 9b3e901 and
+// this commit measured heuristics reasoning over zero retrieved data.
+//
+// tsc reported it the whole time. The error sat among the pre-existing failures in the dead
+// GraphQL-era test files, so the red gate hid it — as did the callers, which re-throw
+// non-DataClientError without logging.
 import { canonicalJson } from "../fingerprint/canonical.ts";
 
-function cacheKey(query: string, variables: Record<string, unknown> | null | undefined): string {
-  return query.trim() + "\x00" + canonicalJson(variables ?? {});
+function cacheKey(operation: string, params: Record<string, unknown> | null | undefined): string {
+  return operation.trim() + "\x00" + canonicalJson(params ?? {});
 }
 
 /**
- * Per-investigation single-flight + result cache for READ-ONLY GraphQL queries.
+ * Per-investigation single-flight + result cache for READ-ONLY data-service calls.
  *
- * Coalesces identical concurrent queries into one execution and caches results for the
- * investigation's lifetime (the graph DB is read-only during a run). Errors are NOT cached.
- * Cached results are treated as read-only by all consumers.
+ * Keyed by `(operation, params)` — the typed operation name plus its canonicalized arguments, which
+ * is what `CountingDataClient` passes. Coalesces identical concurrent calls into one execution and
+ * caches results for the investigation's lifetime (the partner corpus is read-only during a run —
+ * the service holds guest credentials). Errors are NOT cached. Cached results are treated as
+ * read-only by all consumers.
  */
 export class QueryCache {
   private readonly _results = new Map<string, unknown>();
@@ -23,11 +47,11 @@ export class QueryCache {
   executed = 0; // actually ran the factory
 
   async get_or_execute(
-    query: string,
-    variables: Record<string, unknown> | null | undefined,
+    operation: string,
+    params: Record<string, unknown> | null | undefined,
     factory: () => Promise<unknown> | unknown,
   ): Promise<unknown> {
-    const key = cacheKey(query, variables);
+    const key = cacheKey(operation, params);
     if (this._results.has(key)) {
       this.hits += 1;
       return this._results.get(key);
