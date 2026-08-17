@@ -59,7 +59,7 @@ describe("HeuristicAgentResult schema validators", () => {
 });
 
 describe("AgentInvestigationRequest.external_evidence", () => {
-  const req = { address: "1104 SPRING RUN RD", data_url: "http://localhost:8000" };
+  const req = { address: "1104 SPRING RUN RD" };
 
   test("defaults to null when absent — the absent payload IS the blind switch", () => {
     expect(AgentInvestigationRequestSchema.parse(req).external_evidence).toBeNull();
@@ -87,12 +87,9 @@ describe("AgentInvestigationRequest.external_evidence", () => {
 });
 
 describe("X-016 request contract", () => {
-  test("accepts data_url and applies the new defaults", () => {
-    const req = AgentInvestigationRequestSchema.parse({
-      address: "1104 SPRING RUN RD",
-      data_url: "http://graph:8000",
-    });
-    expect(req.data_url).toBe("http://graph:8000");
+  test("applies the new defaults with no data_url field at all", () => {
+    const req = AgentInvestigationRequestSchema.parse({ address: "1104 SPRING RUN RD" });
+    expect("data_url" in req).toBe(false);
     expect(req.max_data_calls_per_agent).toBe(8);
     expect(req.data_timeout_seconds).toBe(30.0);
     expect(req.retrieval_mode).toBe("tools");
@@ -103,23 +100,12 @@ describe("X-016 request contract", () => {
       AgentInvestigationRequestSchema.safeParse({ address: "a", graphql_url: "http://g" }).success,
     ).toBe(false);
     expect(
-      AgentInvestigationRequestSchema.safeParse({
-        address: "a",
-        data_url: "http://g",
-        include_shortcuts: true,
-      }).success,
+      AgentInvestigationRequestSchema.safeParse({ address: "a", include_shortcuts: true }).success,
     ).toBe(false);
   });
 
-  // The assertion above cannot distinguish "graphql_url is an unknown key" from "data_url is
-  // missing" — both make the parse fail. This one supplies data_url so only strictness can reject
-  // it, and names the offending key, so it fails if graphql_url is ever quietly re-accepted.
-  test("graphql_url is rejected as an unknown key, not merely as a missing data_url", () => {
-    const r = AgentInvestigationRequestSchema.safeParse({
-      address: "a",
-      data_url: "http://g",
-      graphql_url: "http://g",
-    });
+  test("graphql_url is rejected as an unknown key", () => {
+    const r = AgentInvestigationRequestSchema.safeParse({ address: "a", graphql_url: "http://g" });
     expect(r.success).toBe(false);
     expect(JSON.stringify(r.error!.issues)).toContain("graphql_url");
   });
@@ -128,10 +114,19 @@ describe("X-016 request contract", () => {
   // passing while the old key still slips through .strict().
   test("the retired budget keys are rejected by name", () => {
     for (const key of ["max_graphql_calls_per_agent", "graphql_timeout_seconds"]) {
-      const r = AgentInvestigationRequestSchema.safeParse({ address: "a", data_url: "http://g", [key]: 5 });
+      const r = AgentInvestigationRequestSchema.safeParse({ address: "a", [key]: 5 });
       expect(r.success).toBe(false);
       expect(JSON.stringify(r.error!.issues)).toContain(key);
     }
+  });
+
+  // D6 (this change): data_url is RETIRED from the request the same way graphql_url was — the
+  // engine resolves its own data-service address (DATA_URL env, one resolver), so a request that
+  // still names one is a caller bug worth surfacing loudly, not a field to silently ignore.
+  test("data_url is rejected as an unknown key — the engine resolves its own, not the caller's", () => {
+    const r = AgentInvestigationRequestSchema.safeParse({ address: "a", data_url: "http://g" });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error!.issues)).toContain("data_url");
   });
 });
 

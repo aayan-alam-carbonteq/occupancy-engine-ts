@@ -46,7 +46,6 @@ describe("should_cancel stops launching new subagent work (orchestrator sites 3 
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
         heuristic_allowlist: ["property_tax_context", "case_quality_and_synthesis"],
       });
       await expect(orch.investigate(request)).rejects.toThrow(/cancelled/);

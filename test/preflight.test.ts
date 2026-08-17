@@ -20,7 +20,6 @@ async function preflight(plan: FixtureDataPlan, retrieval_mode = "typed_tools") 
       AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: s.url,
         retrieval_mode,
       }),
     );

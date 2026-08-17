@@ -17,7 +17,6 @@ async function preflight(external_evidence: unknown) {
       AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
         // typed_tools: this suite is about the external-evidence fold, and `tools` would add a
         // /v1/schema fetch that has nothing to do with it.
         retrieval_mode: "typed_tools",

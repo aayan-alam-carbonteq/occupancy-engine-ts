@@ -28,12 +28,12 @@ describe("E2E: blind byte-identity — the service report frame == the CLI repor
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: graph.url,
       });
       expect(request.external_evidence).toBeNull(); // the absent payload IS the blind switch
 
-      // One deterministic assessment (FakeSubagent + the fixture data service, no LLM).
-      const assessment = await investigate_address(request, new FakeSubagent(), {});
+      // One deterministic assessment (FakeSubagent + the fixture data service, no LLM). graph.url
+      // travels as the explicit override, never in the request — there is no data_url field to send.
+      const assessment = await investigate_address(request, new FakeSubagent(), {}, graph.url);
       const cliReport = assessment_report_payload(assessment); // exactly what the CLI writes to stdout
 
       let engine: EngineServer | undefined;
@@ -44,7 +44,7 @@ describe("E2E: blind byte-identity — the service report frame == the CLI repor
         const res = await fetch(`${engine.url}/investigate`, {
           method: "POST",
           headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-          body: JSON.stringify({ address: "1104 SPRING RUN RD", zip: "40514", data_url: graph.url }),
+          body: JSON.stringify({ address: "1104 SPRING RUN RD", zip: "40514" }),
         });
         const lines = (await res.text()).split("\n").filter((l) => l.length > 0);
         expect(lines.length).toBe(1);
@@ -74,12 +74,13 @@ describe("E2E: blind byte-identity — the service report frame == the CLI repor
         port: 0,
         auth_token: TOKEN,
         // Real orchestrator through the real investigate_address, deterministic via FakeSubagent.
-        investigate: (request, hooks) => investigate_address(request, new FakeSubagent(), hooks),
+        // graph.url is the explicit override — the request body carries no data_url at all.
+        investigate: (request, hooks) => investigate_address(request, new FakeSubagent(), hooks, graph.url),
       });
       const res = await fetch(`${engine.url}/investigate`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ address: "1104 SPRING RUN RD", zip: "40514", data_url: graph.url }),
+        body: JSON.stringify({ address: "1104 SPRING RUN RD", zip: "40514" }),
       });
       expect(res.status).toBe(200);
       const lines = (await res.text()).split("\n").filter((l) => l.length > 0);

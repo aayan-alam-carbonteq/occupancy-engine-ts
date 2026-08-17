@@ -29,7 +29,7 @@ async function bothPaths(plan: FixtureDataPlan) {
     ...plan,
   });
   try {
-    const request = AgentInvestigationRequestSchema.parse({ address: ADDRESS, zip: ZIP, data_url: s.url });
+    const request = AgentInvestigationRequestSchema.parse({ address: ADDRESS, zip: ZIP });
     const context = await new AgentOrchestrator({ data: new DataHttpClient(s.url), subagent: new FakeSubagent() }).preflight(
       request,
     );

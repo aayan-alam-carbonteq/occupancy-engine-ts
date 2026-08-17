@@ -35,7 +35,6 @@ describe("E2E-1: orchestrator assembly (fixture data service + fake subagent, no
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
       });
 
       const a = await orch.investigate(request);
@@ -91,7 +90,6 @@ describe("E2E-2: real subagent driven by scripted LLM (no API)", () => {
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
         retrieval_mode: "typed_tools",
         heuristic_allowlist: ["property_tax_context"],
       });
@@ -116,7 +114,6 @@ describe("E2E-3: the parity guard — no payload, behavior unchanged", () => {
       const request = AgentInvestigationRequestSchema.parse({
         address: "1104 SPRING RUN RD",
         zip: "40514",
-        data_url: server.url,
       });
       expect(request.external_evidence).toBeNull(); // the absent payload IS the blind switch
 
@@ -169,7 +166,6 @@ describe("E2E-4: enriched — a payload reaches exactly the exposed packets", ()
         AgentInvestigationRequestSchema.parse({
           address: "1104 SPRING RUN RD",
           zip: "40514",
-          data_url: server.url,
           external_evidence: externalEvidenceFixture(),
         }),
       );
@@ -235,7 +231,7 @@ describe("E2E-5: no code path attempts GraphQL", () => {
     try {
       const orch = new AgentOrchestrator({ data: new DataHttpClient(server.url), subagent: new FakeSubagent() });
       const a = await orch.investigate(
-        AgentInvestigationRequestSchema.parse({ address: "1104 SPRING RUN RD", zip: "40514", data_url: server.url }),
+        AgentInvestigationRequestSchema.parse({ address: "1104 SPRING RUN RD", zip: "40514" }),
       );
       // Without this the loop below is vacuous: a run that never reached the service at all would
       // satisfy "every path starts with /v1/" trivially.

@@ -12,7 +12,7 @@ import { people1104, resolve1104 } from "./support/fixtures.ts";
 import { FakeSubagent } from "./support/subagents.ts";
 
 const TOKEN = "test-engine-token";
-const VALID_BODY = { address: "1104 SPRING RUN RD", zip: "40514", data_url: "http://127.0.0.1:9" };
+const VALID_BODY = { address: "1104 SPRING RUN RD", zip: "40514" };
 
 let engine: EngineServer | undefined;
 afterEach(async () => {
@@ -34,9 +34,10 @@ async function realAssessment() {
     const request = AgentInvestigationRequestSchema.parse({
       address: "1104 SPRING RUN RD",
       zip: "40514",
-      data_url: graph.url,
     });
-    return await investigate_address(request, new FakeSubagent(), {});
+    // graph.url travels as the explicit override, not in the request — exactly how a caller would
+    // never point the engine at a data service of its own.
+    return await investigate_address(request, new FakeSubagent(), {}, graph.url);
   } finally {
     graph.close();
   }
@@ -119,7 +120,7 @@ describe("POST /investigate — pre-stream rejections", () => {
     const res = await fetch(`${engine.url}/investigate`, {
       method: "POST",
       headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ zip: "40514", data_url: "http://g" }), // missing address
+      body: JSON.stringify({ zip: "40514" }), // missing address
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
@@ -227,41 +228,30 @@ describe("GET /healthz + graceful shutdown", () => {
 });
 
 describe("Contract A", () => {
-  // The plan's version of this test asserted only that the issues mention `data_url`. That is the
-  // MISSING-field issue, so it would pass unchanged even if `graphql_url` were quietly re-accepted.
-  // Both halves are asserted here: the retired key is named as an unknown key (with data_url
-  // supplied, so strictness is the only thing that can reject it), and a naked legacy body 400s.
-  test("400s a body still sending graphql_url — as an unknown key, not merely a missing data_url", async () => {
+  test("400s a body still sending graphql_url — as an unknown key", async () => {
     const engine = create_engine_server({ port: 0, auth_token: TOKEN, investigate: async () => ({}) as any });
     try {
-      const post = (body: unknown) =>
-        fetch(`${engine.url}/investigate`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-          body: JSON.stringify(body),
-        });
-
-      const shimmed = await post({ address: "a", data_url: "http://graph:8000", graphql_url: "http://graphql:8000/graphql" });
-      expect(shimmed.status).toBe(400);
-      expect(JSON.stringify(((await shimmed.json()) as any).error.issues)).toContain("graphql_url");
-
-      const legacy = await post({ address: "a", graphql_url: "http://graphql:8000/graphql" });
-      expect(legacy.status).toBe(400);
-      expect(JSON.stringify(((await legacy.json()) as any).error.issues)).toContain("data_url");
+      const res = await fetch(`${engine.url}/investigate`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ address: "a", graphql_url: "http://graphql:8000/graphql" }),
+      });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(((await res.json()) as any).error.issues)).toContain("graphql_url");
     } finally {
       await engine.stop();
     }
   });
 
-  test("the same body with data_url instead is accepted", async () => {
-    // The mirror of the test above: proves the 400s are about the retired key, not about the
+  test("the same body without graphql_url is accepted", async () => {
+    // The mirror of the test above: proves the 400 is about the retired key, not about the
     // endpoint rejecting everything.
     const engine = create_engine_server({ port: 0, auth_token: TOKEN, investigate: async () => ({}) as any });
     try {
       const res = await fetch(`${engine.url}/investigate`, {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ address: "a", data_url: "http://graph:8000" }),
+        body: JSON.stringify({ address: "a" }),
       });
       expect(res.status).toBe(200);
     } finally {
@@ -278,6 +268,96 @@ describe("Contract A", () => {
       expect([200, 503]).toContain(res.status);
     } finally {
       await engine.stop();
+    }
+  });
+});
+
+describe("the engine owns its data-service address — one source, not two", () => {
+  test("400s a body still carrying data_url — the retired second source is now an unknown key", async () => {
+    const engine = create_engine_server({ port: 0, auth_token: TOKEN, investigate: async () => ({}) as any });
+    try {
+      const res = await fetch(`${engine.url}/investigate`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ address: "a", data_url: "http://graph:8000" }),
+      });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(((await res.json()) as any).error.issues)).toContain("data_url");
+    } finally {
+      await engine.stop();
+    }
+  });
+
+  /**
+   * The actual invariant, not just the 400 above: an investigation and a fingerprint issued against
+   * the SAME engine process resolve the SAME data URL, with no per-request override anywhere.
+   *
+   * Before this change, POST /investigate read the caller's own request.data_url while POST
+   * /fingerprint always read the engine's DATA_URL — two sources a caller had to keep in sync by
+   * hand, and /fingerprint carries no per-call data_url, so a mismatch would silently key the
+   * backend's AI-report cache off a DIFFERENT dataset than the investigation actually read.
+   *
+   * Proven here with ONE env var (DATA_URL) pointed at an ephemeral FixtureDataService — never a
+   * request body, never a second EngineServerOptions.data_url — and showing both the real
+   * investigation (investigate_address, no override argument) and the real fingerprint probe land
+   * requests on that exact fixture instance. A reintroduced second source (a request-body data_url
+   * the orchestrator honours again, or a probe/investigate path that stops reading DATA_URL) would
+   * make one leg of this test 400, hang, or fail to reach the fixture at all — nothing else answers
+   * on that ephemeral port.
+   */
+  test("an investigation and a fingerprint against the same engine resolve the SAME data URL", async () => {
+    const payload = resolve1104() as Record<string, any>;
+    const graph = new FixtureDataService({
+      resolve: payload,
+      address_people: people1104(),
+      address_records: { records_by_source: payload["records_by_source"], unsupported_shapes: [] },
+      schema: { tables: [], access_paths: [], caveats: [] },
+    });
+    const originalDataUrl = process.env.DATA_URL;
+    process.env.DATA_URL = graph.url; // the ONLY place this test names a data service
+    let engine: EngineServer | undefined;
+    try {
+      // No opts.data_url override: the probe and the investigation runner below both fall through
+      // to resolve_data_url()'s DATA_URL-env read — exactly the path production takes.
+      engine = create_engine_server({
+        port: 0,
+        auth_token: TOKEN,
+        // FakeSubagent keeps this deterministic (no LLM); the data resolution under test does not
+        // depend on which subagent runs. No override argument reaches investigate_address, so it
+        // resolves data_url itself, off the same DATA_URL this block just set.
+        investigate: (request, hooks) => investigate_address(request, new FakeSubagent(), hooks),
+      });
+
+      expect(graph.requests.length).toBe(0);
+
+      const fpRes = await fetch(`${engine.url}/fingerprint`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ items: [{ address: "1104 SPRING RUN RD", zip: "40514" }] }),
+      });
+      expect(fpRes.status).toBe(200);
+      const afterFingerprint = graph.requests.length;
+      expect(afterFingerprint).toBeGreaterThan(0); // the probe actually reached THIS fixture
+
+      const invRes = await fetch(`${engine.url}/investigate`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ address: "1104 SPRING RUN RD", zip: "40514" }), // no data_url to send
+      });
+      expect(invRes.status).toBe(200);
+      const lines = (await invRes.text()).split("\n").filter((l) => l.length > 0);
+      const terminal = JSON.parse(lines[lines.length - 1]!);
+      expect("report" in terminal).toBe(true); // the real orchestrator completed against THIS fixture
+
+      // Grown again, on the SAME FixtureDataService instance — never a second server, never a
+      // connection failure against the http://graph:8000 default.
+      expect(graph.requests.length).toBeGreaterThan(afterFingerprint);
+      expect(graph.requests.some((r) => r.path === "/v1/resolve")).toBe(true);
+    } finally {
+      if (engine) await engine.stop();
+      graph.close();
+      if (originalDataUrl === undefined) delete process.env.DATA_URL;
+      else process.env.DATA_URL = originalDataUrl;
     }
   });
 });

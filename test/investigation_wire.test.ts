@@ -37,19 +37,27 @@ describe("investigation_wire", () => {
   });
 
   it("parse_investigation_request returns ok for a valid body", () => {
-    const r = parse_investigation_request({ address: "1 X ST", data_url: "http://g" });
+    const r = parse_investigation_request({ address: "1 X ST" });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.request.address).toBe("1 X ST");
   });
 
   it("parse_investigation_request returns zod paths for a bad body (strict)", () => {
-    const missing = parse_investigation_request({ zip: "40514", data_url: "http://g" });
+    const missing = parse_investigation_request({ zip: "40514" });
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.issues.some((i) => i.startsWith("address:"))).toBe(true);
 
-    const unknownKey = parse_investigation_request({ address: "1 X ST", data_url: "http://g", verdict: "risk" });
+    const unknownKey = parse_investigation_request({ address: "1 X ST", verdict: "risk" });
     expect(unknownKey.ok).toBe(false);
     if (!unknownKey.ok) expect(unknownKey.issues.join(" ")).toContain("verdict");
+  });
+
+  // The whole point of this change: a caller can no longer name its own data service. data_url is
+  // gone from the schema, so it 400s the same way any other unrecognised key does.
+  it("parse_investigation_request rejects a body still carrying data_url", () => {
+    const r = parse_investigation_request({ address: "1 X ST", data_url: "http://g" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.issues.join(" ")).toContain("data_url");
   });
 });
 
