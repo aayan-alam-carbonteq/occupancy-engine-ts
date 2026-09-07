@@ -117,7 +117,7 @@ const SubmitCaseAdjudicationArgs = z
           .describe(
             "How much weight the RECORDS themselves carry for that signal — not how confident you " +
               "feel. weak: one thin, stale or low-reliability row. moderate: a clear signal from a " +
-              "single source family. strong: the same reading corroborated across independent sources.",
+              "single source family. strong: the same reading reappears across independent sources.",
           ),
         reasoning: z
           .string()
