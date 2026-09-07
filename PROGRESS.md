@@ -22,6 +22,161 @@ judge package, observability/summaries.
 
 <!-- newest first; one entry per working session -->
 
+### 2026-09-07 — records_read on CaseAdjudication (X-078 AI corroboration, engine half)
+- **Goal:** Give the case-level `master_adjudicator` one new required output block —
+  `records_read` — stating what public records say about occupancy
+  (`non_owner_occupancy` / `owner_occupancy` / `no_signal`, plus `strength`), blind to
+  any scan claim, so the backend can compare it against its own org's scan verdict.
+  Plan: `docs/superpowers/plans/2026-09-07-ai-corroboration.md`, Tasks 1-11 (Tasks 1-2
+  completed and committed by a prior session that died on a rate limit; this session
+  ran Tasks 3-9 and 11; **Task 10 could not run — see Risks**).
+- **Completed (branch `feat/x078-records-read`, cut from `origin/main`, 8 commits this
+  session, one per task):**
+  - **Task 3** (`363f131`) — `OCCUPANCY_SIGNAL` / `EVIDENCE_STRENGTH` enums + the
+    required `records_read` block on `CaseAdjudicationSchema` (`.strict()`); fixed the
+    one collateral `CaseAdjudicationSchema.parse(...)` literal in
+    `test/prose_redaction.test.ts`. Committed alone (not batched with Task 4) per this
+    session's commit-after-every-task rule, so `tsc` is deliberately red between this
+    commit and the next — the plan's own designed forcing function (spec §10).
+  - **Task 4** (`33b7342`) — `fallback_adjudication` emits `records_read: {no_signal,
+    weak}` — the only honest default for a run whose adjudicator never ran; resolves
+    to backend agreement 50 for every scan verdict. Closes the Task 3 `tsc` error.
+  - **Task 5** (`3447a17`) — `SubmitCaseAdjudicationArgs` mirrors `records_read`
+    field-for-field (the tool schema is the only contract the provider actually
+    sees); `_case_adjudication_from_tool_calls`'s `required_literals` now names
+    `records_read.occupancy_signal` / `records_read.strength`.
+  - **Task 6** (`44117e9`) — prompt instructions for `records_read` in
+    `master_adjudication_user_prompt`, between the `why_not_higher/lower` bullet and
+    the submit-key list; `Include keys:` and the writing-register field list updated.
+    Also fixed two Hard-Constraint-3 violations found via this task's own guard test
+    (see Plan defects below).
+  - **Task 7** (`5e20ad4`) — `sanitize_adjudication_prose` now redacts
+    `records_read.reasoning` before the report leaves the process; it reaches the
+    browser as `corroboration.reasoning` and is exactly as likely to leak a raw
+    column (`own_rent=0`) as `reasoning_summary` is.
+  - **Task 8** (`0fcb22b`) — `test/e2e/adjudication_records_read.e2e.test.ts`: a real
+    `AgentOrchestrator` + scripted master LLM through the real `_adjudicate_case` and
+    repair channel, out to `assessment_report_payload`, with no API/network
+    (`disable_master_planning` defaults true). Verified not vacuous (mutation check,
+    reverted). Confirmed E2E-1..E2E-5 unaffected: 11 pass / 0 fail across 3 files;
+    E2E-3 (blind-parity guard) passes **unedited** —
+    `git diff origin/main -- test/e2e/orchestrator.e2e.test.ts` is empty.
+  - **Task 9** — full gate green (see Verification run). `git diff --stat origin/main
+    -- src cli` touches exactly the 4 predicted files; `external_evidence.ts` /
+    `heuristics/**` / `subagents.ts` diff is empty (constraints 1+2 held); all 12
+    `score_benchmark` goldens reproduce unchanged.
+  - **Task 11** (this commit) — `feature_list.json` entry `adjudication-records-read`
+    (priority 14; 12 and 13 already taken), status **`blocked`** (not `passing` — see
+    Risks), and this session record.
+- **NOT completed: Task 10** (the live 12-address before/after `calibrated_score` /
+  `clarity_score` regression measurement constraint 4 requires). See Risks — this is
+  an honest gap, not a skipped step.
+- **Verification run:** `OE_PROSE_REGISTER=off bun run typecheck && biome check src
+  cli test && OE_PROSE_REGISTER=off bun test` (the literal `bun run verify`'s `biome
+  check .` fails in this environment for a reason unrelated to this work — see Plan
+  defects).
+- **Evidence (verbatim):** `tsc --noEmit` — silent, exit 0. `biome check src cli
+  test` — "Checked 107 files in 85ms. No fixes applied." (0 errors). `OE_PROSE_REGISTER=off
+  bun test` — **457 pass / 0 fail / 1635 expect() calls, Ran 457 tests across 50
+  files** (Task-1 baseline recorded by the prior session: 441 pass / 0 fail / 1592
+  expect() across 48 files — this session added 16 pass / 43 expect() across 2 new
+  files, `test/adjudication_records_read.test.ts` and
+  `test/prompts_records_read.test.ts`, plus the E2E file and the `prose_redaction.ts`
+  / `models.ts` additions). `test/score_benchmark.test.ts` BENCH lines reproduce all
+  12 goldens exactly: `no_rows 0`, `tax_only_mailing_elsewhere 2.5`,
+  `drive_only_owner_elsewhere 4.75`, `drive_and_loan_same_row 5.8`,
+  `nonowner_loan_renter_at_subject 5.65`, `auto_only_owner_elsewhere 4.3`,
+  `utility_only_nonowner 4`, `trace_only_presence 2.5`, `full_stack_absentee 17.05`,
+  `drive_at_subject_nonowner 7`, `drive_and_loan_nonowner_at_subject 13.3`,
+  `loan_only_owner_elsewhere 3.55`.
+- **Task-10 numbers: NONE.** No before/after `calibrated_score` / `clarity_score`
+  table and no `records_read` histogram exist for this session. Do not infer
+  neutrality from their absence.
+- **Deploy-owner note (unchanged from the plan):** `HASHED_ROOTS` includes `src`, so
+  `engine_source_hash()` changes on merge and every cached AI report invalidates on
+  deploy — a one-time re-run wave on first access per property. Intended, but the
+  deploy owner should expect it.
+- **Commits:** `363f131` (Task 3), `33b7342` (Task 4), `3447a17` (Task 5), `44117e9`
+  (Task 6), `5e20ad4` (Task 7), `0fcb22b` (Task 8), plus this bookkeeping commit
+  (Task 11). Tasks 1-2 were already committed by the prior session as `b56723e` and
+  `2b8927c`.
+- **Risks:**
+  - **Task 10 did not run, and this is the constraint-4-required measurement, not an
+    optional footnote.** Its Step 1 needs `git submodule update --init services/graph`
+    + `docker compose up -d graph` run from the primary `occupancy-engine-ts/`
+    checkout — off-limits this session because another session has uncommitted work
+    there on `feat/data-url-single-source`. An isolated adaptation (bring up the
+    graph service from this worktree's own docker-compose project — confirmed a
+    distinct project name from the main checkout's, so no container/port collision —
+    and copy `.env` into the already-clean, already-`origin/main`-synced
+    `.claude/worktrees/stable-main` sibling worktree, the plan's own designated
+    "before" arm and not the forbidden shared clone) was blocked outright by the
+    Claude Code auto-mode classifier before any command executed. Verified no partial
+    state leaked: this worktree's `git status --porcelain` and `git submodule status`
+    are unchanged (`services/graph` still uninitialized). **feature_list.json status
+    is `blocked`, not `passing`, because of this gap** — do not read the green gate
+    above as covering constraint 4.
+  - Constraint 4 itself: adding a required field to the adjudicator tool schema can
+    shift `calibrated_score` / `clarity_score` distributions, and `clarity_score`
+    feeds the backend's agreement dampener — a shift changes every downstream
+    agreement number. This is unmeasured, not neutral-by-assumption.
+  - Same source-hash / cache consequence as every prior `src/`-touching plan: flagged
+    above for the deploy owner.
+- **Plan defects found (in addition to the ones already logged elsewhere in this
+  repo's history):**
+  1. Task 3 Step 2 predicted "6 failures" from the new `models.test.ts` block; actual
+     was 5 fail / 1 vacuous pass (the "strict — unknown key" test passes vacuously
+     pre-implementation, since `records_read` itself is an unrecognized key before the
+     schema exists). Same pattern the plan itself flags elsewhere (Task 6 Step 2); not
+     a real discrepancy, just an off-by-one in the plan's prediction.
+  2. **Task 6 Step 3's own literal prompt text violated the plan's own Hard
+     Constraint 3.** The mandated text used "strong: the same reading corroborated
+     across independent sources" for `records_read.strength` — in both the prompt
+     (`prompts.ts`) and, inherited from Task 5, the `submit_case_adjudication` tool-arg
+     `describe()` string (`orchestrator.ts:120`). Constraint 3 explicitly forbids the
+     word "corroborate" anywhere in the `records_read` instructions, and the plan's own
+     Task 6 Step 1 test (`never frames the field as agreement with an outside claim`)
+     catches exactly this. Fixed in both places: "corroborated across independent
+     sources" -> "reappears across independent sources" (same meaning — internal
+     record cross-agreement — no forbidden word).
+  3. **Task 6 Step 3's literal text also broke its own test on a whitespace
+     technicality.** `"...not how confident", "  you feel. ..."` as two array
+     elements joins with `\n`, so `PROMPT` contains `"confident\n  you feel"`, not
+     `"confident you feel"` — `toContain("not how confident you feel")` fails on the
+     newline. Reworded to keep the phrase on one line.
+  4. **Task 7 Step 3's literal implementation does not typecheck under this repo's
+     strict `tsconfig`.** Annotating `out` as `Record<string, unknown>` inside a
+     generic `<T extends AdjudicationProse>` function fails both `tsc` checks the plan
+     didn't anticipate: the spread of `T` isn't assignable to an indexed type without
+     an index signature, and the later `as T` cast on that now-`Record`-typed value
+     "may be a mistake" (insufficient overlap). Reworked to a conditional object spread
+     (`...(x ? {records_read: {...}} : {})`) that preserves plain type inference the
+     same way the pre-existing `why_not_higher`/`why_not_lower` handling already did —
+     same runtime behavior, no annotation needed.
+  5. **`bun run verify` / `bun run lint` (`biome check .`) fails in this environment
+     for a reason unrelated to any code in this plan.** Biome 2.5.2 treats the literal
+     `.` argument (and the worktree's own absolute path) as matching the
+     `biome.json` `files.includes` exclusion `"!**/.claude"`, because every worktree in
+     this repo lives under `.claude/worktrees/` — the project root's own absolute path
+     contains a `.claude` path segment. Reproduced identically, byte-for-byte, in the
+     untouched `.claude/worktrees/stable-main` worktree at `origin/main`; the primary
+     (non-worktree) checkout does not have the bug (`biome check .` there finds 104
+     files normally). Pre-existing, not caused by this session. Worked around for all
+     gate runs in this session with the functionally equivalent `biome check src cli
+     test` (matches `biome.json`'s own `includes` list minus a nonexistent `scripts/`
+     directory), confirmed 0 errors throughout.
+- **Next best action (coordinator):** get Task 10 actually run — either from a session
+  with permission to operate in the primary `occupancy-engine-ts/` checkout (once the
+  other session's `feat/data-url-single-source` work is out of the way), or with
+  explicit user approval for the isolated-worktree adaptation this session attempted
+  and had blocked by the classifier. Once the before/after table and the
+  `records_read` histogram exist, flip `feature_list.json`'s
+  `adjudication-records-read` entry to `passing` with the real numbers, and hand the
+  histogram to the backend's `AGREEMENT_ANCHORS` calibration work. Do not merge this
+  branch as if constraint 4 were satisfied — it is not, yet. Separately, worth a
+  ticket: the Biome `.claude/worktrees/` path bug (defect 5) will bite every future
+  worktree-based session running `bun run verify` literally in this repo.
+
 ### 2026-07-30 — Typed data service client + SQL hatch (X-016)
 - **Goal:** Move the engine off arbitrary GraphQL onto the occupancy data service: six typed HTTP operations (`POST /v1/resolve`, `GET /v1/address/{id}/records|people`, `GET /v1/person/{id}/records`, `GET /v1/people/search`, `GET /v1/source-record/{shape}/{rowid}?address_id=`) plus a guarded SQL hatch (`POST /v1/sql`, `GET /v1/schema`) over a partner Postgres corpus — someone else's production database, 7.6B rows, read-only guest credentials. Breaking, no shim.
 - **Completed (branch `feat/typed-data-service`, cut from `main`, Tasks 1-22 in 26 commits):**
