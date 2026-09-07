@@ -208,8 +208,11 @@ describe("X-078 CaseAdjudication.records_read", () => {
     expect(JSON.stringify(result.error!.issues)).toContain("records_read");
   });
 
-  test("all three occupancy signals are accepted, and only those three", () => {
-    for (const signal of ["non_owner_occupancy", "owner_occupancy", "no_signal"]) {
+  test("all four occupancy signals are accepted, and only those four", () => {
+    // `conflicting` joined the ladder after the X-078 Task 10 measurement: without it, the model
+    // used `no_signal` for record-rich addresses whose evidence pointed both ways, collapsing
+    // "the records disagree" into "there are no records". They are different findings.
+    for (const signal of ["non_owner_occupancy", "owner_occupancy", "conflicting", "no_signal"]) {
       const r = CaseAdjudicationSchema.safeParse({
         ...adjudicationBase,
         records_read: { occupancy_signal: signal, strength: "moderate", reasoning: "r" },

@@ -33,9 +33,25 @@ export const CASE_ARCHETYPE_VALUES = [
 // `no_signal` is its own value and must never be collapsed into `owner_occupancy`. "The records are
 // silent" and "the records show the owner living here" are different findings, and the backend maps
 // them to different corroboration states — `no_independent_support` vs `contradicted`.
-export const OCCUPANCY_SIGNAL = ["non_owner_occupancy", "owner_occupancy", "no_signal"] as const;
-// How much weight the RECORDS carry — not how confident the model feels. Distinct from
-// SIGNAL_STRENGTH above, which is the per-heuristic four-value ladder including "none".
+//
+// `conflicting` was added after the X-078 Task 10 measurement (2026-09-07, files/…-regression-…):
+// with a three-value ladder, `no_signal` was chosen 4 times in 6 and NOT ONCE for silence. Every
+// case was a record-RICH address (25-61 rows) where owner and non-owner evidence co-exist and
+// cannot be ordered in time, because the utility feed carries no service dates at all. The model
+// had no label for the state it kept meeting and fell back to the nearest one, which made
+// "61 records disagreeing" indistinguishable from "no records at all" — the single largest cause
+// of the agreement scale collapsing to two distinct values across six properties.
+export const OCCUPANCY_SIGNAL = [
+  "non_owner_occupancy",
+  "owner_occupancy",
+  "conflicting",
+  "no_signal",
+] as const;
+// How much weight the RECORDS carry — not how confident the model feels, and NOT how current they
+// are. Recency and datedness belong to `clarity_score`; folding them in here is why the same Task 10
+// run never once emitted `strong`, even at an address with 18+ non-owners corroborated across
+// trace, utility, driver-license and loan records. Distinct from SIGNAL_STRENGTH above, which is the
+// per-heuristic four-value ladder including "none".
 export const EVIDENCE_STRENGTH = ["weak", "moderate", "strong"] as const;
 
 export type HeuristicStatus = (typeof HEURISTIC_STATUS)[number];

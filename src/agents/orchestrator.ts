@@ -107,17 +107,26 @@ const SubmitCaseAdjudicationArgs = z
           .enum(OCCUPANCY_SIGNAL)
           .describe(
             "What the PUBLIC RECORDS show about who occupies this property. " +
-              "non_owner_occupancy: records point to someone other than the owner living there. " +
-              "owner_occupancy: records point to the owner living there. " +
-              "no_signal: the records are SILENT — they support neither reading. " +
-              "no_signal is not a weak owner_occupancy; use it whenever the records do not speak.",
+              "non_owner_occupancy: records point to someone other than the owner living there, " +
+              "with nothing substantive the other way. " +
+              "owner_occupancy: records point to the owner living there, with nothing substantive " +
+              "the other way. " +
+              "conflicting: SUBSTANTIVE evidence BOTH ways that cannot be ordered in time — owner " +
+              "mailing at the subject alongside unrelated occupants is the canonical case. A " +
+              "positive finding about a well-populated address, not a failure to decide. " +
+              "no_signal: NOTHING TO READ — rows absent, or so thin that neither reading has " +
+              "evidence. Absence of rows only; substantive rows on both sides are conflicting, not " +
+              "no_signal. Never a weak owner_occupancy.",
           ),
         strength: z
           .enum(EVIDENCE_STRENGTH)
           .describe(
             "How much weight the RECORDS themselves carry for that signal — not how confident you " +
-              "feel. weak: one thin, stale or low-reliability row. moderate: a clear signal from a " +
-              "single source family. strong: the same reading reappears across independent sources.",
+              "feel, and NOT how current or well-dated they are. weak: one thin or low-reliability " +
+              "row. moderate: a clear signal from a single source family. strong: the same reading " +
+              "reappears across independent source families. Undated or stale rows do NOT cap " +
+              "strength — breadth of corroboration sets it, recency is reported in clarity_score. " +
+              "For conflicting, report the weight of the WEAKER side.",
           ),
         reasoning: z
           .string()
