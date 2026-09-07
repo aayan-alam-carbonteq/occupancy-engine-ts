@@ -329,6 +329,9 @@ interface AdjudicationProse {
   why_not_higher: string[];
   why_not_lower: string[];
   score_adjustments?: readonly { reason: string; [key: string]: unknown }[];
+  // X-078. Human-facing prose that reaches the browser as corroboration.reasoning. Optional on the
+  // interface so the function stays usable on the partial shapes the tests and callers pass.
+  records_read?: { reasoning: string; [key: string]: unknown };
 }
 
 /** Return a copy with the human-facing prose fields redacted; all other fields are preserved. */
@@ -350,6 +353,17 @@ export function sanitize_adjudication_prose<T extends AdjudicationProse>(adjudic
     reasoning_summary: redact_prose(adjudication.reasoning_summary),
     why_not_higher: adjudication.why_not_higher.map(redact_prose),
     why_not_lower: adjudication.why_not_lower.map(redact_prose),
+    // X-078. records_read is optional on the interface, so only overwrite it when present — a
+    // conditional spread keeps `out`'s inferred type free of an index signature (required for the
+    // `as T` casts below to typecheck under this repo's strict settings).
+    ...(adjudication.records_read
+      ? {
+          records_read: {
+            ...adjudication.records_read,
+            reasoning: redact_prose(adjudication.records_read.reasoning),
+          },
+        }
+      : {}),
   };
   if (!Array.isArray(adjudication.score_adjustments)) {
     return out as T;

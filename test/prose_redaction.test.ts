@@ -134,6 +134,36 @@ describe("sanitize_adjudication_prose", () => {
     expect(out.score_adjustments[0]!.delta).toBe(-2);
     expect(out.score_adjustments[0]!.heuristic_ids).toEqual(["loan_tenure"]);
   });
+
+  test("cleans records_read.reasoning and preserves the block's non-prose fields", () => {
+    // X-078: this string reaches the browser as corroboration.reasoning. It is prose, and it is
+    // exactly as likely to name a raw column as reasoning_summary is.
+    const adj = {
+      reasoning_summary: "clean summary",
+      why_not_higher: [],
+      why_not_lower: [],
+      records_read: {
+        occupancy_signal: "non_owner_occupancy",
+        strength: "moderate",
+        reasoning: "utilityRecords show own_rent=0 for the occupant.",
+        driving_heuristic_ids: ["loan_tenure"],
+      },
+    };
+    const out = sanitize_adjudication_prose(adj);
+    expect(count_prose_leaks([out.records_read.reasoning])).toBe(0);
+    expect(out.records_read.occupancy_signal).toBe("non_owner_occupancy");
+    expect(out.records_read.strength).toBe("moderate");
+    expect(out.records_read.driving_heuristic_ids).toEqual(["loan_tenure"]);
+  });
+
+  test("an adjudication with no records_read still sanitizes (the interface stays optional)", () => {
+    const out = sanitize_adjudication_prose({
+      reasoning_summary: "driveRecords indicate presence.",
+      why_not_higher: [],
+      why_not_lower: [],
+    });
+    expect(count_prose_leaks([out.reasoning_summary])).toBe(0);
+  });
 });
 
 describe("proseRedactEnabled", () => {
