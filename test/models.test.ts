@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   AgentInvestigationRequestSchema,
+  CaseAdjudicationSchema,
   DataCallLogSchema,
   HeuristicAgentResultSchema,
   HeuristicInterpretationSchema,
@@ -158,5 +159,101 @@ describe("HeuristicAgentResult", () => {
     });
     expect(r.data_queries.length).toBe(1);
     expect((r as Record<string, unknown>)["graphql_queries"]).toBeUndefined();
+  });
+});
+
+// X-078. The case-level roll-up of what PUBLIC RECORDS say about occupancy. Not relative to any
+// scan claim — the engine never sees one (test/external_evidence_blind_contract.test.ts).
+const adjudicationBase = {
+  raw_score: 4,
+  calibrated_score: 4,
+  clarity_score: 6,
+  verdict_band: "review" as const,
+  case_archetype: "mixed_evidence" as const,
+  reasoning_summary: "Absentee owner with unrelated occupants at the subject.",
+};
+
+describe("X-078 CaseAdjudication.records_read", () => {
+  test("parses a full block and preserves every field", () => {
+    const adj = CaseAdjudicationSchema.parse({
+      ...adjudicationBase,
+      records_read: {
+        occupancy_signal: "non_owner_occupancy",
+        strength: "strong",
+        reasoning: "Owner mails elsewhere; two unrelated adults hold utility service at the subject.",
+        driving_heuristic_ids: ["owner_identity_and_mailing", "subject_occupancy_surfaces"],
+      },
+    });
+    expect(adj.records_read.occupancy_signal).toBe("non_owner_occupancy");
+    expect(adj.records_read.strength).toBe("strong");
+    expect(adj.records_read.driving_heuristic_ids).toEqual([
+      "owner_identity_and_mailing",
+      "subject_occupancy_surfaces",
+    ]);
+  });
+
+  test("driving_heuristic_ids defaults to [] — the UI link-through is optional, the signal is not", () => {
+    const adj = CaseAdjudicationSchema.parse({
+      ...adjudicationBase,
+      records_read: { occupancy_signal: "no_signal", strength: "weak", reasoning: "Records are silent." },
+    });
+    expect(adj.records_read.driving_heuristic_ids).toEqual([]);
+  });
+
+  test("records_read is REQUIRED — an adjudication without it is not a valid adjudication", () => {
+    // This is what forces the retry/repair channel rather than letting a silent null through to the
+    // backend, where it would surface as "no corroboration available" on a case that had one.
+    const result = CaseAdjudicationSchema.safeParse(adjudicationBase);
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error!.issues)).toContain("records_read");
+  });
+
+  test("all three occupancy signals are accepted, and only those three", () => {
+    for (const signal of ["non_owner_occupancy", "owner_occupancy", "no_signal"]) {
+      const r = CaseAdjudicationSchema.safeParse({
+        ...adjudicationBase,
+        records_read: { occupancy_signal: signal, strength: "moderate", reasoning: "r" },
+      });
+      expect([signal, r.success]).toEqual([signal, true]);
+    }
+    // "no_signal" must stay distinct from "owner_occupancy": absence of evidence is not evidence of
+    // owner occupancy, and the backend maps them to different corroboration states.
+    for (const bad of ["none", "unknown", "not_applicable", "owner", "rented"]) {
+      const r = CaseAdjudicationSchema.safeParse({
+        ...adjudicationBase,
+        records_read: { occupancy_signal: bad, strength: "moderate", reasoning: "r" },
+      });
+      expect([bad, r.success]).toEqual([bad, false]);
+    }
+  });
+
+  test("strength is weak|moderate|strong — it is NOT the four-value SIGNAL_STRENGTH ladder", () => {
+    for (const strength of ["weak", "moderate", "strong"]) {
+      const r = CaseAdjudicationSchema.safeParse({
+        ...adjudicationBase,
+        records_read: { occupancy_signal: "owner_occupancy", strength, reasoning: "r" },
+      });
+      expect([strength, r.success]).toEqual([strength, true]);
+    }
+    // SIGNAL_STRENGTH (models.ts:9) carries a fourth value, "none", for per-heuristic use. Reusing
+    // it here would give the backend's AGREEMENT_ANCHORS table a key it has no anchor for.
+    const r = CaseAdjudicationSchema.safeParse({
+      ...adjudicationBase,
+      records_read: { occupancy_signal: "owner_occupancy", strength: "none", reasoning: "r" },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  test("the block is strict — an unknown key is a caller bug, not a field to ignore", () => {
+    const r = CaseAdjudicationSchema.safeParse({
+      ...adjudicationBase,
+      records_read: {
+        occupancy_signal: "no_signal",
+        strength: "weak",
+        reasoning: "r",
+        confidence: 0.8, // model-self-confidence has no home here; strength is about the RECORDS
+      },
+    });
+    expect(r.success).toBe(false);
   });
 });

@@ -274,6 +274,12 @@ describe("integration: sanitized findings produce a leak-free report", () => {
       verdict_band: "review",
       case_archetype: "mixed_evidence",
       reasoning_summary: "driveRecords indicate presence at the subject.",
+      records_read: {
+        occupancy_signal: "non_owner_occupancy",
+        strength: "moderate",
+        reasoning: "utilityRecords name a non-owner at the subject.",
+        driving_heuristic_ids: ["subject_occupancy_surfaces"],
+      },
     });
     const report = build_report(
       sanitize_adjudication_prose(adjudication),

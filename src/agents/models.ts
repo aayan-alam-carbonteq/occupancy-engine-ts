@@ -26,11 +26,25 @@ export const CASE_ARCHETYPE_VALUES = [
   "mixed_evidence",
 ] as const;
 
+// X-078. The case-level roll-up of what PUBLIC RECORDS say about occupancy, emitted by the master
+// adjudicator. Deliberately NOT relative to any scan claim: the engine never sees one (see
+// ExternalEvidenceSchema, which carries no verdict, and test/external_evidence_blind_contract.test.ts).
+//
+// `no_signal` is its own value and must never be collapsed into `owner_occupancy`. "The records are
+// silent" and "the records show the owner living here" are different findings, and the backend maps
+// them to different corroboration states — `no_independent_support` vs `contradicted`.
+export const OCCUPANCY_SIGNAL = ["non_owner_occupancy", "owner_occupancy", "no_signal"] as const;
+// How much weight the RECORDS carry — not how confident the model feels. Distinct from
+// SIGNAL_STRENGTH above, which is the per-heuristic four-value ladder including "none".
+export const EVIDENCE_STRENGTH = ["weak", "moderate", "strong"] as const;
+
 export type HeuristicStatus = (typeof HEURISTIC_STATUS)[number];
 export type HeuristicDirection = (typeof HEURISTIC_DIRECTION)[number];
 export type Confidence = (typeof CONFIDENCE)[number];
 export type VerdictBand = (typeof VERDICT_BAND)[number];
 export type CaseArchetype = (typeof CASE_ARCHETYPE_VALUES)[number];
+export type OccupancySignal = (typeof OCCUPANCY_SIGNAL)[number];
+export type EvidenceStrength = (typeof EVIDENCE_STRENGTH)[number];
 
 const jsonRecord = z.record(z.string(), z.unknown());
 
@@ -305,9 +319,22 @@ export const CaseAdjudicationSchema = z
     reasoning_summary: z.string(),
     why_not_higher: z.array(z.string()).default([]),
     why_not_lower: z.array(z.string()).default([]),
+    // X-078. Required, not nullish: a missing block must fail validation and drive the repair
+    // channel (orchestrator.ts:1036-1048), because a silent null reaches the backend as
+    // "no corroboration available" on a case that in fact had one.
+    records_read: z
+      .object({
+        occupancy_signal: z.enum(OCCUPANCY_SIGNAL),
+        strength: z.enum(EVIDENCE_STRENGTH),
+        reasoning: z.string(),
+        // Lets the UI link the headline straight to the findings that drove it.
+        driving_heuristic_ids: z.array(z.string()).default([]),
+      })
+      .strict(),
   })
   .strict();
 export type CaseAdjudication = z.infer<typeof CaseAdjudicationSchema>;
+export type RecordsRead = CaseAdjudication["records_read"];
 
 // metrics_events is excluded from serialization. We keep it on the type and strip it when writing
 // JSON (see cli serialization).
