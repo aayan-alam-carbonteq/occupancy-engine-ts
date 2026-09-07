@@ -25,8 +25,10 @@ import {
   CASE_ARCHETYPE_VALUES,
   CaseAdjudicationSchema,
   CaseInvestigationPlanSchema,
+  EVIDENCE_STRENGTH,
   EvidenceReferenceSchema,
   HeuristicPlanSchema,
+  OCCUPANCY_SIGNAL,
   OwnerEvidenceSummarySchema,
   ResolvedAddressContextSchema,
   ScoreAdjustmentSchema,
@@ -99,6 +101,39 @@ const SubmitCaseAdjudicationArgs = z
       .describe("Concise explanation for the calibrated score and verdict band."),
     why_not_higher: z.array(z.string()).default([]).describe("Reasons the case was not assigned a higher score/band."),
     why_not_lower: z.array(z.string()).default([]).describe("Reasons the case was not assigned a lower score/band."),
+    records_read: z
+      .object({
+        occupancy_signal: z
+          .enum(OCCUPANCY_SIGNAL)
+          .describe(
+            "What the PUBLIC RECORDS show about who occupies this property. " +
+              "non_owner_occupancy: records point to someone other than the owner living there. " +
+              "owner_occupancy: records point to the owner living there. " +
+              "no_signal: the records are SILENT — they support neither reading. " +
+              "no_signal is not a weak owner_occupancy; use it whenever the records do not speak.",
+          ),
+        strength: z
+          .enum(EVIDENCE_STRENGTH)
+          .describe(
+            "How much weight the RECORDS themselves carry for that signal — not how confident you " +
+              "feel. weak: one thin, stale or low-reliability row. moderate: a clear signal from a " +
+              "single source family. strong: the same reading corroborated across independent sources.",
+          ),
+        reasoning: z
+          .string()
+          .min(1)
+          .describe("At most 2 sentences naming the records that produced the signal. Do not restate reasoning_summary."),
+        driving_heuristic_ids: z
+          .array(z.string())
+          .default([])
+          .describe("The heuristic ids whose findings drove this signal. Use ids from the analyst submissions."),
+      })
+      .strict()
+      .describe(
+        "What public records say about occupancy at this address, judged on the records alone. " +
+          "This is NOT a comparison against any external claim, listing or scan — you have not been " +
+          "shown one, and you must not infer one.",
+      ),
   })
   .describe("Submit the final master CaseAdjudication.");
 
@@ -1043,6 +1078,8 @@ function _case_adjudication_from_tool_calls(
         required_literals: {
           verdict_band: ["low_evidence", "monitor", "review", "high_priority_review", "manual_verification"],
           case_archetype: [...CASE_ARCHETYPE_VALUES],
+          "records_read.occupancy_signal": [...OCCUPANCY_SIGNAL],
+          "records_read.strength": [...EVIDENCE_STRENGTH],
         },
       };
     }
