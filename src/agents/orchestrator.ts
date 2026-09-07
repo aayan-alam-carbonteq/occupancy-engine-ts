@@ -1094,6 +1094,16 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
     reasoning_summary: reason,
     why_not_higher: [reason],
     why_not_lower: score ? [] : ["No positive raw heuristic score was available."],
+    // X-078. There is no case-level read of the records on this path, so the only honest report is
+    // "no signal, weak" — which the backend resolves to agreement 50, "the investigation could not
+    // tell", for every scan verdict. Deriving a signal from the raw heuristic sum would be an
+    // invention: the sum is a risk score, not a directional read of what the records show.
+    records_read: {
+      occupancy_signal: "no_signal",
+      strength: "weak",
+      reasoning: `No case-level adjudication was produced for this run: ${reason}`,
+      driving_heuristic_ids: [],
+    },
   };
 }
 
