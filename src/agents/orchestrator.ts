@@ -1159,8 +1159,11 @@ export function build_report(
   const mitigations = results.filter((result) => result.score < 0 && result.status !== "error");
   const errors = results.filter((result) => result.status === "error");
   const lines = [
-    `Verdict band: ${adjudication.verdict_band}. Raw score: ${raw_score}.`,
-    `Case archetype: ${adjudication.case_archetype}.`,
+    // No raw_score here. It is the deterministic heuristic sum (score_breakdown.risk_points), an
+    // internal scoring artifact with no meaning to a reader — the same "leaks internal processing"
+    // objection that retired "Generated on" from the result card. verdict_band and case_archetype
+    // are the two labels a person can act on.
+    `Verdict band: ${adjudication.verdict_band}. Case archetype: ${adjudication.case_archetype}.`,
     `Master adjudication: ${adjudication.reasoning_summary}`,
   ];
   if (active.length > 0) {
