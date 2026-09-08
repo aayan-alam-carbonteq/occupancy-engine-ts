@@ -30,7 +30,6 @@ const VALID_ADJUDICATION = {
   why_not_lower: ["Owner mailing address is not the subject."],
   records_read: {
     occupancy_signal: "non_owner_occupancy",
-    strength: "moderate",
     reasoning: "The property-tax record mails the owner elsewhere and no record places them at the subject.",
     driving_heuristic_ids: ["owner_identity_and_mailing"],
   },
@@ -57,7 +56,6 @@ describe("X-078 E2E: the adjudicator emits records_read end to end", () => {
       const a = await orch.investigate(REQUEST());
 
       expect(a.adjudication.records_read.occupancy_signal).toBe("non_owner_occupancy");
-      expect(a.adjudication.records_read.strength).toBe("moderate");
       expect(a.adjudication.records_read.driving_heuristic_ids).toEqual(["owner_identity_and_mailing"]);
       // not the fallback path — the scripted verdict survived
       expect(a.adjudication.verdict_band).toBe("monitor");
@@ -79,7 +77,9 @@ describe("X-078 E2E: the adjudicator emits records_read end to end", () => {
       const payload = assessment_report_payload(await orch.investigate(REQUEST()));
       const adjudication = payload["adjudication"] as Record<string, any>;
       expect(adjudication["records_read"]["occupancy_signal"]).toBe("non_owner_occupancy");
-      expect(JSON.parse(JSON.stringify(payload))["adjudication"]["records_read"]["strength"]).toBe("moderate");
+      expect(JSON.parse(JSON.stringify(payload))["adjudication"]["records_read"]["occupancy_signal"]).toBe(
+        "non_owner_occupancy",
+      );
     } finally {
       server.close();
     }
@@ -109,7 +109,7 @@ describe("X-078 E2E: the adjudicator emits records_read end to end", () => {
     // max_output_retries defaults to 2 (models.ts:188), so three bad batches exhaust the budget.
     const server = new FixtureDataService(fixturePlan());
     try {
-      const bad = { ...VALID_ADJUDICATION, records_read: { occupancy_signal: "maybe", strength: "strong", reasoning: "r" } };
+      const bad = { ...VALID_ADJUDICATION, records_read: { occupancy_signal: "maybe", reasoning: "r" } };
       const orch = orchestratorWith(
         [
           [{ name: "submit_case_adjudication", args: bad }],
@@ -120,7 +120,6 @@ describe("X-078 E2E: the adjudicator emits records_read end to end", () => {
       );
       const a = await orch.investigate(REQUEST());
       expect(a.adjudication.records_read.occupancy_signal).toBe("no_signal");
-      expect(a.adjudication.records_read.strength).toBe("weak");
     } finally {
       server.close();
     }

@@ -25,7 +25,6 @@ import {
   CASE_ARCHETYPE_VALUES,
   CaseAdjudicationSchema,
   CaseInvestigationPlanSchema,
-  EVIDENCE_STRENGTH,
   EvidenceReferenceSchema,
   HeuristicPlanSchema,
   OCCUPANCY_SIGNAL,
@@ -117,16 +116,6 @@ const SubmitCaseAdjudicationArgs = z
               "no_signal: NOTHING TO READ — rows absent, or so thin that neither reading has " +
               "evidence. Absence of rows only; substantive rows on both sides are conflicting, not " +
               "no_signal. Never a weak owner_occupancy.",
-          ),
-        strength: z
-          .enum(EVIDENCE_STRENGTH)
-          .describe(
-            "How much weight the RECORDS themselves carry for that signal — not how confident you " +
-              "feel, and NOT how current or well-dated they are. weak: one thin or low-reliability " +
-              "row. moderate: a clear signal from a single source family. strong: the same reading " +
-              "reappears across independent source families. Undated or stale rows do NOT cap " +
-              "strength — breadth of corroboration sets it, recency is reported in clarity_score. " +
-              "For conflicting, report the weight of the WEAKER side.",
           ),
         reasoning: z
           .string()
@@ -1088,7 +1077,6 @@ function _case_adjudication_from_tool_calls(
           verdict_band: ["low_evidence", "monitor", "review", "high_priority_review", "manual_verification"],
           case_archetype: [...CASE_ARCHETYPE_VALUES],
           "records_read.occupancy_signal": [...OCCUPANCY_SIGNAL],
-          "records_read.strength": [...EVIDENCE_STRENGTH],
         },
       };
     }
@@ -1146,7 +1134,6 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
     // invention: the sum is a risk score, not a directional read of what the records show.
     records_read: {
       occupancy_signal: "no_signal",
-      strength: "weak",
       reasoning: `No case-level adjudication was produced for this run: ${reason}`,
       driving_heuristic_ids: [],
     },

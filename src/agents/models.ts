@@ -31,8 +31,9 @@ export const CASE_ARCHETYPE_VALUES = [
 // ExternalEvidenceSchema, which carries no verdict, and test/external_evidence_blind_contract.test.ts).
 //
 // `no_signal` is its own value and must never be collapsed into `owner_occupancy`. "The records are
-// silent" and "the records show the owner living here" are different findings, and the backend maps
-// them to different corroboration states — `no_independent_support` vs `contradicted`.
+// silent" and "the records show the owner living here" are different findings. The backend uses
+// `no_signal` as a NULL GATE — no records means there is nothing to agree or disagree with, so the
+// report renders no agreement figure at all rather than a misleading midpoint.
 //
 // `conflicting` was added after the X-078 Task 10 measurement (2026-09-07, files/…-regression-…):
 // with a three-value ladder, `no_signal` was chosen 4 times in 6 and NOT ONCE for silence. Every
@@ -47,12 +48,13 @@ export const OCCUPANCY_SIGNAL = [
   "conflicting",
   "no_signal",
 ] as const;
-// How much weight the RECORDS carry — not how confident the model feels, and NOT how current they
-// are. Recency and datedness belong to `clarity_score`; folding them in here is why the same Task 10
-// run never once emitted `strong`, even at an address with 18+ non-owners corroborated across
-// trace, utility, driver-license and loan records. Distinct from SIGNAL_STRENGTH above, which is the
-// per-heuristic four-value ladder including "none".
-export const EVIDENCE_STRENGTH = ["weak", "moderate", "strong"] as const;
+// REMOVED 2026-09-08 — `records_read.strength` is gone. Measured over 24 live addresses
+// (files/x078-measurement-2026-09-07/), it was `moderate` in 21 of 24 cases and perfectly
+// correlated with occupancy_signal, so signal+strength together carried barely more information
+// than signal alone. Nothing downstream consumes it: the backend derives agreement from
+// calibrated_score and uses occupancy_signal only as a `no_signal` null-gate. Keeping a required
+// field the model must fill on every adjudication, that no one reads, is pure token cost.
+// (SIGNAL_STRENGTH above is unrelated — that is the per-heuristic four-value ladder.)
 
 export type HeuristicStatus = (typeof HEURISTIC_STATUS)[number];
 export type HeuristicDirection = (typeof HEURISTIC_DIRECTION)[number];
@@ -60,7 +62,6 @@ export type Confidence = (typeof CONFIDENCE)[number];
 export type VerdictBand = (typeof VERDICT_BAND)[number];
 export type CaseArchetype = (typeof CASE_ARCHETYPE_VALUES)[number];
 export type OccupancySignal = (typeof OCCUPANCY_SIGNAL)[number];
-export type EvidenceStrength = (typeof EVIDENCE_STRENGTH)[number];
 
 const jsonRecord = z.record(z.string(), z.unknown());
 
@@ -341,7 +342,6 @@ export const CaseAdjudicationSchema = z
     records_read: z
       .object({
         occupancy_signal: z.enum(OCCUPANCY_SIGNAL),
-        strength: z.enum(EVIDENCE_STRENGTH),
         reasoning: z.string(),
         // Lets the UI link the headline straight to the findings that drove it.
         driving_heuristic_ids: z.array(z.string()).default([]),

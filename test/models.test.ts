@@ -179,13 +179,11 @@ describe("X-078 CaseAdjudication.records_read", () => {
       ...adjudicationBase,
       records_read: {
         occupancy_signal: "non_owner_occupancy",
-        strength: "strong",
         reasoning: "Owner mails elsewhere; two unrelated adults hold utility service at the subject.",
         driving_heuristic_ids: ["owner_identity_and_mailing", "subject_occupancy_surfaces"],
       },
     });
     expect(adj.records_read.occupancy_signal).toBe("non_owner_occupancy");
-    expect(adj.records_read.strength).toBe("strong");
     expect(adj.records_read.driving_heuristic_ids).toEqual([
       "owner_identity_and_mailing",
       "subject_occupancy_surfaces",
@@ -195,7 +193,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
   test("driving_heuristic_ids defaults to [] — the UI link-through is optional, the signal is not", () => {
     const adj = CaseAdjudicationSchema.parse({
       ...adjudicationBase,
-      records_read: { occupancy_signal: "no_signal", strength: "weak", reasoning: "Records are silent." },
+      records_read: { occupancy_signal: "no_signal", reasoning: "Records are silent." },
     });
     expect(adj.records_read.driving_heuristic_ids).toEqual([]);
   });
@@ -215,7 +213,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
     for (const signal of ["non_owner_occupancy", "owner_occupancy", "conflicting", "no_signal"]) {
       const r = CaseAdjudicationSchema.safeParse({
         ...adjudicationBase,
-        records_read: { occupancy_signal: signal, strength: "moderate", reasoning: "r" },
+        records_read: { occupancy_signal: signal, reasoning: "r" },
       });
       expect([signal, r.success]).toEqual([signal, true]);
     }
@@ -224,37 +222,29 @@ describe("X-078 CaseAdjudication.records_read", () => {
     for (const bad of ["none", "unknown", "not_applicable", "owner", "rented"]) {
       const r = CaseAdjudicationSchema.safeParse({
         ...adjudicationBase,
-        records_read: { occupancy_signal: bad, strength: "moderate", reasoning: "r" },
+        records_read: { occupancy_signal: bad, reasoning: "r" },
       });
       expect([bad, r.success]).toEqual([bad, false]);
     }
   });
 
-  test("strength is weak|moderate|strong — it is NOT the four-value SIGNAL_STRENGTH ladder", () => {
-    for (const strength of ["weak", "moderate", "strong"]) {
-      const r = CaseAdjudicationSchema.safeParse({
-        ...adjudicationBase,
-        records_read: { occupancy_signal: "owner_occupancy", strength, reasoning: "r" },
-      });
-      expect([strength, r.success]).toEqual([strength, true]);
-    }
-    // SIGNAL_STRENGTH (models.ts:9) carries a fourth value, "none", for per-heuristic use. Reusing
-    // it here would give the backend's AGREEMENT_ANCHORS table a key it has no anchor for.
+  test("`strength` is REJECTED — the schema is .strict() and the field is gone", () => {
+    // Removed 2026-09-08: measured `moderate` in 21 of 24 live cases and perfectly correlated with
+    // occupancy_signal, so it carried almost no information, and nothing downstream consumed it.
+    // .strict() means a stale caller still sending it fails loudly instead of being ignored.
     const r = CaseAdjudicationSchema.safeParse({
       ...adjudicationBase,
-      records_read: { occupancy_signal: "owner_occupancy", strength: "none", reasoning: "r" },
+      records_read: { occupancy_signal: "owner_occupancy", strength: "moderate", reasoning: "r" },
     });
     expect(r.success).toBe(false);
   });
-
   test("the block is strict — an unknown key is a caller bug, not a field to ignore", () => {
     const r = CaseAdjudicationSchema.safeParse({
       ...adjudicationBase,
       records_read: {
         occupancy_signal: "no_signal",
-        strength: "weak",
         reasoning: "r",
-        confidence: 0.8, // model-self-confidence has no home here; strength is about the RECORDS
+        confidence: 0.8, // model self-confidence has no home in records_read at all
       },
     });
     expect(r.success).toBe(false);

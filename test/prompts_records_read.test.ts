@@ -10,18 +10,17 @@ const PROMPT = master_adjudication_user_prompt(
 );
 
 describe("X-078 master adjudication prompt: records_read", () => {
+  test("the prompt no longer mentions records_read.strength — the field is gone", () => {
+    // Removed 2026-09-08: `moderate` in 21 of 24 live cases, perfectly correlated with the signal,
+    // and consumed by nothing. A prompt that still asks for it would make the model emit a field
+    // the .strict() schema now rejects.
+    expect(PROMPT).not.toContain("records_read.strength");
+  });
+
   test("names the field and all four signals", () => {
     expect(PROMPT).toContain("records_read");
     for (const signal of ["non_owner_occupancy", "owner_occupancy", "conflicting", "no_signal"]) {
       expect([signal, PROMPT.includes(signal)]).toEqual([signal, true]);
-    }
-  });
-
-  test("defines strength as the weight of the RECORDS, not model self-confidence", () => {
-    expect(PROMPT).toContain("how much weight the records carry");
-    expect(PROMPT).toContain("not how confident you feel");
-    for (const strength of ["weak", "moderate", "strong"]) {
-      expect([strength, PROMPT.includes(strength)]).toEqual([strength, true]);
     }
   });
 
@@ -40,14 +39,6 @@ describe("X-078 master adjudication prompt: records_read", () => {
     expect(PROMPT).toContain("ABSENCE OF ROWS ONLY");
     expect(PROMPT).toContain("substantive rows on both sides, that is conflicting, not");
     expect(PROMPT).toContain("SUBSTANTIVE evidence BOTH ways");
-  });
-
-  test("strength is breadth of corroboration, NOT recency — else `strong` never fires", () => {
-    // Same run: `strong` was emitted zero times in six, including at an address with 18+ non-owners
-    // corroborated across trace, utility, driver-licence and loan records. The model was folding
-    // undated-ness into strength. Recency belongs to clarity_score.
-    expect(PROMPT).toContain("Undated or stale rows do NOT cap");
-    expect(PROMPT).toContain("independent source families");
   });
 
   test("never frames the field as agreement with an outside claim", () => {

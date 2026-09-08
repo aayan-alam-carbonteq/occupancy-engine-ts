@@ -144,7 +144,6 @@ describe("sanitize_adjudication_prose", () => {
       why_not_lower: [],
       records_read: {
         occupancy_signal: "non_owner_occupancy",
-        strength: "moderate",
         reasoning: "utilityRecords show own_rent=0 for the occupant.",
         driving_heuristic_ids: ["loan_tenure"],
       },
@@ -152,7 +151,6 @@ describe("sanitize_adjudication_prose", () => {
     const out = sanitize_adjudication_prose(adj);
     expect(count_prose_leaks([out.records_read.reasoning])).toBe(0);
     expect(out.records_read.occupancy_signal).toBe("non_owner_occupancy");
-    expect(out.records_read.strength).toBe("moderate");
     expect(out.records_read.driving_heuristic_ids).toEqual(["loan_tenure"]);
   });
 
@@ -306,7 +304,6 @@ describe("integration: sanitized findings produce a leak-free report", () => {
       reasoning_summary: "driveRecords indicate presence at the subject.",
       records_read: {
         occupancy_signal: "non_owner_occupancy",
-        strength: "moderate",
         reasoning: "utilityRecords name a non-owner at the subject.",
         driving_heuristic_ids: ["subject_occupancy_surfaces"],
       },
