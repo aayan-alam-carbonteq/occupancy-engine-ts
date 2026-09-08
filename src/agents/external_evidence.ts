@@ -61,6 +61,26 @@ export const PropertyFactsSchema = z
   .strict();
 export type PropertyFacts = z.infer<typeof PropertyFactsSchema>;
 
+// The scan's own conclusion, so the engine can report how far its independent read of the records
+// AGREES with it. Deliberately the VERDICT ALONE.
+//
+// The verdict is a factual finding — "a listing was found that we believe is this property" —
+// derived from confidence_score against the org's thresholds. What is NOT here, and must never be:
+// `conclusivity`, `occupancyStatus`, `declaredIntent`, `confidenceBands`, `configVersion`. Those are
+// per-organisation POLICY, computed by the backend and pinned to a config version; an engine that
+// saw them would be reasoning about one org's rules, and its cached report could not be reused for
+// another. test/external_evidence_blind_contract.test.ts pins that boundary by name.
+//
+// The model never sees this. It reaches the engine, the adjudicator runs blind exactly as before,
+// and the agreement figure is computed IN CODE from the model's own records read (orchestrator.ts).
+// So the investigation cannot be anchored by the answer it is being compared against.
+export const ScanClaimSchema = z
+  .object({
+    verdict: z.enum(["not-rented", "possibly-rented", "rented"]),
+  })
+  .strict();
+export type ScanClaim = z.infer<typeof ScanClaimSchema>;
+
 export const ExternalEvidenceSchema = z
   .object({
     scan_id: z.string().nullish(),
@@ -72,6 +92,9 @@ export const ExternalEvidenceSchema = z
     rental_listings: z.array(RentalListingSchema).default([]),
     address_match_confidence: z.number().nullish(),
     property_facts: PropertyFactsSchema.nullish(),
+    // Absent => the engine emits no corroboration block at all (benchmark/blind runs). Same code
+    // path, no branch: blind and enriched runs still execute identically.
+    scan_claim: ScanClaimSchema.nullish().default(null),
   })
   .strict();
 export type ExternalEvidence = z.infer<typeof ExternalEvidenceSchema>;

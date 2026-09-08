@@ -364,12 +364,41 @@ export type RecordsRead = CaseAdjudication["records_read"];
 
 // metrics_events is excluded from serialization. We keep it on the type and strip it when writing
 // JSON (see cli serialization).
+export const CORROBORATION_STATE = ["corroborated", "mixed", "contradicted"] as const;
+export type CorroborationState = (typeof CORROBORATION_STATE)[number];
+
+/**
+ * X-078. How far the engine's independent read of the public records AGREES with the scan's verdict.
+ *
+ * COMPUTED IN CODE, never emitted by the model — see derive_corroboration in orchestrator.ts. The
+ * adjudicator is not shown the scan's verdict, so its `nonowner_occupancy_strength` cannot be
+ * anchored by the answer it is being compared against. That also makes this figure reproducible:
+ * the same records and the same verdict always give the same number, which a model-emitted score
+ * could never guarantee.
+ *
+ * `null` (the block absent) whenever no scan_claim was supplied, or the records were silent
+ * (`no_signal`) — there is nothing to agree or disagree with, and a midpoint would be a fabricated
+ * reading rather than an honest absence.
+ */
+export const CorroborationSchema = z
+  .object({
+    scan_verdict: z.enum(["not-rented", "possibly-rented", "rented"]),
+    // 0-100, anchored at 50. 100 = the records fully back the scan's claim; 0 = they fully
+    // contradict it; 50 = they land exactly between.
+    agreement: z.number().int().min(0).max(100),
+    state: z.enum(CORROBORATION_STATE),
+  })
+  .strict();
+export type Corroboration = z.infer<typeof CorroborationSchema>;
+
 export const OccupancyAgentAssessmentSchema = z
   .object({
     query: jsonRecord,
     resolved_address: ResolvedAddressContextSchema,
     score_breakdown: ScoreBreakdownSchema,
     adjudication: CaseAdjudicationSchema,
+    // Absent (null) on a blind run, or when the records were silent. See CorroborationSchema.
+    corroboration: CorroborationSchema.nullish().default(null),
     investigation_plan: CaseInvestigationPlanSchema.default(() => emptyCaseInvestigationPlan()),
     heuristics: z.array(HeuristicAgentResultSchema),
     evidence_pack: z.array(EvidenceReferenceSchema),

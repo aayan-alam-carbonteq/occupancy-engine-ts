@@ -24,6 +24,8 @@ import {
   AddressCandidateSchema,
   CASE_ARCHETYPE_VALUES,
   CaseAdjudicationSchema,
+  type Corroboration,
+  type CorroborationState,
   CaseInvestigationPlanSchema,
   EvidenceReferenceSchema,
   HeuristicPlanSchema,
@@ -385,6 +387,7 @@ export class AgentOrchestrator {
       resolved_address: displayContext,
       score_breakdown: scoring.score_breakdown,
       adjudication: finalAdjudication,
+      corroboration: derive_corroboration(finalAdjudication, request.external_evidence?.scan_claim),
       investigation_plan,
       heuristics: finalResults,
       evidence_pack: scoring.evidence_pack,
@@ -1119,6 +1122,41 @@ function _response_tool_calls(response: any): Record<string, any>[] {
     parsed.push({ id: call["id"], name: func["name"] || call["name"], args });
   }
   return parsed;
+}
+
+/**
+ * X-078. Agreement between the engine's independent read of the records and the scan's verdict.
+ *
+ * PURE and computed in code — the adjudicator is never shown the verdict, so its
+ * `nonowner_occupancy_strength` cannot be anchored by the answer it is being compared against, and
+ * the same (records, verdict) pair always yields the same figure.
+ *
+ * One axis anchored at 50:
+ *   100  the records fully back the scan's claim
+ *    50  they land exactly between
+ *     0  they fully contradict it
+ *
+ * `nonowner_occupancy_strength` is 0-10 NON-OWNER-occupancy risk, so it maps straight through when
+ * the scan asserts non-owner use and mirrors when it asserts owner occupancy. `possibly-rented`
+ * groups with `rented`: both assert SOME listing evidence of non-owner use.
+ *
+ * Returns null when the records were silent — `no_signal` means there is nothing to agree or
+ * disagree with, and a midpoint would read as a real finding rather than an honest absence.
+ */
+export function derive_corroboration(
+  adjudication: CaseAdjudication,
+  scan_claim: { verdict: "not-rented" | "possibly-rented" | "rented" } | null | undefined,
+): Corroboration | null {
+  if (!scan_claim) return null;
+  if (adjudication.records_read.occupancy_signal === "no_signal") return null;
+
+  const strength = Math.min(10, Math.max(0, adjudication.records_read.nonowner_occupancy_strength));
+  const scan_asserts_nonowner = scan_claim.verdict === "rented" || scan_claim.verdict === "possibly-rented";
+  const agreement = Math.round(scan_asserts_nonowner ? strength * 10 : 100 - strength * 10);
+  // Banded from the SAME figure, so state and number can never contradict each other — a report
+  // reading "contradicted, 71" is unrepresentable.
+  const state: CorroborationState = agreement >= 67 ? "corroborated" : agreement <= 33 ? "contradicted" : "mixed";
+  return { scan_verdict: scan_claim.verdict, agreement, state };
 }
 
 export function fallback_adjudication(raw_score: any, reason: string): CaseAdjudication {
