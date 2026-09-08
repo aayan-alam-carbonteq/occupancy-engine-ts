@@ -109,7 +109,7 @@ const ENGINE_CONTRACT_FIELDS: readonly string[] = [
   "finding", "interpretation", "evidence_for", "evidence_against", "evidence_refs",
   "missing_evidence", "data_queries", "tool_errors", "validation_errors",
   "query_repair_attempts", "raw_model_failures", "caveats", "needs_second_pass",
-  "raw_score", "calibrated_score", "clarity_score", "verdict_band", "case_archetype",
+  "raw_score", "nonowner_occupancy_strength", "verdict_band", "case_archetype",
   "score_adjustments", "reasoning_summary", "why_not_higher", "why_not_lower",
   "expected_sources", "known_data_gaps", "global_case_questions", "input_sources",
   "output_fields", "context_scope", "required_evidence_packs", "scoring_guidance",

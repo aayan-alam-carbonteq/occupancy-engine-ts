@@ -328,8 +328,10 @@ export type ScoreAdjustment = z.infer<typeof ScoreAdjustmentSchema>;
 export const CaseAdjudicationSchema = z
   .object({
     raw_score: z.number().int(),
-    calibrated_score: z.number().int().min(0).max(10),
-    clarity_score: z.number().int().min(0).max(10),
+    // REMOVED 2026-09-08: `calibrated_score` and `clarity_score`. They were the two bare fractions
+    // the product could not act on ("Non-occupancy risk 7/10", "Evidence clarity 5/10"), and the
+    // measurement showed the first IS the agreement figure on another scale while the second only
+    // ever damped it. The graded read now lives inside records_read, named for what it measures.
     verdict_band: z.enum(VERDICT_BAND),
     case_archetype: z.enum(CASE_ARCHETYPE_VALUES),
     score_adjustments: z.array(ScoreAdjustmentSchema).default([]),
@@ -342,6 +344,14 @@ export const CaseAdjudicationSchema = z
     records_read: z
       .object({
         occupancy_signal: z.enum(OCCUPANCY_SIGNAL),
+        // 0-10: how strongly the PUBLIC RECORDS point AWAY from owner occupancy. This is the
+        // engine's one graded output and the sole input to the backend's agreement figure
+        // (agreement = value * 10 when the scan asserts non-owner use, mirrored when it does not).
+        // Named for the proposition it measures rather than "score", so it cannot be read as a
+        // rental probability the way scan_jobs.confidence_score wrongly is (spec §2.2).
+        // It replaces calibrated_score: measured range 2..8 with 20 of 24 addresses stable across
+        // identical re-runs, the only field with both spread and reproducibility.
+        nonowner_occupancy_strength: z.number().int().min(0).max(10),
         reasoning: z.string(),
         // Lets the UI link the headline straight to the findings that drove it.
         driving_heuristic_ids: z.array(z.string()).default([]),

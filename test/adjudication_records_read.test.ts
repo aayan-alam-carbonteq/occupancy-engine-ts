@@ -31,7 +31,7 @@ describe("X-078 fallback_adjudication.records_read", () => {
     const adj = fallback_adjudication({ final_score: 18, band: "high_priority_review" }, "Retry budget exhausted.");
     expect(adj.records_read.occupancy_signal).toBe("no_signal");
     // ...even though the raw heuristics scored high. The heuristics are not a records READ.
-    expect(adj.calibrated_score).toBe(10);
+    expect(adj.records_read.nonowner_occupancy_strength).toBe(10);
   });
 });
 
@@ -51,12 +51,10 @@ describe("X-078 submit_case_adjudication tool args", () => {
   test("the tool accepts a full block and applies the same default", () => {
     const parsed = schema.parse({
       raw_score: 4,
-      calibrated_score: 4,
-      clarity_score: 6,
       verdict_band: "review",
       case_archetype: "mixed_evidence",
       reasoning_summary: "s",
-      records_read: { occupancy_signal: "owner_occupancy", reasoning: "r" },
+      records_read: { occupancy_signal: "owner_occupancy", nonowner_occupancy_strength: 5, reasoning: "r" },
     });
     expect(parsed.records_read.driving_heuristic_ids).toEqual([]);
   });

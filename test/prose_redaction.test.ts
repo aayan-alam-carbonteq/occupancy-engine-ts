@@ -143,7 +143,7 @@ describe("sanitize_adjudication_prose", () => {
       why_not_higher: [],
       why_not_lower: [],
       records_read: {
-        occupancy_signal: "non_owner_occupancy",
+        occupancy_signal: "non_owner_occupancy", nonowner_occupancy_strength: 5,
         reasoning: "utilityRecords show own_rent=0 for the occupant.",
         driving_heuristic_ids: ["loan_tenure"],
       },
@@ -297,13 +297,11 @@ describe("integration: sanitized findings produce a leak-free report", () => {
     });
     const adjudication = CaseAdjudicationSchema.parse({
       raw_score: 2,
-      calibrated_score: 2,
-      clarity_score: 5,
       verdict_band: "review",
       case_archetype: "mixed_evidence",
       reasoning_summary: "driveRecords indicate presence at the subject.",
       records_read: {
-        occupancy_signal: "non_owner_occupancy",
+        occupancy_signal: "non_owner_occupancy", nonowner_occupancy_strength: 5,
         reasoning: "utilityRecords name a non-owner at the subject.",
         driving_heuristic_ids: ["subject_occupancy_surfaces"],
       },

@@ -166,8 +166,6 @@ describe("HeuristicAgentResult", () => {
 // scan claim — the engine never sees one (test/external_evidence_blind_contract.test.ts).
 const adjudicationBase = {
   raw_score: 4,
-  calibrated_score: 4,
-  clarity_score: 6,
   verdict_band: "review" as const,
   case_archetype: "mixed_evidence" as const,
   reasoning_summary: "Absentee owner with unrelated occupants at the subject.",
@@ -178,7 +176,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
     const adj = CaseAdjudicationSchema.parse({
       ...adjudicationBase,
       records_read: {
-        occupancy_signal: "non_owner_occupancy",
+        occupancy_signal: "non_owner_occupancy", nonowner_occupancy_strength: 5,
         reasoning: "Owner mails elsewhere; two unrelated adults hold utility service at the subject.",
         driving_heuristic_ids: ["owner_identity_and_mailing", "subject_occupancy_surfaces"],
       },
@@ -193,7 +191,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
   test("driving_heuristic_ids defaults to [] — the UI link-through is optional, the signal is not", () => {
     const adj = CaseAdjudicationSchema.parse({
       ...adjudicationBase,
-      records_read: { occupancy_signal: "no_signal", reasoning: "Records are silent." },
+      records_read: { occupancy_signal: "no_signal", nonowner_occupancy_strength: 5, reasoning: "Records are silent." },
     });
     expect(adj.records_read.driving_heuristic_ids).toEqual([]);
   });
@@ -213,7 +211,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
     for (const signal of ["non_owner_occupancy", "owner_occupancy", "conflicting", "no_signal"]) {
       const r = CaseAdjudicationSchema.safeParse({
         ...adjudicationBase,
-        records_read: { occupancy_signal: signal, reasoning: "r" },
+        records_read: { occupancy_signal: signal, nonowner_occupancy_strength: 5, reasoning: "r" },
       });
       expect([signal, r.success]).toEqual([signal, true]);
     }
@@ -222,7 +220,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
     for (const bad of ["none", "unknown", "not_applicable", "owner", "rented"]) {
       const r = CaseAdjudicationSchema.safeParse({
         ...adjudicationBase,
-        records_read: { occupancy_signal: bad, reasoning: "r" },
+        records_read: { occupancy_signal: bad, nonowner_occupancy_strength: 5, reasoning: "r" },
       });
       expect([bad, r.success]).toEqual([bad, false]);
     }
@@ -234,7 +232,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
     // .strict() means a stale caller still sending it fails loudly instead of being ignored.
     const r = CaseAdjudicationSchema.safeParse({
       ...adjudicationBase,
-      records_read: { occupancy_signal: "owner_occupancy", strength: "moderate", reasoning: "r" },
+      records_read: { occupancy_signal: "owner_occupancy", nonowner_occupancy_strength: 5, strength: "moderate", reasoning: "r" },
     });
     expect(r.success).toBe(false);
   });
@@ -242,7 +240,7 @@ describe("X-078 CaseAdjudication.records_read", () => {
     const r = CaseAdjudicationSchema.safeParse({
       ...adjudicationBase,
       records_read: {
-        occupancy_signal: "no_signal",
+        occupancy_signal: "no_signal", nonowner_occupancy_strength: 5,
         reasoning: "r",
         confidence: 0.8, // model self-confidence has no home in records_read at all
       },

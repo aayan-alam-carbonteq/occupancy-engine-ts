@@ -21,15 +21,13 @@ function fixturePlan() {
 
 const VALID_ADJUDICATION = {
   raw_score: 0,
-  calibrated_score: 3,
-  clarity_score: 7,
   verdict_band: "monitor",
   case_archetype: "non_rental_absentee_owner",
   reasoning_summary: "Owner mails elsewhere; no rental-use evidence at the subject.",
   why_not_higher: ["No unrelated-occupant evidence."],
   why_not_lower: ["Owner mailing address is not the subject."],
   records_read: {
-    occupancy_signal: "non_owner_occupancy",
+    occupancy_signal: "non_owner_occupancy", nonowner_occupancy_strength: 6,
     reasoning: "The property-tax record mails the owner elsewhere and no record places them at the subject.",
     driving_heuristic_ids: ["owner_identity_and_mailing"],
   },
@@ -59,7 +57,7 @@ describe("X-078 E2E: the adjudicator emits records_read end to end", () => {
       expect(a.adjudication.records_read.driving_heuristic_ids).toEqual(["owner_identity_and_mailing"]);
       // not the fallback path — the scripted verdict survived
       expect(a.adjudication.verdict_band).toBe("monitor");
-      expect(a.adjudication.calibrated_score).toBe(3);
+      expect(a.adjudication.records_read.nonowner_occupancy_strength).toBe(6);
     } finally {
       server.close();
     }
@@ -109,7 +107,7 @@ describe("X-078 E2E: the adjudicator emits records_read end to end", () => {
     // max_output_retries defaults to 2 (models.ts:188), so three bad batches exhaust the budget.
     const server = new FixtureDataService(fixturePlan());
     try {
-      const bad = { ...VALID_ADJUDICATION, records_read: { occupancy_signal: "maybe", reasoning: "r" } };
+      const bad = { ...VALID_ADJUDICATION, records_read: { occupancy_signal: "maybe", nonowner_occupancy_strength: 5, reasoning: "r" } };
       const orch = orchestratorWith(
         [
           [{ name: "submit_case_adjudication", args: bad }],

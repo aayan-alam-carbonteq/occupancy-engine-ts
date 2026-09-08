@@ -87,8 +87,6 @@ const SubmitCaseAdjudicationArgs = z
       .number()
       .int()
       .describe("Raw deterministic worker score. Must equal raw_score.final_score from the prompt."),
-    calibrated_score: z.number().int().min(0).max(10).describe("Master-calibrated case score from 0 to 10."),
-    clarity_score: z.number().int().min(0).max(10).describe("Evidence clarity from 0 to 10."),
     verdict_band: z
       .enum(VERDICT_BAND)
       .describe("One of: low_evidence, monitor, review, high_priority_review, manual_verification."),
@@ -102,6 +100,16 @@ const SubmitCaseAdjudicationArgs = z
     why_not_lower: z.array(z.string()).default([]).describe("Reasons the case was not assigned a lower score/band."),
     records_read: z
       .object({
+        nonowner_occupancy_strength: z
+          .number()
+          .int()
+          .min(0)
+          .max(10)
+          .describe(
+            "0-10: how strongly the PUBLIC RECORDS point AWAY from owner occupancy. 0 = the records " +
+              "clearly place the owner in residence; 10 = they clearly place someone else there. " +
+              "This is your one graded output — judge the records, not any outside claim.",
+          ),
         occupancy_signal: z
           .enum(OCCUPANCY_SIGNAL)
           .describe(
@@ -1118,10 +1126,8 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
   const band: VerdictBand = (raw_score?.band ?? "low_evidence") as VerdictBand;
   return {
     raw_score: score,
-    // calibrated_score now shares clarity's 0-10 scale; the raw worker sum can
+    // The raw worker sum can exceed 10, and this fallback path bypasses schema validation.
     // exceed 10, and this fallback path bypasses schema validation, so clamp it.
-    calibrated_score: Math.min(10, score),
-    clarity_score: score ? 5 : 2,
     verdict_band: band,
     case_archetype: score ? "mixed_evidence" : "insufficient_ownership_data",
     score_adjustments: [],
@@ -1134,6 +1140,7 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
     // invention: the sum is a risk score, not a directional read of what the records show.
     records_read: {
       occupancy_signal: "no_signal",
+      nonowner_occupancy_strength: Math.min(10, Math.max(0, score)),
       reasoning: `No case-level adjudication was produced for this run: ${reason}`,
       driving_heuristic_ids: [],
     },
@@ -1152,8 +1159,8 @@ export function build_report(
   const mitigations = results.filter((result) => result.score < 0 && result.status !== "error");
   const errors = results.filter((result) => result.status === "error");
   const lines = [
-    `Verdict band: ${adjudication.verdict_band}. Calibrated score: ${adjudication.calibrated_score}. Raw score: ${raw_score}.`,
-    `Case archetype: ${adjudication.case_archetype}. Clarity score: ${adjudication.clarity_score}.`,
+    `Verdict band: ${adjudication.verdict_band}. Raw score: ${raw_score}.`,
+    `Case archetype: ${adjudication.case_archetype}.`,
     `Master adjudication: ${adjudication.reasoning_summary}`,
   ];
   if (active.length > 0) {
