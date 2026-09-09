@@ -353,7 +353,7 @@ export class AgentOrchestrator {
     const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
     caveats.push(..._global_caveats(context, finalResults));
     const report = await recorder.span("report_build", { agent_id: "orchestrator" }, () =>
-      build_report(finalAdjudication, scoring.score_breakdown.final_score, finalResults, scoring.conflicts),
+      build_report(finalAdjudication, finalResults, scoring.conflicts),
     );
     const agent_metrics = _agent_metrics({
       candidate_count,
@@ -1151,6 +1151,11 @@ export function derive_corroboration(
   if (adjudication.records_read.occupancy_signal === "no_signal") return null;
 
   const strength = Math.min(10, Math.max(0, adjudication.records_read.nonowner_occupancy_strength));
+  // `possibly-rented` groups with `rented` because agreement measures DIRECTION — whether the
+  // records point the same way as the scan — not whether they match the scan's own confidence.
+  // Consequence, deliberate and tested: a HEDGED verdict can still reach 100/"corroborated" or
+  // 0/"contradicted". A consumer that needs to discount a hedge reads `scan_verdict`, which is
+  // echoed on the block for exactly that reason.
   const scan_asserts_nonowner = scan_claim.verdict === "rented" || scan_claim.verdict === "possibly-rented";
   const agreement = Math.round(scan_asserts_nonowner ? strength * 10 : 100 - strength * 10);
   // Banded from the SAME figure, so state and number can never contradict each other — a report
@@ -1164,21 +1169,25 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
   const band: VerdictBand = (raw_score?.band ?? "low_evidence") as VerdictBand;
   return {
     raw_score: score,
-    // The raw worker sum can exceed 10, and this fallback path bypasses schema validation.
-    // exceed 10, and this fallback path bypasses schema validation, so clamp it.
     verdict_band: band,
     case_archetype: score ? "mixed_evidence" : "insufficient_ownership_data",
     score_adjustments: [],
     reasoning_summary: reason,
     why_not_higher: [reason],
     why_not_lower: score ? [] : ["No positive raw heuristic score was available."],
-    // X-078. There is no case-level read of the records on this path, so the only honest report is
-    // "no signal, weak" — which the backend resolves to agreement 50, "the investigation could not
-    // tell", for every scan verdict. Deriving a signal from the raw heuristic sum would be an
-    // invention: the sum is a risk score, not a directional read of what the records show.
+    // X-078. No case-level read of the records happened on this path, so the only honest report is
+    // `no_signal` at the MIDPOINT — the value the prompt mandates for "the records could not speak
+    // at all" (prompts.ts: "use the midpoint there").
+    //
+    // The strength must NOT be derived from `score`. The raw heuristic sum is a RISK score, not a
+    // directional read of what the records show, so mapping it here would invent a finding out of a
+    // run where no adjudicator read anything — a fallback on a high-scoring address would claim
+    // `nonowner_occupancy_strength: 10`, "the records overwhelmingly point away from owner
+    // occupancy". `derive_corroboration` gates `no_signal` to null so this never reaches
+    // `corroboration`, but the field ships on the wire and the backend mirrors it.
     records_read: {
       occupancy_signal: "no_signal",
-      nonowner_occupancy_strength: Math.min(10, Math.max(0, score)),
+      nonowner_occupancy_strength: 5,
       reasoning: `No case-level adjudication was produced for this run: ${reason}`,
       driving_heuristic_ids: [],
     },
@@ -1189,7 +1198,6 @@ export function fallback_adjudication(raw_score: any, reason: string): CaseAdjud
 
 export function build_report(
   adjudication: CaseAdjudication,
-  raw_score: number,
   results: HeuristicAgentResult[],
   conflicts: ConflictSummary[],
 ): string {
@@ -1270,6 +1278,10 @@ function _agent_metrics(opts: {
     ...adjudication.why_not_higher,
     ...adjudication.why_not_lower,
     ...adjudication.score_adjustments.map((sa) => sa.reason),
+    // X-078 — records_read.reasoning is user-facing prose that reaches the browser, so it belongs in
+    // the ALWAYS-ON measurement. The redaction path already covers it; without it here, leaks in it
+    // are invisible whenever OE_PROSE_REDACT is off, which is exactly when the A/B needs to see them.
+    adjudication.records_read.reasoning,
     report,
     ...display_evidence_map.owner_summaries.flatMap((o) => o.summaries),
     ...display_evidence_map.people_at_address.flatMap((p) => p.summaries),

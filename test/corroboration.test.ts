@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { derive_corroboration } from "../src/agents/orchestrator.ts";
-import type { CaseAdjudication } from "../src/agents/models.ts";
+import { CaseAdjudicationSchema, type CaseAdjudication } from "../src/agents/models.ts";
 
+// Parsed through the REAL schema, not cast: a cast erases all checking, so a new required field
+// or a changed range would drift silently while these tests stayed green.
 const adj = (occupancy_signal: string, nonowner_occupancy_strength: number): CaseAdjudication =>
-  ({
+  CaseAdjudicationSchema.parse({
     raw_score: 4,
     verdict_band: "review",
     case_archetype: "mixed_evidence",
@@ -17,7 +19,7 @@ const adj = (occupancy_signal: string, nonowner_occupancy_strength: number): Cas
       reasoning: "r",
       driving_heuristic_ids: [],
     },
-  }) as unknown as CaseAdjudication;
+  });
 
 describe("X-078 derive_corroboration", () => {
   test("no scan_claim -> null (blind run: nothing to compare against)", () => {
@@ -71,6 +73,31 @@ describe("X-078 derive_corroboration", () => {
     expect(derive_corroboration(adj("conflicting", 5), { verdict: "possibly-rented" })!.scan_verdict).toBe(
       "possibly-rented",
     );
+  });
+
+  test("possibly-rented reaches the extremes — a hedged verdict can still read as certainty", () => {
+    // Grouped with `rented` because agreement measures DIRECTION, not the scan's own confidence.
+    // The consequence, pinned so it is a known property rather than a surprise: a HEDGED verdict
+    // can still produce 100/"corroborated" or 0/"contradicted". Consumers that care are expected to
+    // read the echoed scan_verdict, which is why it is on the block at all.
+    const v = { verdict: "possibly-rented" } as const;
+    expect(derive_corroboration(adj("non_owner_occupancy", 10), v)!).toMatchObject({
+      agreement: 100,
+      state: "corroborated",
+    });
+    expect(derive_corroboration(adj("owner_occupancy", 0), v)!).toMatchObject({
+      agreement: 0,
+      state: "contradicted",
+    });
+  });
+
+  test("agreement takes only 11 distinct values — it is a 0-10 scale times ten, not a 101-point one", () => {
+    // Worth pinning before anything downstream calibrates thresholds against it: the figure reads
+    // like a percentage but has the granularity of the strength it is derived from.
+    const v = { verdict: "rented" } as const;
+    const seen = new Set<number>();
+    for (let s = 0; s <= 10; s++) seen.add(derive_corroboration(adj("conflicting", s), v)!.agreement);
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
   });
 
   test("is pure — same inputs, same figure, every time", () => {

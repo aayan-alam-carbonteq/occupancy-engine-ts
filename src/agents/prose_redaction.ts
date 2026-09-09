@@ -109,7 +109,14 @@ const ENGINE_CONTRACT_FIELDS: readonly string[] = [
   "finding", "interpretation", "evidence_for", "evidence_against", "evidence_refs",
   "missing_evidence", "data_queries", "tool_errors", "validation_errors",
   "query_repair_attempts", "raw_model_failures", "caveats", "needs_second_pass",
-  "raw_score", "nonowner_occupancy_strength", "verdict_band", "case_archetype",
+  "raw_score", "nonowner_occupancy_strength",
+  // X-078 — our OWN adjudication field names. Naming them reveals nothing about the backing data
+  // (family 4), and without them SNAKE_RE scrubs the engine's own vocabulary as if it were a leak.
+  // The enum VALUES (no_signal, non_owner_occupancy, conflicting) are deliberately NOT listed —
+  // those must stay scrubbed so a raw enum token can never reach user-facing prose.
+  "records_read",
+  "occupancy_signal",
+  "driving_heuristic_ids", "verdict_band", "case_archetype",
   "score_adjustments", "reasoning_summary", "why_not_higher", "why_not_lower",
   "expected_sources", "known_data_gaps", "global_case_questions", "input_sources",
   "output_fields", "context_scope", "required_evidence_packs", "scoring_guidance",

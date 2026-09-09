@@ -24,14 +24,21 @@ describe("X-078 fallback_adjudication.records_read", () => {
     }
   });
 
-  test("no_signal is the default for EVERY scan verdict the backend might compare against", () => {
-    // Backend contract: no_signal -> "no_independent_support" -> agreement 50, regardless of
-    // regardless of the scan's verdict. That is the only defensible default for a run
-    // whose adjudicator never ran.
+  test("the fallback reports no_signal at the MIDPOINT, never a strength derived from the raw score", () => {
+    // A run whose adjudicator never produced anything has no case-level read of the records, so the
+    // only honest report is `no_signal` — which derive_corroboration gates to a NULL corroboration
+    // (not agreement 50), for every scan verdict.
     const adj = fallback_adjudication({ final_score: 18, band: "high_priority_review" }, "Retry budget exhausted.");
     expect(adj.records_read.occupancy_signal).toBe("no_signal");
-    // ...even though the raw heuristics scored high. The heuristics are not a records READ.
-    expect(adj.records_read.nonowner_occupancy_strength).toBe(10);
+    // 5, NOT 10 — even though the raw heuristics scored high. The heuristics are a RISK score, not
+    // a records READ, so mapping the sum here would claim "the records overwhelmingly point away
+    // from owner occupancy" about a run where nobody read the records at all.
+    expect(adj.records_read.nonowner_occupancy_strength).toBe(5);
+    // And it stays the midpoint no matter how the raw score moves.
+    for (const final_score of [0, 7, 18, 40]) {
+      const a = fallback_adjudication({ final_score, band: "low_evidence" }, "r");
+      expect([final_score, a.records_read.nonowner_occupancy_strength]).toEqual([final_score, 5]);
+    }
   });
 });
 

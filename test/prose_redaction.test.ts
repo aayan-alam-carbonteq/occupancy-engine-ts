@@ -308,7 +308,6 @@ describe("integration: sanitized findings produce a leak-free report", () => {
     });
     const report = build_report(
       sanitize_adjudication_prose(adjudication),
-      2,
       [sanitize_result_prose(result)],
       [],
     );

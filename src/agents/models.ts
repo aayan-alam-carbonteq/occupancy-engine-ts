@@ -385,6 +385,11 @@ export const CorroborationSchema = z
     scan_verdict: z.enum(["not-rented", "possibly-rented", "rented"]),
     // 0-100, anchored at 50. 100 = the records fully back the scan's claim; 0 = they fully
     // contradict it; 50 = they land exactly between.
+    /**
+     * 0-100, anchored at 50, but only ELEVEN distinct values are reachable (0, 10, … 100): it is
+     * the 0-10 `nonowner_occupancy_strength` times ten. It reads like a percentage and has the
+     * granularity of a 0-10 scale — worth knowing before anything calibrates thresholds against it.
+     */
     agreement: z.number().int().min(0).max(100),
     state: z.enum(CORROBORATION_STATE),
   })
