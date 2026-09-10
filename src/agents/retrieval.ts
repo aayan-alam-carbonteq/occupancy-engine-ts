@@ -92,7 +92,9 @@ export const SOURCE_DATA_FIELDS: Record<string, string[]> = {
     "ownerrescount",
   ],
   utility: ["first_name", "last_name", "middle_name", "dob", "dod", "address", "city", "state", "zip", "phone"],
-  trace: ["id", "trace_id", "firstname", "middlename", "lastname", "address", "city", "state", "zip", "phone", "cellphone", "email", "dob_day", "dob_month", "dob_year"],
+  // X-083 §6.2: `record_date` APPENDED. Without it the graph service's new field is stripped here
+  // and never reaches a prompt, so dating trace would be a no-op measured as "no effect".
+  trace: ["id", "trace_id", "firstname", "middlename", "lastname", "address", "city", "state", "zip", "phone", "cellphone", "email", "dob_day", "dob_month", "dob_year", "record_date"],
   auto: ["id", "auto_id", "firstname", "lastname", "address", "zip", "vin", "year", "make", "model", "phone"],
   loan: ["id", "loan_id", "firstname", "lastname", "address", "zip", "own_rent", "loan_amount", "monthly_income", "employer", "occupation"],
   drive: ["id", "drive_id", "firstname", "lastname", "address", "zip", "dl_num", "dl_state"],
