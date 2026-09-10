@@ -93,6 +93,11 @@ export const PersonEvidenceSummarySchema = z
     relationship_to_owner: z.enum(RELATIONSHIP_TO_OWNER).default("unknown"),
     sources: z.array(z.string()).default([]),
     summaries: z.array(z.string()).default([]),
+    /** X-083 — first and last month (`YYYYMM`) this person was recorded at the address in trace.
+     *  SIGHTINGS from a quarterly snapshot series, not a tenancy: the first is not a move-in and a
+     *  gap is not an absence. Null means undated — never a guessed date. */
+    first_seen: z.string().nullish().default(null),
+    last_seen: z.string().nullish().default(null),
   })
   .strict();
 export type PersonEvidenceSummary = z.infer<typeof PersonEvidenceSummarySchema>;

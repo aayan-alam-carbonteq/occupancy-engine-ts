@@ -1528,11 +1528,28 @@ function _people_at_address_summaries(
         relationship_to_owner: _relationship_to_owner(name, owner_tokens),
         sources: [],
         summaries: [],
+        first_seen: null,
+        last_seen: null,
       };
       grouped.set(key, current);
     }
     if (!current.sources.includes(source)) {
       current.sources.push(source);
+    }
+    // X-083 — widen this person's sighting span. Two inputs: the graph service's own per-person span
+    // (op 3 people carry `first_seen`/`last_seen`), and a raw trace row's `record_date`. Both fold into
+    // YYYYMM so 6- and 8-digit stored dates compare correctly. Anything else is ignored, not guessed.
+    for (const value of [data["first_seen"], data["last_seen"], source === "trace" ? data["record_date"] : null]) {
+      const month = typeof value === "string" && /^\d{6}/.test(value) ? value.slice(0, 6) : null;
+      if (month === null) {
+        continue;
+      }
+      if (current.first_seen == null || month < current.first_seen) {
+        current.first_seen = month;
+      }
+      if (current.last_seen == null || month > current.last_seen) {
+        current.last_seen = month;
+      }
     }
     const summary_bits = [source];
     for (const key of ["own_rent", "ownRent", "address", "zip", "dob", "dob_year", "year", "make", "model"]) {

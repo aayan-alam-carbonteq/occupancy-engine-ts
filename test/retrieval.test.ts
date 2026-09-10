@@ -254,3 +254,20 @@ describe("fetch_person_records — records_timed_out", () => {
     }
   });
 });
+
+describe("X-083 — trace sighting dates reach the model", () => {
+  test("record_date is in the trace projection, APPENDED so no existing position moves", () => {
+    // The graph service has served `record_date` on trace rows since X-083 §6.1, but
+    // _compact_record_data projects every row through this allowlist, so without the entry the
+    // field was stripped here and never reached a prompt. That made dating trace a silent no-op:
+    // a before/after measurement would have reported "no effect" for a field the model never saw.
+    // Proven end-to-end at 115 WABASH DR: with this entry the adjudicator cites "recent trace
+    // (2025)" and "15–40 years stale"; without it, "no timestamps on trace".
+    expect(SOURCE_DATA_FIELDS["trace"]).toContain("record_date");
+    expect(SOURCE_DATA_FIELDS["trace"]!.at(-1)).toBe("record_date");
+    expect(SOURCE_DATA_FIELDS["trace"]!.slice(0, 15)).toEqual([
+      "id", "trace_id", "firstname", "middlename", "lastname", "address", "city", "state", "zip",
+      "phone", "cellphone", "email", "dob_day", "dob_month", "dob_year",
+    ]);
+  });
+});
