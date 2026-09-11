@@ -82,3 +82,99 @@ export function render_identity_check_lines(entries: readonly IdentityCheckEntry
     return parts.join(" | ");
   });
 }
+
+export interface SamePersonGroup {
+  /** Ascending people_at_address positions; at least one. */
+  person_indexes: number[];
+  /** True when the model put a tax-owner id in the group. */
+  includes_owner: boolean;
+  /** The exact display name of the person member the model named. */
+  name: string;
+}
+
+export interface SamePersonValidation {
+  groups: SamePersonGroup[];
+  dropped: number;
+}
+
+function _normalize_name(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+/**
+ * Keep only groups whose SHAPE is sound: every id is on the list this call offered, at least two
+ * distinct ids with at least one person, and a name that is one of its own person members' names.
+ * An id claimed by more than one group drops every group claiming it. Nothing here compares names
+ * against each other — who is the same person is the model's call.
+ */
+export function validate_same_person_groups(
+  raw: unknown,
+  entries: readonly IdentityCheckEntry[],
+): SamePersonValidation {
+  if (raw === undefined || raw === null) {
+    return { groups: [], dropped: 0 };
+  }
+  if (!Array.isArray(raw)) {
+    return { groups: [], dropped: 1 };
+  }
+  const by_id = new Map(entries.map((entry) => [entry.id, entry] as const));
+  let dropped = 0;
+  const candidates: { ids: string[]; group: SamePersonGroup }[] = [];
+  for (const item of raw) {
+    const candidate = _candidate_group(item, by_id);
+    if (candidate === null) {
+      dropped += 1;
+    } else {
+      candidates.push(candidate);
+    }
+  }
+  const claims = new Map<string, number>();
+  for (const candidate of candidates) {
+    for (const id of candidate.ids) {
+      claims.set(id, (claims.get(id) ?? 0) + 1);
+    }
+  }
+  const groups: SamePersonGroup[] = [];
+  for (const candidate of candidates) {
+    if (candidate.ids.some((id) => (claims.get(id) ?? 0) > 1)) {
+      dropped += 1;
+    } else {
+      groups.push(candidate.group);
+    }
+  }
+  return { groups, dropped };
+}
+
+function _candidate_group(
+  item: unknown,
+  by_id: ReadonlyMap<string, IdentityCheckEntry>,
+): { ids: string[]; group: SamePersonGroup } | null {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) {
+    return null;
+  }
+  const record = item as Record<string, unknown>;
+  const raw_ids = record["ids"];
+  const raw_name = record["name"];
+  if (!Array.isArray(raw_ids) || typeof raw_name !== "string") {
+    return null;
+  }
+  const ids = [...new Set(raw_ids.map((id) => (typeof id === "string" ? id.trim().toUpperCase() : "")))];
+  if (ids.length < 2 || ids.some((id) => !by_id.has(id))) {
+    return null;
+  }
+  const members = ids.map((id) => by_id.get(id)!);
+  const people = members.filter((member) => member.kind === "person");
+  const wanted = _normalize_name(raw_name);
+  const named = people.find((member) => _normalize_name(member.name) === wanted);
+  if (named === undefined) {
+    return null;
+  }
+  return {
+    ids,
+    group: {
+      person_indexes: people.map((member) => member.index).sort((a, b) => a - b),
+      includes_owner: members.some((member) => member.kind === "owner"),
+      name: named.name,
+    },
+  };
+}

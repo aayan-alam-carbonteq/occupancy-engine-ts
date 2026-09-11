@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import { type CaseEvidenceMap, CaseEvidenceMapSchema } from "../src/agents/models.ts";
 import {
   birth_years_from_summaries,
+  type IdentityCheckEntry,
   identity_check_entries,
   render_identity_check_lines,
+  validate_same_person_groups,
 } from "../src/agents/same_person.ts";
 
 /** The 1105 Clovelly Ct shape from the saved runs: the model saw TOM and THOMAS as two people. */
@@ -121,5 +123,85 @@ describe("render_identity_check_lines", () => {
 
   test("no entries renders no lines", () => {
     expect(render_identity_check_lines([])).toEqual([]);
+  });
+});
+
+describe("validate_same_person_groups", () => {
+  const entries = () => identity_check_entries(clovellyMap());
+
+  test("keeps a well-formed group: ascending positions and the member's exact display name", () => {
+    expect(validate_same_person_groups([{ ids: ["P4", "P3"], name: "THOMAS RICHARDSON" }], entries())).toEqual({
+      groups: [{ person_indexes: [2, 3], includes_owner: false, name: "THOMAS RICHARDSON" }],
+      dropped: 0,
+    });
+  });
+
+  test("ids and name match regardless of case and spacing; the stored name is the member's own", () => {
+    const out = validate_same_person_groups([{ ids: [" p3", "P4 "], name: "  thomas   richardson " }], entries());
+    expect(out.groups).toEqual([{ person_indexes: [2, 3], includes_owner: false, name: "THOMAS RICHARDSON" }]);
+  });
+
+  test("a person grouped with the owner id is kept and marked", () => {
+    expect(validate_same_person_groups([{ ids: ["P5", "O1"], name: "CATHERINE FURRY" }], entries()).groups).toEqual([
+      { person_indexes: [4], includes_owner: true, name: "CATHERINE FURRY" },
+    ]);
+  });
+
+  test("drops one group at a time: unknown id, one distinct id, name of no person member", () => {
+    const out = validate_same_person_groups(
+      [
+        { ids: ["P3", "P99"], name: "THOMAS RICHARDSON" },
+        { ids: ["P3", "p3"], name: "THOMAS RICHARDSON" },
+        { ids: ["P1", "P2"], name: "THOMAS RICHARDSON" },
+        { ids: ["P5", "O1"], name: "FURRY, CATHERINE DIANE; FURRY, CATHERINE D" },
+        { ids: ["P1", "P2"], name: "BRENT MUSIC" },
+      ],
+      entries(),
+    );
+    expect(out.groups).toEqual([{ person_indexes: [0, 1], includes_owner: false, name: "BRENT MUSIC" }]);
+    expect(out.dropped).toBe(4);
+  });
+
+  test("a group with no person member is dropped", () => {
+    const withSecondOwner: IdentityCheckEntry[] = [
+      ...entries(),
+      { id: "O2", kind: "owner", index: 1, name: "SMITH K L", sources: [], birth_years: [] },
+    ];
+    expect(validate_same_person_groups([{ ids: ["O1", "O2"], name: "SMITH K L" }], withSecondOwner)).toEqual({
+      groups: [],
+      dropped: 1,
+    });
+  });
+
+  test("an id claimed by two groups drops both; an independent group survives", () => {
+    const out = validate_same_person_groups(
+      [
+        { ids: ["P3", "P4"], name: "THOMAS RICHARDSON" },
+        { ids: ["P4", "P2"], name: "BRENT MUSIC" },
+        { ids: ["P5", "O1"], name: "CATHERINE FURRY" },
+      ],
+      entries(),
+    );
+    expect(out.groups).toEqual([{ person_indexes: [4], includes_owner: true, name: "CATHERINE FURRY" }]);
+    expect(out.dropped).toBe(2);
+  });
+
+  test("absent means no groups and nothing dropped; any other non-array or malformed item is dropped", () => {
+    expect(validate_same_person_groups(undefined, entries())).toEqual({ groups: [], dropped: 0 });
+    expect(validate_same_person_groups(null, entries())).toEqual({ groups: [], dropped: 0 });
+    expect(validate_same_person_groups("P3,P4", entries())).toEqual({ groups: [], dropped: 1 });
+    expect(
+      validate_same_person_groups(
+        [["P3", "P4"], { ids: "P3,P4", name: "THOMAS RICHARDSON" }, { ids: ["P3", "P4"] }, 7],
+        entries(),
+      ),
+    ).toEqual({ groups: [], dropped: 4 });
+  });
+
+  test("with no Identity check offered, every id is unknown", () => {
+    expect(validate_same_person_groups([{ ids: ["P3", "P4"], name: "THOMAS RICHARDSON" }], [])).toEqual({
+      groups: [],
+      dropped: 1,
+    });
   });
 });
