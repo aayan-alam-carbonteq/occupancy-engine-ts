@@ -3,7 +3,7 @@
 // are ONE human written differently. Everything here is pure: it renders that list, validates the
 // answer by SHAPE only — the model decides who is the same person, this module never matches names —
 // and merges the grouped entries of the report's people list.
-import type { CaseEvidenceMap } from "./models.ts";
+import type { CaseEvidenceMap, PersonEvidenceSummary } from "./models.ts";
 
 export interface IdentityCheckEntry {
   /** "P1".."Pn" over people_at_address, then "O1".."On" over owner_summaries, in list order. */
@@ -176,5 +176,61 @@ function _candidate_group(
       includes_owner: members.some((member) => member.kind === "owner"),
       name: named.name,
     },
+  };
+}
+
+/**
+ * The people list with each validated group collapsed into one entry, placed where its first member
+ * was. No groups → the SAME array. Ungrouped people keep their object identity; the input is never
+ * mutated.
+ */
+export function merge_same_person_people(
+  people: PersonEvidenceSummary[],
+  groups: readonly SamePersonGroup[],
+): PersonEvidenceSummary[] {
+  if (groups.length === 0) {
+    return people;
+  }
+  const group_of = new Map<number, SamePersonGroup>();
+  for (const group of groups) {
+    for (const index of group.person_indexes) {
+      group_of.set(index, group);
+    }
+  }
+  const merged: PersonEvidenceSummary[] = [];
+  for (const [index, person] of people.entries()) {
+    const group = group_of.get(index);
+    if (group === undefined) {
+      merged.push(person);
+    } else if (group.person_indexes[0] === index) {
+      merged.push(_merge_group(people, group));
+    }
+  }
+  return merged;
+}
+
+function _merge_group(people: readonly PersonEvidenceSummary[], group: SamePersonGroup): PersonEvidenceSummary {
+  const members = group.person_indexes
+    .map((index) => people[index])
+    .filter((person): person is PersonEvidenceSummary => person !== undefined);
+  const named = members.find((member) => member.name === group.name) ?? members[0]!;
+  const sources: string[] = [];
+  for (const member of members) {
+    for (const source of member.sources) {
+      if (!sources.includes(source)) {
+        sources.push(source);
+      }
+    }
+  }
+  const firsts = members.map((member) => member.first_seen).filter((value): value is string => typeof value === "string");
+  const lasts = members.map((member) => member.last_seen).filter((value): value is string => typeof value === "string");
+  const is_owner = group.includes_owner || members.some((member) => member.relationship_to_owner === "owner");
+  return {
+    name: group.name,
+    relationship_to_owner: is_owner ? "owner" : named.relationship_to_owner,
+    sources,
+    summaries: members.flatMap((member) => member.summaries),
+    first_seen: firsts.length > 0 ? firsts.reduce((a, b) => (b < a ? b : a)) : null,
+    last_seen: lasts.length > 0 ? lasts.reduce((a, b) => (b > a ? b : a)) : null,
   };
 }

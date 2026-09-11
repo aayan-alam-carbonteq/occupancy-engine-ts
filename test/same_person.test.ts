@@ -1,10 +1,15 @@
 // test/same_person.test.ts
 import { describe, expect, test } from "bun:test";
-import { type CaseEvidenceMap, CaseEvidenceMapSchema } from "../src/agents/models.ts";
+import {
+  type CaseEvidenceMap,
+  CaseEvidenceMapSchema,
+  PersonEvidenceSummarySchema,
+} from "../src/agents/models.ts";
 import {
   birth_years_from_summaries,
   type IdentityCheckEntry,
   identity_check_entries,
+  merge_same_person_people,
   render_identity_check_lines,
   validate_same_person_groups,
 } from "../src/agents/same_person.ts";
@@ -203,5 +208,72 @@ describe("validate_same_person_groups", () => {
       groups: [],
       dropped: 1,
     });
+  });
+});
+
+describe("merge_same_person_people", () => {
+  const THOMAS_AND_TOM = { person_indexes: [2, 3], includes_owner: false, name: "THOMAS RICHARDSON" };
+
+  test("no groups returns the very same array", () => {
+    const people = clovellyMap().people_at_address;
+    expect(merge_same_person_people(people, [])).toBe(people);
+  });
+
+  test("one entry per group at its first member's place; everyone else untouched and in order", () => {
+    const people = clovellyMap().people_at_address;
+    const merged = merge_same_person_people(people, [THOMAS_AND_TOM]);
+    expect(merged.map((p) => p.name)).toEqual([
+      "BRENT & JAMIE MUSIC",
+      "BRENT MUSIC",
+      "THOMAS RICHARDSON",
+      "CATHERINE FURRY",
+    ]);
+    expect(merged[0]).toBe(people[0]);
+    expect(merged[1]).toBe(people[1]);
+    expect(merged[3]).toBe(people[4]);
+  });
+
+  test("the merged entry unions sources, joins summaries, and widens the seen span ignoring nulls", () => {
+    const people = clovellyMap().people_at_address;
+    const thomas = merge_same_person_people(people, [THOMAS_AND_TOM])[2];
+    expect(thomas).toEqual({
+      name: "THOMAS RICHARDSON",
+      relationship_to_owner: "unrelated",
+      sources: ["trace", "utility"],
+      summaries: ["utility; dob=19470101", "trace; dob_year=1947", "trace; address=1105 CLOVELLY CT"],
+      first_seen: "199611",
+      last_seen: "202503",
+    });
+    expect(PersonEvidenceSummarySchema.safeParse(thomas).success).toBe(true);
+  });
+
+  test("the chosen name need not be the first member's", () => {
+    const people = clovellyMap().people_at_address;
+    const merged = merge_same_person_people(people, [
+      { person_indexes: [0, 1], includes_owner: false, name: "BRENT MUSIC" },
+    ]);
+    expect(merged).toHaveLength(4);
+    expect(merged[0]!.name).toBe("BRENT MUSIC");
+    expect(merged[0]!.sources).toEqual(["trace", "utility"]);
+  });
+
+  test("owner when the group holds the owner id or an owner member; otherwise the named member's label", () => {
+    const people = clovellyMap().people_at_address;
+    const viaOwnerId = merge_same_person_people(people, [
+      { person_indexes: [3], includes_owner: true, name: "TOM RICHARDSON" },
+    ]);
+    expect(viaOwnerId[3]!.relationship_to_owner).toBe("owner");
+    const viaOwnerMember = merge_same_person_people(people, [
+      { person_indexes: [3, 4], includes_owner: false, name: "TOM RICHARDSON" },
+    ]);
+    expect(viaOwnerMember[3]!.name).toBe("TOM RICHARDSON");
+    expect(viaOwnerMember[3]!.relationship_to_owner).toBe("owner");
+  });
+
+  test("never mutates its input", () => {
+    const people = clovellyMap().people_at_address;
+    const snapshot = structuredClone(people);
+    merge_same_person_people(people, [{ ...THOMAS_AND_TOM, includes_owner: true }]);
+    expect(people).toEqual(snapshot);
   });
 });
