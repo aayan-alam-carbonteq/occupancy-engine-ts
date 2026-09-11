@@ -501,12 +501,28 @@ export function master_planning_user_prompt(context: Dict, heuristics: Dict[], s
   ].join("\n");
 }
 
+// X-091. Rendered only when the orchestrator offers an Identity check list, so every adjudication
+// without one keeps its prompt byte-identical. Each phrase a test pins sits on ONE line.
+const SAME_PERSON_REQUIREMENT_LINES = [
+  "- same_person (optional): groups of Identity check ids that are the SAME human written",
+  "  differently: a nickname, an initial, a middle name, a misspelling, or a household row.",
+  "  Name each group with its fullest spelling, copied from one of its P lines.",
+  "  Leave people out when their birth years differ or you are not sure.",
+  "  Include an O id only when that person is the tax owner.",
+  "  Leave it empty when everyone is distinct.",
+];
+
+function _identity_check_section(lines: readonly string[]): string[] {
+  return lines.length > 0 ? ["", "Identity check:", ...lines] : [];
+}
+
 export function master_adjudication_user_prompt(
   context: Dict,
   raw_score: Dict,
   worker_results: Dict[],
   conflicts: Dict[],
   sectioned = false,
+  identity_check: readonly string[] = [],
 ): string {
   return [
     "The field analysts have completed their reviews. You now have the full case file.",
@@ -523,6 +539,7 @@ export function master_adjudication_user_prompt(
     "",
     "Analyst submissions:",
     sectioned ? render_worker_sections(worker_results) : JSON.stringify(worker_results, null, 2),
+    ..._identity_check_section(identity_check),
     "",
     "Adjudication requirements:",
     "- Keep raw_score equal to raw_score.final_score.",
@@ -583,6 +600,7 @@ export function master_adjudication_user_prompt(
     "- occupancy_signal and nonowner_occupancy_strength must agree: owner_occupancy sits low,",
     "  non_owner_occupancy sits high, conflicting sits in the middle, and no_signal means the records",
     "  could not speak at all — use the midpoint there and say so in reasoning.",
+    ...(identity_check.length > 0 ? SAME_PERSON_REQUIREMENT_LINES : []),
     "- Submit using submit_case_adjudication. Include keys: raw_score,",
     "  verdict_band, case_archetype, score_adjustments, reasoning_summary,",
     "  why_not_higher, why_not_lower, records_read.",
