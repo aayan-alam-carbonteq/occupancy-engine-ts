@@ -79,6 +79,7 @@ import {
   sanitize_result_prose,
 } from "./prose_redaction.ts";
 import { humanize_evidence_map_for_display } from "./prose_display.ts";
+import { identity_check_entries, render_identity_check_lines } from "./same_person.ts";
 import type { MetricEvent } from "../observability/models.ts";
 
 // ── Master submit tools (native tool calls) ──
@@ -141,6 +142,14 @@ const SubmitCaseAdjudicationArgs = z
         "What public records say about occupancy at this address, judged on the records alone. " +
           "This is NOT a comparison against any external claim, listing or scan — you have not been " +
           "shown one, and you must not infer one.",
+      ),
+    // X-091. On the TOOL only, never on CaseAdjudication: split_same_person lifts it off the args
+    // before the strict parse, and validate_same_person_groups decides what survives.
+    same_person: z
+      .array(z.object({ ids: z.array(z.string()).min(2), name: z.string() }))
+      .default([])
+      .describe(
+        "Groups of Identity check ids that are one human written differently. Empty when everyone is distinct.",
       ),
   })
   .describe("Submit the final master CaseAdjudication.");
@@ -646,6 +655,9 @@ export class AgentOrchestrator {
     conflicts: ConflictSummary[],
     request: AgentInvestigationRequest,
     trace: InvestigationTrace,
+    // X-091. Called once, with the raw same_person of the adjudication that was ACCEPTED. Never called
+    // on a fallback, so a run without an accepted model answer applies no groups.
+    on_same_person?: (raw: unknown) => void,
   ): Promise<CaseAdjudication> {
     if (this.master_llm === null) {
       return fallback_adjudication(raw_score, "No master LLM configured; using raw heuristic score as calibrated score.");
@@ -660,6 +672,7 @@ export class AgentOrchestrator {
           results.map((result) => _compact_worker_result(result, false)),
           conflicts.map((conflict) => ({ ...conflict })),
           true,
+          render_identity_check_lines(identity_check_entries(context.evidence_map)),
         ),
       }),
     ];
@@ -692,7 +705,7 @@ export class AgentOrchestrator {
             trace,
           ),
         );
-        const tool_result = _case_adjudication_from_tool_calls(response, raw_score.final_score);
+        const tool_result = _case_adjudication_from_tool_calls(response, raw_score.final_score, on_same_person);
         if (tool_result !== null && !("ok" in tool_result)) {
           return tool_result as CaseAdjudication;
         }
@@ -1050,9 +1063,20 @@ function _suppress_absence_workers(plan: CaseInvestigationPlan): CaseInvestigati
 
 // ── Master adjudication tool-call parsing ──
 
+/**
+ * X-091. `same_person` rides on the adjudication tool but is not part of CaseAdjudication, whose
+ * schema is .strict(): left in the args it would fail validation and spend a retry. Returns a copy of
+ * the args without it, plus the raw value, unvalidated.
+ */
+export function split_same_person(args: Record<string, any>): { args: Record<string, any>; same_person: unknown } {
+  const { same_person, ...rest } = args;
+  return { args: rest, same_person };
+}
+
 function _case_adjudication_from_tool_calls(
   response: any,
   raw_score: number,
+  on_same_person?: (raw: unknown) => void,
 ): CaseAdjudication | Record<string, any> | null {
   const tool_calls = _response_tool_calls(response);
   if (tool_calls.length === 0) {
@@ -1069,12 +1093,14 @@ function _case_adjudication_from_tool_calls(
       };
     }
     const rawArgs = isRecord(call["args"]) ? call["args"] : {};
-    const args: Record<string, any> = { ...rawArgs };
+    const { args, same_person } = split_same_person(rawArgs);
     if (!("raw_score" in args)) {
       args["raw_score"] = raw_score;
     }
     try {
-      return CaseAdjudicationSchema.parse(args);
+      const adjudication = CaseAdjudicationSchema.parse(args);
+      on_same_person?.(same_person);
+      return adjudication;
     } catch (exc) {
       if (!(exc instanceof z.ZodError)) {
         throw exc;
