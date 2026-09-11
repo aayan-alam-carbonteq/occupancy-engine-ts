@@ -104,8 +104,10 @@ function _normalize_name(value: string): string {
 /**
  * Keep only groups whose SHAPE is sound: every id is on the list this call offered, at least two
  * distinct ids with at least one person, and a name that is one of its own person members' names.
- * An id claimed by more than one group drops every group claiming it. Nothing here compares names
- * against each other — who is the same person is the model's call.
+ * A group repeated with the same ids counts once. A PERSON id claimed by more than one well-formed
+ * group drops every group claiming it; an owner id may sit in several groups, because one tax-owner
+ * line often names two people. Nothing here compares names against each other — who is the same
+ * person is the model's call.
  */
 export function validate_same_person_groups(
   raw: unknown,
@@ -120,18 +122,27 @@ export function validate_same_person_groups(
   const by_id = new Map(entries.map((entry) => [entry.id, entry] as const));
   let dropped = 0;
   const candidates: { ids: string[]; group: SamePersonGroup }[] = [];
+  const seen = new Set<string>();
   for (const item of raw) {
     const candidate = _candidate_group(item, by_id);
     if (candidate === null) {
       dropped += 1;
-    } else {
+      continue;
+    }
+    const key = [...candidate.ids].sort().join(",");
+    if (!seen.has(key)) {
+      seen.add(key);
       candidates.push(candidate);
     }
   }
+  // Only PERSON ids conflict: a person in two groups would be merged twice. An owner id is a label
+  // that never merges, and "SMITH, MICHAEL R; SMITH K L" is one O line for two people.
   const claims = new Map<string, number>();
   for (const candidate of candidates) {
     for (const id of candidate.ids) {
-      claims.set(id, (claims.get(id) ?? 0) + 1);
+      if (by_id.get(id)?.kind === "person") {
+        claims.set(id, (claims.get(id) ?? 0) + 1);
+      }
     }
   }
   const groups: SamePersonGroup[] = [];
@@ -181,8 +192,10 @@ function _candidate_group(
 
 /**
  * The people list with each validated group collapsed into one entry, placed where its first member
- * was. No groups → the SAME array. Ungrouped people keep their object identity; the input is never
- * mutated.
+ * was. `groups` MUST come from validate_same_person_groups over entries built from this same array:
+ * that is what makes every index sorted, in range and in at most one group, and nothing here checks
+ * it again. No groups → the SAME array. Ungrouped people keep their object identity; the input is
+ * never mutated.
  */
 export function merge_same_person_people(
   people: PersonEvidenceSummary[],

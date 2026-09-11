@@ -191,6 +191,40 @@ describe("validate_same_person_groups", () => {
     expect(out.dropped).toBe(2);
   });
 
+  test("an owner id in two groups is no conflict: one tax-owner line can name two people", () => {
+    // Mechanics only: the fixture has one owner person, so BRENT stands in for a co-owner.
+    expect(
+      validate_same_person_groups(
+        [
+          { ids: ["P2", "O1"], name: "BRENT MUSIC" },
+          { ids: ["P5", "O1"], name: "CATHERINE FURRY" },
+        ],
+        entries(),
+      ),
+    ).toEqual({
+      groups: [
+        { person_indexes: [1], includes_owner: true, name: "BRENT MUSIC" },
+        { person_indexes: [4], includes_owner: true, name: "CATHERINE FURRY" },
+      ],
+      dropped: 0,
+    });
+  });
+
+  test("a group repeated with the same ids counts once and drops nothing", () => {
+    expect(
+      validate_same_person_groups(
+        [
+          { ids: ["P3", "P4"], name: "THOMAS RICHARDSON" },
+          { ids: ["p4", "P3"], name: "TOM RICHARDSON" },
+        ],
+        entries(),
+      ),
+    ).toEqual({
+      groups: [{ person_indexes: [2, 3], includes_owner: false, name: "THOMAS RICHARDSON" }],
+      dropped: 0,
+    });
+  });
+
   test("absent means no groups and nothing dropped; any other non-array or malformed item is dropped", () => {
     expect(validate_same_person_groups(undefined, entries())).toEqual({ groups: [], dropped: 0 });
     expect(validate_same_person_groups(null, entries())).toEqual({ groups: [], dropped: 0 });
@@ -255,6 +289,16 @@ describe("merge_same_person_people", () => {
     expect(merged).toHaveLength(4);
     expect(merged[0]!.name).toBe("BRENT MUSIC");
     expect(merged[0]!.sources).toEqual(["trace", "utility"]);
+  });
+
+  test("two groups in one call each collapse in place", () => {
+    const people = clovellyMap().people_at_address;
+    const merged = merge_same_person_people(people, [
+      { person_indexes: [0, 1], includes_owner: false, name: "BRENT MUSIC" },
+      THOMAS_AND_TOM,
+    ]);
+    expect(merged.map((p) => p.name)).toEqual(["BRENT MUSIC", "THOMAS RICHARDSON", "CATHERINE FURRY"]);
+    expect(merged[2]).toBe(people[4]);
   });
 
   test("owner when the group holds the owner id or an owner member; otherwise the named member's label", () => {
