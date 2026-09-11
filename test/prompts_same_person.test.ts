@@ -29,15 +29,22 @@ describe("X-091 master adjudication prompt: the Identity check", () => {
     expect(WITH).toContain(`Identity check:\n${LINES.join("\n")}\n\nAdjudication requirements:`);
   });
 
-  test("the requirement names ids, the fullest spelling, birth years and the owner rule", () => {
+  test("the requirement names ids, repeats, one human per group, the exact name, birth years, JR/SR and joint owners", () => {
     expect(WITH.indexOf("- same_person (optional):")).toBeGreaterThan(WITH.indexOf("Adjudication requirements:"));
     const block = requirementBlock(WITH);
     for (const phrase of [
       "Identity check ids",
+      "repeated or",
+      "One human per group",
+      "each P id in one group only",
       "fullest spelling",
+      "without the id",
       "birth years differ",
+      "only one has JR or SR",
       "not sure",
       "O id only when that person is the tax owner",
+      "naming two owners",
+      "Never write these ids",
       "empty when everyone is distinct",
     ]) {
       expect([phrase, block.includes(phrase)]).toEqual([phrase, true]);

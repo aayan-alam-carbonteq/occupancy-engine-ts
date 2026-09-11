@@ -503,13 +503,15 @@ export function master_planning_user_prompt(context: Dict, heuristics: Dict[], s
 
 // X-091. Rendered only when the orchestrator offers an Identity check list, so every adjudication
 // without one keeps its prompt byte-identical. Each phrase a test pins sits on ONE line.
-const SAME_PERSON_REQUIREMENT_LINES = [
-  "- same_person (optional): groups of Identity check ids that are the SAME human written",
-  "  differently: a nickname, an initial, a middle name, a misspelling, or a household row.",
-  "  Name each group with its fullest spelling, copied from one of its P lines.",
-  "  Leave people out when their birth years differ or you are not sure.",
-  "  Include an O id only when that person is the tax owner.",
-  "  Leave it empty when everyone is distinct.",
+const SAME_PERSON_REQUIREMENT_LINES: readonly string[] = [
+  "- same_person (optional): groups of Identity check ids that are the SAME human, repeated or",
+  "  written differently: a nickname, an initial, a middle name, a misspelling, or a household row.",
+  "  One human per group, and each P id in one group only (a household row joins just one person).",
+  "  name: that human's fullest spelling, copied exactly from one of the group's P lines, without the id.",
+  "  Leave people out of a group when their birth years differ, only one has JR or SR, or you are not sure.",
+  "  Include an O id only when that person is the tax owner; an O line naming two owners",
+  "  goes in each of their groups.",
+  "  Never write these ids anywhere else in your answer. Leave it empty when everyone is distinct.",
 ];
 
 function _identity_check_section(lines: readonly string[]): string[] {
