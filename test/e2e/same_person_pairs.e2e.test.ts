@@ -229,9 +229,11 @@ describe("X-091 E2E: same-person pair verdicts run alongside the workers and mer
     }
   });
 
-  test("a same verdict merges the report's people list and hints; the adjudication and other fields stay as they were", async () => {
-    const baseline = await investigate(new PairAndAdjudicationModel());
-    const merged = await investigate(new PairAndAdjudicationModel({ Q4: "nickname" }));
+  test("a same verdict merges the report's people list and hints; the master prompts, the adjudication and other fields stay as they were", async () => {
+    const baselineModel = new PairAndAdjudicationModel();
+    const mergedModel = new PairAndAdjudicationModel({ Q4: "nickname" });
+    const baseline = await investigate(baselineModel);
+    const merged = await investigate(mergedModel);
     expect(names(baseline)).toContain("TAMIE WORTHINGTON");
     expect(names(merged)).toHaveLength(names(baseline).length - 1);
     expect(names(merged)).not.toContain("TAMIE WORTHINGTON");
@@ -239,6 +241,9 @@ describe("X-091 E2E: same-person pair verdicts run alongside the workers and mer
     expect(hintsText(baseline)).toContain("TAMIE WORTHINGTON");
     expect(hintsText(merged)).not.toContain("TAMIE WORTHINGTON");
     expect(merged.adjudication).toEqual(baseline.adjudication);
+    // The merge reaches only the report copy: every master prompt (planner and adjudicator) is byte-identical.
+    expect(mergedModel.adjudication_prompts.length).toBeGreaterThan(0);
+    expect(mergedModel.adjudication_prompts).toEqual(baselineModel.adjudication_prompts);
     // Every evidence-map field other than the people list and the two hint lists is unchanged.
     const { people_at_address: _p1, nonowner_occupancy_hints: _n1, owner_presence_hints: _o1, ...mergedRest } =
       merged.resolved_address.evidence_map;
