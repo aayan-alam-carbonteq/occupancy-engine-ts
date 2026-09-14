@@ -22,6 +22,138 @@ judge package, observability/summaries.
 
 <!-- newest first; one entry per working session -->
 
+### 2026-09-14 — same-person names, revised: pair verdicts in a parallel call (X-091)
+- **Goal:** Stop the report listing one human as several people when records spell the name
+  differently, without adding latency or meaningful cost.
+  - The first design put an Identity check inside the master adjudicator's call (section below). It failed live
+    measurement twice: Haiku merged relatives who share a surname.
+  - On the owner's instruction the work resumed with one small, separate model call. It was measured offline first, then
+    built. Spec: umbrella `docs/superpowers/specs/2026-09-11-same-person-names-design.md` §13. Plan: umbrella
+    `docs/superpowers/plans/2026-09-14-same-person-pair-verdicts.md`.
+- **Completed** (branch `feat/x091-same-person-names`):
+  - **`src/agents/pair_verdicts.ts`.**
+    - `candidate_pairs`: people only, sharing a last name, at most 20 pairs by whole last-name groups.
+    - The measured p6 prompt and the `submit_pair_verdicts` tool.
+    - `groups_from_verdicts` discards joint-row links that don't apply (a joint-row label on two lines that aren't
+      joint rows; a joint row linked to more than one line by any same verdict), and drops a group when a pair inside
+      is called different_people or is unanswered.
+    - `resolve_same_person` never rejects; its 30 s timeout also aborts the request.
+  - **The in-adjudicator design is removed.** `prompts.ts`, the adjudication tool and its parse are back to `d238b95`.
+  - **`_investigate`.**
+    - Starts the call right after preflight under its own `same_person` span, only with a model and candidate pairs.
+    - After adjudication, waits at most a 2 s grace, then cancels a late call.
+    - Records the `same_person_groups` counter (counts; names, verdicts and error only under debug payloads).
+    - Merges the groups into the report copy with `reconcile_evidence_map`.
+  - **`ScriptedChatModel`** now fails loudly on a call bound to tools its next batch never names.
+- **Verification:** `bun run typecheck && bunx biome check src cli test && OE_PROSE_REDACT=on OE_PROSE_REGISTER=off bun test`
+  → tsc silent; Biome 115 files, no fixes; 545 pass, 0 fail, 1890 expect() calls, 56 files (at 3061ad2).
+  BASELINE (`origin/main` d238b95): 480 pass, 52 files.
+- **Evidence:**
+  - **Parity.** The ported functions reproduce the measured harness records 24/24 on both measured runs and on the live
+    engine replay.
+  - **Engine replay.** The engine's own `resolve_same_person` on the 24 benchmark addresses gave 0 wrong merges and 17 of
+    20 expected merges. Median 3.9 s, $0.0043 a call.
+  - **Smoke run** (3061ad2, 1105 Clovelly Ct). The call ran 3.9 s alongside the workers and finished 80.7 s before
+    adjudication. People went 9 to 7 with exactly the expected merges; the adjudication matches the control run; nothing
+    in the report beyond telemetry counts.
+  - **Mutation checks,** in `git archive` snapshots: every non-equivalent mutant caught. Task C 6, A3 9, C2 7; the
+    review's survivors at a3c1b5f are now pinned. The worktree was never mutated.
+  - **Measurement spend:** $2.6559 of the owner's $5.
+  - **Whole-branch review before the merge:** no Critical findings. Both Important findings are fixed: a test now pins
+    the master prompts byte-identical under a merge, and this record now sits above the superseded ones.
+- **Commits:**
+  - 86fe84b feat(X-091): pair verdicts — candidate same-surname pairs, the measured prompt and tool, groups from the model's verdicts
+  - 50b5646 refactor(X-091): remove the in-adjudicator same-person design — the adjudicator prompt, tool and parse are back to d238b95
+  - a3c1b5f feat(X-091): pair verdicts — at most 20 pairs a call, by whole last-name groups; drop a group with an unanswered pair
+  - c8ab614 feat(X-091): run the pair-verdict call alongside the workers and merge its groups into the report copy
+  - ab53387 fix(X-091): pair verdicts review — the timeout cancels the call, nothing rejects, a joint row linked twice merges nobody, the measured prompt pinned
+  - 3061ad2 fix(X-091): the report waits at most a 2 s grace for the pair call, then cancels it; no span without pairs; the scripted fake fails loudly
+  - (this commit) docs(X-091): feature entry and session record for the revised design
+- **Risks:**
+  - **Wrong merges.** The model still decides who is the same person, and a wrong merge hides a person from the list.
+    The structural checks and the benchmark (0 wrong merges in three runs) bound that risk.
+  - **Telemetry keys.** `metrics.phase_counts` and `agent_counts` gain a `same_person` key.
+  - **Known benchmark misses:** R A / RUSSELL A FORD, P J / PHYLLIS CHRISTISON, and the DAVID & KAREN WILSON household.
+- **Next best action:** the owner's go-ahead to push the branch. The PR goes through the owner, then the backend
+  develop engine-pointer bump after the merge.
+
+### 2026-09-14 — X-091 measured under the owner's $5 cap: stopped (the adjudicator merges relatives)
+_Superseded by the revised design above: the pair-verdict call shipped instead._
+- **Goal:** Measure the same-person feature within a $5 cap and decide whether it ships.
+- **Method:** Replay only the master adjudicator call on the 24 benchmark addresses:
+  - saved X-083 worker results;
+  - context rebuilt by preflight against a local data service;
+  - control `d238b95` vs treatment on identical inputs;
+  - Haiku 4.5 at temperature 0, with a budget-guarded spend ledger.
+- **Found and fixed:** Haiku filed `same_person` inside `records_read` on every first attempt, costing a
+  retry per run. `27326b8` lifts it from there too.
+- **Result v1 (`27326b8`):** 2 of 4 criteria.
+  - 7 applied merges of relatives sharing a surname: MULLINS, YADEN, GERMANN, REYNOLDS, PAYNE,
+    GARY / MARY HILES, and BRIAN T HILES / HILES THOMAS.
+  - 11 of 20 expected merges.
+  - Signal and band changes within noise; latency +458 ms.
+- **Owner's single prompt fix (`9999039`, `35c2baf`):** different first names are different people; birth
+  years must share a year; no household wording.
+- **Result v2 (`35c2baf`):** 1 of 4 criteria.
+  - The same relatives merged again, plus COYLE and VANDERPOOL.
+  - 13 of 20 expected merges.
+  - Latency +1,467 ms; treatment retries 10 vs control 5.
+- **Decision:** stopped per the owner's rule ("if it still merges different people, stop"). Not merged.
+- **Spend:** $1.6648 of $5, over 132 calls.
+- **Commits:** `27326b8` fix, `9999039` + `35c2baf` wording, and this docs commit.
+- **Next best action:** none on this design. Revisit only with a different design (flag possible
+  duplicates instead of merging them) or a model that follows the first-name rule.
+
+### 2026-09-14 — same-person names: the adjudicator groups one human's spellings (X-091)
+_Superseded by the revised design above; this design's code was removed in 50b5646._
+- **Goal:** Stop the report listing one human as several people when records spell the name
+  differently, by having the master adjudicator — in its existing call — return groups of
+  Identity-check ids, applied to the report copy only. Plan:
+  umbrella `docs/superpowers/plans/2026-09-11-same-person-names.md`, Tasks 1-10 (started 2026-09-11).
+- **Completed (branch `feat/x091-same-person-names`, cut from `origin/main` d238b95):**
+  `src/agents/same_person.ts` (entries, birth years, rendering, shape validation, merge);
+  `prompts.ts` Identity check section + requirement block (absent → prompt byte-identical);
+  `orchestrator.ts` tool field, `split_same_person`, callback from `_adjudicate_case`,
+  `reconcile_evidence_map`, `same_person_groups` counter (names only under debug payloads).
+  Code review changed the plan in four places: an owner id may sit in several groups and a repeated
+  group counts once; the requirement wording counts exact repeats, says one human per group and asks
+  for the exact name without the id; the tool's `name` field is described; and the E2E suite pins the
+  callback contract, the hint rebuild, redaction off and a non-array answer. A final whole-branch
+  review added the model's raw answer to the debug counter (proposed, debug payloads only) and
+  renders names on one line.
+- **Verification:** `bun run typecheck && bunx biome check src cli test && OE_PROSE_REDACT=on OE_PROSE_REGISTER=off bun test`
+  → tsc silent; Biome 115 files, no fixes; 532 pass, 0 fail, 1860 expect() calls, 57 files.
+  BASELINE (`origin/main` d238b95): 480 pass, 0 fail, 1704 expect() calls, 52 files.
+- **Evidence:** mutation checks in a `git archive` snapshot of d9df52a (E2E + reconcile unit suites,
+  16 pass unmutated), each failing its required tests: M1 no lift before the strict parse (9 E2E
+  tests); M2 never apply groups (4 E2E + 2 unit); M3 callback before the parse (the every-attempt-
+  rejected test); M7 redaction-off branch ignores the merge; M8 non-array answer spends a retry;
+  M9 owner flag lost in the debug counter. The worktree was never mutated. A final whole-branch
+  review re-ran them at 0c707ad with three more (proposed always null, the name whitespace
+  collapse removed, proposed outside the debug branch): all caught.
+- **Commits:**
+  - 839a6cc feat(X-091): the Identity check list — numbered people and owners with sources and birth years
+  - c16c077 feat(X-091): validate same_person by shape only — ids offered, a person member, its own name
+  - 820a3d2 feat(X-091): merge grouped people — one entry, sources and summaries joined, span widened
+  - 1f4f87b feat(X-091): the adjudicator prompt carries the Identity check and the same_person requirement when offered
+  - 389580b fix(X-091): an owner id may sit in several groups, and a repeated group counts once
+  - d229776 feat(X-091): same_person on the adjudication tool, lifted before the strict parse, handed back once accepted
+  - ae5d371 fix(X-091): same_person wording — repeats count, one human per group, the exact name without the id
+  - 3855a5e fix(X-091): the tool describes name as the prompt does, and a test pins the schema the provider receives
+  - 1f1f077 feat(X-091): apply same-person groups to the report copy only, and count them
+  - 0333ca5 test(X-091): end to end — the adjudicator groups from its own Identity check, the report merges, nothing else moves
+  - d9df52a test(X-091): pin the hint rebuild, redaction off, a non-array answer and the owner flag; comments narrowed
+  - 55b1b13 docs(X-091): feature entry and session record — gate green, every mutation caught
+  - 0c707ad fix(X-091): the debug counter carries the model's answer, and names render on one line
+  - (this commit) docs(X-091): final gate and commit list; the counter comment says where its metadata goes
+- **Risks:** the model decides who is the same person — a wrong merge hides a person from the list
+  and no code check stops it; the live measurement is what bounds that risk. Per-check findings the
+  workers wrote can still name both spellings (accepted in the spec). Addresses already at the
+  10-line hint cap keep 10 hint lines after a merge.
+- **Next best action:** umbrella plan Tasks 11-13 — push the branch, smoke-run 1105 Clovelly Ct
+  (~$0.50), run the 24-address arm (~$12) and read it against the written decision criteria. Each
+  needs the owner's go-ahead.
+
 ### 2026-09-07 — records_read on CaseAdjudication (X-078 AI corroboration, engine half)
 - **Goal:** Give the case-level `master_adjudicator` one new required output block —
   `records_read` — stating what public records say about occupancy

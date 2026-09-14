@@ -79,6 +79,13 @@ import {
   sanitize_result_prose,
 } from "./prose_redaction.ts";
 import { humanize_evidence_map_for_display } from "./prose_display.ts";
+import { candidate_pairs, resolve_same_person, SAME_PERSON_GRACE_MS, type SamePersonResolution } from "./pair_verdicts.ts";
+import {
+  identity_check_entries,
+  merge_same_person_people,
+  type SamePersonGroup,
+  validate_same_person_groups,
+} from "./same_person.ts";
 import type { MetricEvent } from "../observability/models.ts";
 
 // ── Master submit tools (native tool calls) ──
@@ -183,6 +190,7 @@ export class AgentOrchestrator {
   agent_timeout_seconds: number;
   on_metric_event: ((event: MetricEvent) => void) | null;
   should_cancel: () => boolean;
+  same_person_grace_ms: number;
 
   constructor(opts: {
     data: DataHttpClient;
@@ -192,6 +200,7 @@ export class AgentOrchestrator {
     agent_timeout_seconds?: number;
     on_metric_event?: (event: MetricEvent) => void;
     should_cancel?: () => boolean;
+    same_person_grace_ms?: number;
   }) {
     this.data = opts.data;
     this.subagent = opts.subagent;
@@ -200,6 +209,7 @@ export class AgentOrchestrator {
     this.agent_timeout_seconds = opts.agent_timeout_seconds ?? 120.0;
     this.on_metric_event = opts.on_metric_event ?? null;
     this.should_cancel = opts.should_cancel ?? (() => false);
+    this.same_person_grace_ms = opts.same_person_grace_ms ?? SAME_PERSON_GRACE_MS;
   }
 
   /** Site 4: between pipeline phases. Throw to unwind through the normal error path. */
@@ -280,6 +290,39 @@ export class AgentOrchestrator {
       { agent_id: "orchestrator" },
       async () => await this.preflight(request),
     );
+    // X-091. Same-person names: one small pair-verdict call, started here so it runs alongside planning and the
+    // heuristic workers. Only when there is a model and at least one pair of people sharing a last name. It cannot fail
+    // the report: resolve_same_person never throws, and the .catch covers the span wrapper. Its groups apply to the
+    // REPORT copy after adjudication; nothing it returns reaches a prompt. `context.evidence_map` is not reassigned
+    // after preflight, so these entries are the ones the groups are validated against.
+    const identity_entries = identity_check_entries(context.evidence_map);
+    const same_person_pairs = this.master_llm === null ? 0 : candidate_pairs(identity_entries).length;
+    const same_person_abort = new AbortController();
+    const same_person_call: Promise<SamePersonResolution | null> =
+      same_person_pairs === 0
+        ? Promise.resolve(null)
+        : recorder
+            .span(
+              "same_person",
+              { agent_id: "same_person" },
+              async () =>
+                await resolve_same_person(this.master_llm, identity_entries, {
+                  ...runnableConfig(
+                    "master:same_person",
+                    {
+                      phase: "same_person",
+                      agent_id: "same_person",
+                      provider: _report_provider(request.provider),
+                      model: request.model || "",
+                      batch_id: request.batch_id || "",
+                    },
+                    ["same-person"],
+                    trace,
+                  ),
+                  signal: same_person_abort.signal,
+                }),
+            )
+            .catch(() => null);
     let candidate_heuristics = selected_heuristics(request.heuristic_allowlist, request.heuristic_blocklist) as Record<
       string,
       any
@@ -336,6 +379,55 @@ export class AgentOrchestrator {
       async () =>
         await this._adjudicate_case(context, scoring.score_breakdown, results, scoring.conflicts, request, trace),
     );
+    // X-091. Real runs spend over a minute between starting the call and here, and the call takes seconds, so it has
+    // normally settled. The report waits at most `same_person_grace_ms` more; a call still running then is cancelled,
+    // counted as late, and this run keeps its people list as it is.
+    let grace_timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      same_person_call,
+      new Promise<"late">((resolve) => {
+        grace_timer = setTimeout(() => resolve("late"), this.same_person_grace_ms);
+      }),
+    ]);
+    clearTimeout(grace_timer);
+    const late = settled === "late";
+    if (late) {
+      same_person_abort.abort();
+    }
+    const same_person_resolution = late ? null : settled;
+    const validated_groups = validate_same_person_groups(same_person_resolution?.result.groups ?? [], identity_entries);
+    if (late || same_person_resolution?.called) {
+      const result = same_person_resolution?.result;
+      recorder.record_counter("same_person_groups", {
+        phase: "same_person",
+        agent_id: "same_person",
+        metadata: {
+          pairs: same_person_pairs,
+          applied: validated_groups.groups.length,
+          dropped: validated_groups.dropped,
+          contradictory: result?.contradictory.length ?? 0,
+          incomplete: result?.incomplete.length ?? 0,
+          ambiguous_joint_rows: result?.ambiguous_joint_rows.length ?? 0,
+          rejected_labels: result?.rejected_labels.length ?? 0,
+          failed: (same_person_resolution?.error ?? null) !== null,
+          late,
+          // Member names, the model's verdicts and the error text only under debug payloads, which production
+          // never enables. This metadata stays in the run's metrics events; the report payload and the progress
+          // stream never carry it. Late: groups is [], verdicts and error are null (nothing to show).
+          ...(recorder.debug_payloads
+            ? {
+                groups: validated_groups.groups.map((group) =>
+                  group.person_indexes.map((index) => context.evidence_map.people_at_address[index]?.name ?? ""),
+                ),
+                verdicts: same_person_resolution?.raw ?? null,
+                error: same_person_resolution?.error ?? null,
+              }
+            : {}),
+        },
+      });
+    }
+    // Groups apply to the REPORT copy only; `context` stays the copy every prompt was built from.
+    const report_evidence_map = reconcile_evidence_map(context.evidence_map, validated_groups.groups);
     // Finalization: humanize the human-facing prose (gated by OE_PROSE_REDACT) AFTER adjudication
     // and BEFORE the report is assembled. Running it after adjudication keeps it a pure output
     // filter that never perturbs the adjudicator's inputs (so the redact-only experiment arm is
@@ -347,8 +439,10 @@ export class AgentOrchestrator {
     // people_at_address, nonowner_occupancy_hints). Humanize a DISPLAY COPY under the same gate;
     // `context` (the prompt-grounding copy) was consumed earlier, so this cannot change coverage.
     const displayContext = redactOn
-      ? { ...context, evidence_map: humanize_evidence_map_for_display(context.evidence_map) }
-      : context;
+      ? { ...context, evidence_map: humanize_evidence_map_for_display(report_evidence_map) }
+      : report_evidence_map === context.evidence_map
+        ? context
+        : { ...context, evidence_map: report_evidence_map };
 
     const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
     caveats.push(..._global_caveats(context, finalResults));
@@ -1426,6 +1520,8 @@ function _evidence_map(
   // caps AFTER scope filtering, and the ordering is what keeps a citation a heuristic needs from
   // being crowded out. (compact_evidence_map re-asserts the ordering; this is where they enter.)
   const refs = [...external_evidence_refs(external_evidence), ..._source_refs(tax_rows, "tax", 5)];
+  // X-091: reconcile_evidence_map rebuilds both hint lists with these same builders, so they must stay
+  // the only source of owner_presence_hints and nonowner_occupancy_hints.
   const owner_presence_hints = _owner_presence_hints(people_summaries, owners, normalized_address);
   const nonowner_hints = _nonowner_occupancy_hints(people_summaries);
   const data_gaps = [
@@ -1587,6 +1683,33 @@ function _people_at_address_summaries(
     }
   }
   return [...grouped.values()].slice(0, 20);
+}
+
+/**
+ * X-091. The REPORT copy of the evidence map with the same-person groups applied. No
+ * groups → the SAME object, so a run without groups reports exactly the evidence map it did before.
+ * Both hint lists are rebuilt from the merged people with the builders `_evidence_map` used, which are
+ * their only source; every other field is carried by reference. The grounding copy the prompts were
+ * built from is never touched.
+ */
+export function reconcile_evidence_map(
+  evidence_map: CaseEvidenceMap,
+  groups: readonly SamePersonGroup[],
+): CaseEvidenceMap {
+  if (groups.length === 0) {
+    return evidence_map;
+  }
+  const people_at_address = merge_same_person_people(evidence_map.people_at_address, groups);
+  return {
+    ...evidence_map,
+    people_at_address,
+    owner_presence_hints: _owner_presence_hints(
+      people_at_address,
+      evidence_map.owner_summaries,
+      evidence_map.normalized_address,
+    ),
+    nonowner_occupancy_hints: _nonowner_occupancy_hints(people_at_address),
+  };
 }
 
 // Both hint builders take the ALREADY-BUILT person summaries: they used to re-derive them from the

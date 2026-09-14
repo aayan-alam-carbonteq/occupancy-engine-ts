@@ -12,6 +12,22 @@ describe("ScriptedChatModel", () => {
     expect(r.usage_metadata).toBeDefined();
     await expect(bound.invoke([], {})).rejects.toThrow(/exhausted/);
   });
+
+  // Pins the X-091 fix: a shared scripted master model used for more than one role (the same-person
+  // pair call alongside the master adjudicator) must not let an uncovered caller steal the batch
+  // scripted for the caller that actually names it — and must fail loudly rather than answer empty,
+  // so a mis-scripted worker turn cannot hide behind a silent no-op.
+  test("a call bound to tools the next batch never names throws and leaves the batch for the call it was written for", async () => {
+    const m = new ScriptedChatModel([[{ name: "submit_case_adjudication", args: {} }]]);
+    await expect(
+      m.bindTools([{ name: "submit_pair_verdicts" }]).invoke([]),
+    ).rejects.toThrow(/no scripted batch for tools \[submit_pair_verdicts\]/);
+    const covered = await m.bindTools([{ name: "submit_case_adjudication" }]).invoke([]);
+    expect(covered.tool_calls).toEqual([
+      { name: "submit_case_adjudication", args: {}, id: "call_submit_case_adjudication_0", type: "tool_call" },
+    ]);
+    await expect(m.bindTools([{ name: "submit_case_adjudication" }]).invoke([])).rejects.toThrow(/exhausted/);
+  });
 });
 
 describe("FixtureDataService", () => {
