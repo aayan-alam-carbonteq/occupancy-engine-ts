@@ -33,8 +33,22 @@ function last_name(name: string): string {
   return name.replace(/&/g, " ").trim().split(/\s+/).at(-1) ?? "";
 }
 
-/** Every pair of PEOPLE (never owners) who share a last name, numbered Q1.. in last-name order. Candidates only. */
-export function candidate_pairs(entries: readonly IdentityCheckEntry[]): CandidatePair[] {
+/**
+ * At about 75 output tokens a verdict, 20 pairs fit well inside ChatAnthropic's default 2,048 output tokens (the
+ * engine sets none); the measured addresses have at most 13. Without a cap, 20 people sharing a last name would be
+ * 190 pairs.
+ */
+export const MAX_CANDIDATE_PAIRS = 20;
+
+/**
+ * Every pair of PEOPLE (never owners) who share a last name, numbered Q1.. in last-name order. Candidates only. A
+ * last-name group is listed whole or not at all, so every pair inside a possible merge is judged; a group that
+ * would pass `max_pairs` is left out, and its people stay as they are.
+ */
+export function candidate_pairs(
+  entries: readonly IdentityCheckEntry[],
+  max_pairs: number = MAX_CANDIDATE_PAIRS,
+): CandidatePair[] {
   const blocks = new Map<string, IdentityCheckEntry[]>();
   for (const entry of entries) {
     if (entry.kind !== "person") {
@@ -48,6 +62,10 @@ export function candidate_pairs(entries: readonly IdentityCheckEntry[]): Candida
   }
   const pairs: CandidatePair[] = [];
   for (const [, block] of [...blocks].sort(([x], [y]) => x.localeCompare(y))) {
+    const block_pairs = (block.length * (block.length - 1)) / 2;
+    if (pairs.length + block_pairs > max_pairs) {
+      continue;
+    }
     for (let i = 0; i < block.length; i++) {
       for (let j = i + 1; j < block.length; j++) {
         pairs.push({ pair: `Q${pairs.length + 1}`, a: block[i]!, b: block[j]! });
@@ -117,6 +135,8 @@ export interface PairVerdictGroups {
   same_pairs: { ids: [string, string]; verdict: string; reason: string }[];
   /** Member names of groups dropped because the model called one of their pairs different_people. */
   contradictory: string[][];
+  /** Member names, in list order, of groups dropped because a pair between two members got no listed verdict. */
+  incomplete: string[][];
   /** Lines the model linked as a joint row to more than one line. */
   ambiguous_joint_rows: string[];
   /** Pairs given a joint-row verdict although neither line is written as a joint row. */
@@ -130,6 +150,7 @@ function is_record(value: unknown): value is Record<string, unknown> {
 /** Groups from the model's verdicts: connected "same" pairs, minus inapplicable or ambiguous joint links and self-contradicting groups. */
 export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unknown): PairVerdictGroups {
   const by_pair = new Map(pairs.map((p) => [p.pair, p]));
+  const answered = new Set<string>();
   const verdicts = is_record(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : [];
   const same: { a: IdentityCheckEntry; b: IdentityCheckEntry; joint: boolean }[] = [];
   const different: { a: IdentityCheckEntry; b: IdentityCheckEntry }[] = [];
@@ -143,6 +164,9 @@ export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unkno
     const verdict = String(item["verdict"] ?? "");
     if (p === undefined) {
       continue;
+    }
+    if ((ALL_VERDICTS as readonly string[]).includes(verdict)) {
+      answered.add(p.pair);
     }
     if ((SAME_VERDICTS as readonly string[]).includes(verdict)) {
       same_pairs.push({ ids: [p.a.id, p.b.id], verdict, reason: String(item["reason"] ?? "") });
@@ -189,8 +213,11 @@ export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unkno
     const root = find(id);
     components.set(root, [...(components.get(root) ?? []), entry]);
   }
+  const pair_key = (x: string, y: string) => [x, y].sort().join("|");
+  const pair_of = new Map(pairs.map((p) => [pair_key(p.a.id, p.b.id), p.pair]));
   const groups: PairVerdictGroups["groups"] = [];
   const contradictory: string[][] = [];
+  const incomplete: string[][] = [];
   for (const members of components.values()) {
     const ids = new Set(members.map((m) => m.id));
     if (different.some((d) => ids.has(d.a.id) && ids.has(d.b.id))) {
@@ -198,12 +225,19 @@ export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unkno
       continue;
     }
     const ordered = [...members].sort((x, y) => x.index - y.index);
+    const unanswered = ordered.some((x, i) =>
+      ordered.slice(i + 1).some((y) => !answered.has(pair_of.get(pair_key(x.id, y.id)) ?? "")),
+    );
+    if (unanswered) {
+      incomplete.push(ordered.map((m) => m.name));
+      continue;
+    }
     const plain = ordered.filter((m) => !m.name.includes("&"));
     const pool = plain.length > 0 ? plain : ordered;
     const named = pool.reduce((best, m) => (m.name.length > best.name.length ? m : best), pool[0]!);
     groups.push({ ids: ordered.map((m) => m.id), name: named.name });
   }
-  return { groups, same_pairs, contradictory, ambiguous_joint_rows: [...ambiguous], rejected_labels };
+  return { groups, same_pairs, contradictory, incomplete, ambiguous_joint_rows: [...ambiguous], rejected_labels };
 }
 
 export interface SamePersonResolution {

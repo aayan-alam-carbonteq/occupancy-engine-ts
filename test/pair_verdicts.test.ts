@@ -37,6 +37,24 @@ describe("candidate_pairs", () => {
   test("no two people share a last name: no pairs", () => {
     expect(candidate_pairs([person(0, "ANN SMITH"), person(1, "BOB JONES"), owner(0, "SMITH, ANN")])).toEqual([]);
   });
+
+  test("a last-name group that would pass the pair cap is left out whole; groups that fit still get pairs", () => {
+    const doe = Array.from({ length: 7 }, (_, i) => person(i, `PERSON${i + 1} DOE`));
+    const smith = [person(7, "ANN SMITH"), person(8, "ANNE SMITH")];
+    expect(candidate_pairs([...doe, ...smith]).map((p) => [p.pair, p.a.id, p.b.id])).toEqual([["Q1", "P8", "P9"]]);
+    const small = [
+      person(0, "A DOE"),
+      person(1, "B DOE"),
+      person(2, "C DOE"),
+      person(3, "ANN SMITH"),
+      person(4, "ANNE SMITH"),
+    ];
+    expect(candidate_pairs(small, 3).map((p) => [p.pair, p.a.id, p.b.id])).toEqual([
+      ["Q1", "P1", "P2"],
+      ["Q2", "P1", "P3"],
+      ["Q3", "P2", "P3"],
+    ]);
+  });
 });
 
 describe("render_pair_prompt", () => {
@@ -138,6 +156,35 @@ describe("groups_from_verdicts", () => {
     ]) {
       expect(groups_from_verdicts(pairs, raw).groups).toEqual([]);
     }
+  });
+
+  test("a group is dropped unless every pair of its members was answered with a listed verdict", () => {
+    const tri = candidate_pairs([person(0, "ANN DOE"), person(1, "ANNE DOE"), person(2, "ANNIE DOE")]);
+    const unanswered = groups_from_verdicts(tri, {
+      verdicts: [
+        { pair: "Q1", verdict: "nickname" },
+        { pair: "Q3", verdict: "misspelling" },
+      ],
+    });
+    expect(unanswered.groups).toEqual([]);
+    expect(unanswered.incomplete).toEqual([["ANN DOE", "ANNE DOE", "ANNIE DOE"]]);
+    const unlisted = groups_from_verdicts(tri, {
+      verdicts: [
+        { pair: "Q1", verdict: "nickname" },
+        { pair: "Q2", verdict: "probably" },
+        { pair: "Q3", verdict: "misspelling" },
+      ],
+    });
+    expect(unlisted.groups).toEqual([]);
+    const answered = groups_from_verdicts(tri, {
+      verdicts: [
+        { pair: "Q1", verdict: "nickname" },
+        { pair: "Q2", verdict: "not_sure" },
+        { pair: "Q3", verdict: "misspelling" },
+      ],
+    });
+    expect(answered.groups).toEqual([{ ids: ["P1", "P2", "P3"], name: "ANNIE DOE" }]);
+    expect(answered.incomplete).toEqual([]);
   });
 });
 
