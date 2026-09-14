@@ -146,10 +146,15 @@ const SubmitCaseAdjudicationArgs = z
     // X-091. On the TOOL only, never on CaseAdjudication: split_same_person lifts it off the args
     // before the strict parse, and validate_same_person_groups decides what survives.
     same_person: z
-      .array(z.object({ ids: z.array(z.string()).min(2), name: z.string() }))
+      .array(
+        z.object({
+          ids: z.array(z.string()).min(2),
+          name: z.string().describe("The fullest spelling, copied exactly from one member's P line, without the id."),
+        }),
+      )
       .default([])
       .describe(
-        "Groups of Identity check ids that are one human written differently. Empty when everyone is distinct.",
+        "Groups of Identity check ids that are one human, repeated or written differently. Empty when everyone is distinct.",
       ),
   })
   .describe("Submit the final master CaseAdjudication.");
@@ -656,7 +661,8 @@ export class AgentOrchestrator {
     request: AgentInvestigationRequest,
     trace: InvestigationTrace,
     // X-091. Called once, with the raw same_person of the adjudication that was ACCEPTED. Never called
-    // on a fallback, so a run without an accepted model answer applies no groups.
+    // on a fallback, so a run without an accepted model answer applies no groups. It runs inside the
+    // parse's try, so it must not throw: a throw would turn an accepted answer into a retry or fallback.
     on_same_person?: (raw: unknown) => void,
   ): Promise<CaseAdjudication> {
     if (this.master_llm === null) {

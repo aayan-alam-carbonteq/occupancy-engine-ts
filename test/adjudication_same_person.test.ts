@@ -1,4 +1,5 @@
 // test/adjudication_same_person.test.ts
+import { toJsonSchema } from "@langchain/core/utils/json_schema";
 import { describe, expect, test } from "bun:test";
 import { CaseAdjudicationSchema } from "../src/agents/models.ts";
 import { split_same_person, submit_case_adjudication } from "../src/agents/orchestrator.ts";
@@ -33,8 +34,13 @@ describe("X-091 submit_case_adjudication: same_person", () => {
     expect(schema.parse({ ...ADJUDICATION, same_person: GROUPS }).same_person).toEqual(GROUPS);
   });
 
-  test("the description the provider sees names the Identity check", () => {
-    expect(JSON.stringify(schema.shape.same_person)).toContain("Identity check");
+  test("the JSON schema the provider receives: optional, described, two ids at least, a described name", () => {
+    const json = toJsonSchema(submit_case_adjudication.schema) as any;
+    const field = json.properties.same_person;
+    expect(json.required).not.toContain("same_person");
+    expect(field.description).toContain("Identity check");
+    expect(field.items.properties.ids.minItems).toBe(2);
+    expect(field.items.properties.name.description).toContain("without the id");
   });
 });
 
