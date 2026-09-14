@@ -46,9 +46,18 @@ describe("X-091 master adjudication prompt: the Identity check", () => {
       "naming two owners",
       "Never write these ids",
       "empty when everyone is distinct",
+      "Different first names are different people",
+      "nickname or initial of the other",
+      "When both have birth years they must match",
+      "a row naming two people joins only one of them",
+      "in the same group as their other spellings",
     ]) {
       expect([phrase, block.includes(phrase)]).toEqual([phrase, true]);
     }
+  });
+
+  test("the requirement never invites grouping a household", () => {
+    expect(requirementBlock(WITH)).not.toContain("household");
   });
 
   test("same_person stays optional: it is not in the required key list", () => {
