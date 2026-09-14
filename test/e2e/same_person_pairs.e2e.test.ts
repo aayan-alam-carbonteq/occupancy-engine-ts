@@ -5,7 +5,7 @@ import { assessment_report_payload } from "../../src/agents/investigation_wire.t
 import { AgentInvestigationRequestSchema, type OccupancyAgentAssessment } from "../../src/agents/models.ts";
 import { AgentOrchestrator } from "../../src/agents/orchestrator.ts";
 import { FixtureDataService } from "../support/fixture_data_service.ts";
-import { people1104, resolve1104 } from "../support/fixtures.ts";
+import { people1104, resolve1104, sparsePeoplePayload, sparseResolvePayload } from "../support/fixtures.ts";
 import { FakeSubagent } from "../support/subagents.ts";
 
 function fixturePlan() {
@@ -13,6 +13,23 @@ function fixturePlan() {
   return {
     resolve: payload,
     address_people: people1104(),
+    address_records: { records_by_source: payload.records_by_source, unsupported_shapes: [] },
+    schema: { tables: [], access_paths: [], caveats: [] },
+  };
+}
+
+/**
+ * A plan with zero people, so `identity_check_entries` is empty and `candidate_pairs` is
+ * necessarily 0 — the "model present but nothing to group" case. Uses the existing sparse
+ * fixtures verbatim (proven via a throwaway `orch.preflight` + `candidate_pairs` script: 0
+ * people_at_address, 0 owner_summaries, 0 candidate pairs), rather than deriving a variant of
+ * the 1104 payload.
+ */
+function NO_PAIRS_PLAN() {
+  const payload = sparseResolvePayload() as any;
+  return {
+    resolve: payload,
+    address_people: sparsePeoplePayload(),
     address_records: { records_by_source: payload.records_by_source, unsupported_shapes: [] },
     schema: { tables: [], access_paths: [], caveats: [] },
   };
@@ -44,11 +61,19 @@ class PairAndAdjudicationModel {
   pair_config: any = null;
   adjudication_prompts: string[] = [];
   readonly events: string[] = [];
+  /** Resolves on the first `adjudicate()` call, so a `pair_wait` can latch onto the real adjudication. */
+  readonly adjudicated: Promise<void>;
+  private _resolve_adjudicated!: () => void;
+
   constructor(
     private readonly verdicts: Record<string, string> = {},
     private readonly pair_behaviour: "answer" | "throw" | "silent" = "answer",
-    private readonly pair_delay_ms = 0,
-  ) {}
+    private readonly pair_wait?: (config: any) => Promise<void>,
+  ) {
+    this.adjudicated = new Promise((resolve) => {
+      this._resolve_adjudicated = resolve;
+    });
+  }
 
   bindTools(tools: Array<{ name?: string }>, _opts?: unknown) {
     const bound = tools.map((t) => t.name);
@@ -67,8 +92,8 @@ class PairAndAdjudicationModel {
     this.pair_config = config;
     this.events.push("pair:start");
     this.pair_prompt = messages.map((m) => String((m as { content?: unknown }).content ?? "")).join("\n");
-    if (this.pair_delay_ms > 0) {
-      await Bun.sleep(this.pair_delay_ms);
+    if (this.pair_wait) {
+      await this.pair_wait(config);
     }
     this.events.push("pair:end");
     if (this.pair_behaviour === "throw") {
@@ -101,6 +126,8 @@ class PairAndAdjudicationModel {
 
   private adjudicate(messages: unknown[]) {
     this.adjudication_prompts.push(messages.map((m) => String((m as { content?: unknown }).content ?? "")).join("\n"));
+    this.events.push("adjudicate");
+    this._resolve_adjudicated();
     return {
       content: "",
       tool_calls: [
@@ -118,15 +145,23 @@ class PairAndAdjudicationModel {
 
 /** A worker that logs when it starts and ends into the model's shared event list, so a test can see overlap. */
 class TimedSubagent extends FakeSubagent {
+  /** Resolves the moment the first `run()` starts, so a latch can wait for real overlap instead of a margin. */
+  readonly firstRunStarted: Promise<void>;
+  private _resolve_first_run_started!: () => void;
+
   constructor(
     private readonly events: string[],
     private readonly delay_ms: number,
   ) {
     super();
+    this.firstRunStarted = new Promise((resolve) => {
+      this._resolve_first_run_started = resolve;
+    });
   }
 
   override async run(agent_input: any, data: any) {
     this.events.push("worker:start");
+    this._resolve_first_run_started();
     await Bun.sleep(this.delay_ms);
     this.events.push("worker:end");
     return super.run(agent_input, data);
@@ -137,13 +172,16 @@ async function investigate(
   model: PairAndAdjudicationModel | null,
   overrides: Record<string, unknown> = {},
   subagent: FakeSubagent = new FakeSubagent(),
+  orchestrator_options: Record<string, unknown> = {},
+  plan: ReturnType<typeof fixturePlan> = fixturePlan(),
 ): Promise<OccupancyAgentAssessment> {
-  const server = new FixtureDataService(fixturePlan());
+  const server = new FixtureDataService(plan);
   try {
     const orch = new AgentOrchestrator({
       data: new DataHttpClient(server.url),
       subagent,
       master_llm: model as any,
+      ...orchestrator_options,
     });
     return await orch.investigate(
       AgentInvestigationRequestSchema.parse({ address: "1104 SPRING RUN RD", zip: "40514", ...overrides }),
@@ -161,7 +199,15 @@ const counter = (a: OccupancyAgentAssessment) =>
     (event) => event["event_type"] === "counter" && event["name"] === "same_person_groups",
   );
 
-const PLAIN_COUNTS = { pairs: 4, dropped: 0, contradictory: 0, incomplete: 0, ambiguous_joint_rows: 0, rejected_labels: 0 };
+const PLAIN_COUNTS = {
+  pairs: 4,
+  dropped: 0,
+  contradictory: 0,
+  incomplete: 0,
+  ambiguous_joint_rows: 0,
+  rejected_labels: 0,
+  late: false,
+};
 
 describe("X-091 E2E: same-person pair verdicts run alongside the workers and merge the report copy", () => {
   test("the pair call is sent only the address's same-surname pairs; the adjudicator's prompt has no trace of it", async () => {
@@ -210,13 +256,79 @@ describe("X-091 E2E: same-person pair verdicts run alongside the workers and mer
   });
 
   test("the pair call runs alongside the heuristic workers", async () => {
-    const model = new PairAndAdjudicationModel({}, "answer", 200);
-    const a = await investigate(model, {}, new TimedSubagent(model.events, 50));
+    let subagent!: TimedSubagent;
+    const model = new PairAndAdjudicationModel({}, "answer", async () => {
+      // A latch, not a margin: wait for the first worker to actually start, with a generous
+      // fallback so a regression that never starts a worker fails instead of hanging.
+      await Promise.race([subagent.firstRunStarted, Bun.sleep(2_000)]);
+    });
+    subagent = new TimedSubagent(model.events, 50);
+    const a = await investigate(model, {}, subagent);
     const firstWorkerStart = model.events.indexOf("worker:start");
     expect(firstWorkerStart).toBeGreaterThan(-1);
     expect(model.events.indexOf("pair:start")).toBeLessThan(firstWorkerStart);
     expect(firstWorkerStart).toBeLessThan(model.events.indexOf("pair:end"));
     expect(a.adjudication.verdict_band).toBe("monitor");
+  });
+
+  test("a call still running when the adjudication finishes is merged if it lands within the grace period", async () => {
+    const model = new PairAndAdjudicationModel({ Q4: "nickname" }, "answer", async () => {
+      await model.adjudicated;
+      await Bun.sleep(50);
+    });
+    const a = await investigate(model, {}, new FakeSubagent(), { same_person_grace_ms: 1_000 });
+    expect(model.events.indexOf("adjudicate")).toBeLessThan(model.events.indexOf("pair:end"));
+    expect(names(a)).not.toContain("TAMIE WORTHINGTON");
+    expect(counter(a)?.["metadata"]).toEqual({ ...PLAIN_COUNTS, applied: 1, failed: false, late: false });
+  });
+
+  test("a call still running past the grace period is cancelled; the report neither waits for it nor merges", async () => {
+    let aborted = false;
+    const model = new PairAndAdjudicationModel({ Q4: "nickname" }, "answer", (config) => {
+      config?.signal?.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return new Promise(() => {});
+    });
+    const started = performance.now();
+    const a = await investigate(model, {}, new FakeSubagent(), { same_person_grace_ms: 100 });
+    expect(performance.now() - started).toBeLessThan(5_000);
+    expect(names(a)).toContain("TAMIE WORTHINGTON");
+    expect(counter(a)?.["metadata"]).toEqual({ ...PLAIN_COUNTS, applied: 0, failed: false, late: true });
+    expect(aborted).toBe(true);
+  });
+
+  test("an investigation cancelled while the call is in flight rejects cleanly, with no unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const model = new PairAndAdjudicationModel({}, "throw", async () => {
+        await Bun.sleep(100);
+      });
+      await expect(
+        investigate(model, {}, new FakeSubagent(), { should_cancel: () => model.pair_calls > 0 }),
+      ).rejects.toThrow(/cancel/i);
+      await Bun.sleep(250);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  test("with metrics disabled the merge still applies", async () => {
+    const a = await investigate(new PairAndAdjudicationModel({ Q4: "nickname" }), { metrics_enabled: false });
+    expect(names(a)).not.toContain("TAMIE WORTHINGTON");
+    expect(counter(a)).toBeUndefined();
+  });
+
+  test("with a model but no two people sharing a last name, there is no call, no span and no counter", async () => {
+    const model = new PairAndAdjudicationModel();
+    const a = await investigate(model, {}, new FakeSubagent(), {}, NO_PAIRS_PLAN());
+    expect(model.pair_calls).toBe(0);
+    expect(counter(a)).toBeUndefined();
+    const events = ((a as any).metrics_events ?? []) as Array<Record<string, any>>;
+    expect(events.some((e) => e["phase"] === "same_person")).toBe(false);
   });
 
   test("a failed or silent pair call leaves the report exactly as with no merge, and the adjudication still runs", async () => {

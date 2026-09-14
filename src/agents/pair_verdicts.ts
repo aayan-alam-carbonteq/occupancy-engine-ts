@@ -24,6 +24,13 @@ export const ALL_VERDICTS = [...SAME_VERDICTS, "different_people", "not_sure"] a
 export const SAME_PERSON_TIMEOUT_MS = 30_000;
 
 /**
+ * How long the report waits, once the adjudication is done, for a pair call still running. Real runs spend over a
+ * minute between starting the call and finishing the adjudication, so this only matters when the provider is slow and
+ * the run is short; the report then keeps its people list as it is rather than wait.
+ */
+export const SAME_PERSON_GRACE_MS = 2_000;
+
+/**
  * At about 75 output tokens a verdict, 20 pairs fit well inside ChatAnthropic's default 2,048 output tokens (the
  * engine sets none); the measured addresses have at most 13. Without a cap, 20 people sharing a last name would be
  * 190 pairs.

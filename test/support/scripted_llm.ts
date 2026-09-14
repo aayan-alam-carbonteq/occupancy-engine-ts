@@ -35,11 +35,15 @@ export class ScriptedChatModel {
 
   async invoke(_messages: unknown, _config?: unknown, bound?: readonly string[]): Promise<ScriptedResponse> {
     // A call bound to tools that the next batch never names is a call this script does not cover (for example the
-    // X-091 same-person call on a shared master model): it gets an empty answer and leaves the batch for the call
-    // it was written for. Unbound invokes, empty batches and an exhausted script behave as before.
+    // X-091 same-person call on a shared master model): it fails loudly, leaving the batch intact for the call it
+    // was written for, rather than answering empty — an empty answer here would hide a mis-scripted worker turn.
+    // resolve_same_person catches this for the pair call. Unbound invokes, empty batches and an exhausted script
+    // behave as before.
     const next = this.batches[this.index];
     if (bound !== undefined && bound.length > 0 && next !== undefined && next.length > 0 && !next.some((c) => bound.includes(c.name))) {
-      return { content: "", tool_calls: [], usage_metadata: this.usage };
+      throw new Error(
+        `ScriptedChatModel: no scripted batch for tools [${bound.join(", ")}]; the next batch calls [${next.map((c) => c.name).join(", ")}]`,
+      );
     }
     if (this.index >= this.batches.length) {
       throw new Error(`ScriptedChatModel exhausted after ${this.index} calls`);

@@ -1,8 +1,9 @@
-// Same person, different spellings (X-091). The master adjudicator is shown a numbered Identity
-// check list of the people and owners already in its context and may answer with groups of ids that
-// are ONE human written differently. Everything here is pure: it renders that list, validates the
-// answer by SHAPE only — the model decides who is the same person, this module never matches names —
-// and merges the grouped entries of the report's people list.
+// Same person, different spellings (X-091). These entries — the people and owners already in the
+// evidence map — and their rendered lines feed the pair-verdict call (pair_verdicts.ts), which judges
+// candidate pairs sharing a last name and answers with groups of ids that are ONE human written
+// differently. Everything here is pure: it renders those lines, validate_same_person_groups checks
+// the groups the call builds by SHAPE only — the model decides who is the same person, this module
+// never matches names — and merge_same_person_people applies them to the report copy.
 import type { CaseEvidenceMap, PersonEvidenceSummary } from "./models.ts";
 
 export interface IdentityCheckEntry {
@@ -40,9 +41,9 @@ export function birth_years_from_summaries(summaries: readonly string[]): string
 }
 
 /**
- * The entries the adjudicator is offered, built from the GROUNDING copy of the evidence map. Empty
- * unless there is at least one person and something to group them with (a second person or an
- * owner) — so an adjudication with nothing to reconcile keeps its prompt byte-identical.
+ * The entries the pair-verdict call is offered, built from the GROUNDING copy of the evidence map.
+ * Empty unless there is at least one person and something to group them with (a second person or an
+ * owner) — so a case with nothing to reconcile never starts a call.
  */
 export function identity_check_entries(
   evidence_map: Pick<CaseEvidenceMap, "people_at_address" | "owner_summaries">,
