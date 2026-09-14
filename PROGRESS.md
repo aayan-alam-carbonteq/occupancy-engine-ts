@@ -22,6 +22,49 @@ judge package, observability/summaries.
 
 <!-- newest first; one entry per working session -->
 
+### 2026-09-14 — same-person names: the adjudicator groups one human's spellings (X-091)
+- **Goal:** Stop the report listing one human as several people when records spell the name
+  differently, by having the master adjudicator — in its existing call — return groups of
+  Identity-check ids, applied to the report copy only. Plan:
+  umbrella `docs/superpowers/plans/2026-09-11-same-person-names.md`, Tasks 1-10 (started 2026-09-11).
+- **Completed (branch `feat/x091-same-person-names`, cut from `origin/main` d238b95):**
+  `src/agents/same_person.ts` (entries, birth years, rendering, shape validation, merge);
+  `prompts.ts` Identity check section + requirement block (absent → prompt byte-identical);
+  `orchestrator.ts` tool field, `split_same_person`, callback from `_adjudicate_case`,
+  `reconcile_evidence_map`, `same_person_groups` counter (names only under debug payloads).
+  Code review changed the plan in four places: an owner id may sit in several groups and a repeated
+  group counts once; the requirement wording counts exact repeats, says one human per group and asks
+  for the exact name without the id; the tool's `name` field is described; and the E2E suite pins the
+  callback contract, the hint rebuild, redaction off and a non-array answer.
+- **Verification:** `bun run typecheck && bunx biome check src cli test && OE_PROSE_REDACT=on OE_PROSE_REGISTER=off bun test`
+  → tsc silent; Biome 115 files, no fixes; 530 pass, 0 fail, 1846 expect() calls, 57 files.
+  BASELINE (`origin/main` d238b95): 480 pass, 0 fail, 1704 expect() calls, 52 files.
+- **Evidence:** mutation checks in a `git archive` snapshot of d9df52a (E2E + reconcile unit suites,
+  16 pass unmutated), each failing its required tests: M1 no lift before the strict parse (9 E2E
+  tests); M2 never apply groups (4 E2E + 2 unit); M3 callback before the parse (the every-attempt-
+  rejected test); M7 redaction-off branch ignores the merge; M8 non-array answer spends a retry;
+  M9 owner flag lost in the debug counter. The worktree was never mutated.
+- **Commits:**
+  - 839a6cc feat(X-091): the Identity check list — numbered people and owners with sources and birth years
+  - c16c077 feat(X-091): validate same_person by shape only — ids offered, a person member, its own name
+  - 820a3d2 feat(X-091): merge grouped people — one entry, sources and summaries joined, span widened
+  - 1f4f87b feat(X-091): the adjudicator prompt carries the Identity check and the same_person requirement when offered
+  - 389580b fix(X-091): an owner id may sit in several groups, and a repeated group counts once
+  - d229776 feat(X-091): same_person on the adjudication tool, lifted before the strict parse, handed back once accepted
+  - ae5d371 fix(X-091): same_person wording — repeats count, one human per group, the exact name without the id
+  - 3855a5e fix(X-091): the tool describes name as the prompt does, and a test pins the schema the provider receives
+  - 1f1f077 feat(X-091): apply same-person groups to the report copy only, and count them
+  - 0333ca5 test(X-091): end to end — the adjudicator groups from its own Identity check, the report merges, nothing else moves
+  - d9df52a test(X-091): pin the hint rebuild, redaction off, a non-array answer and the owner flag; comments narrowed
+  - (this commit) docs(X-091): feature entry and session record — gate green, every mutation caught
+- **Risks:** the model decides who is the same person — a wrong merge hides a person from the list
+  and no code check stops it; the live measurement is what bounds that risk. Per-check findings the
+  workers wrote can still name both spellings (accepted in the spec). Addresses already at the
+  10-line hint cap keep 10 hint lines after a merge.
+- **Next best action:** umbrella plan Tasks 11-13 — push the branch, smoke-run 1105 Clovelly Ct
+  (~$0.50), run the 24-address arm (~$12) and read it against the written decision criteria. Each
+  needs the owner's go-ahead.
+
 ### 2026-09-07 — records_read on CaseAdjudication (X-078 AI corroboration, engine half)
 - **Goal:** Give the case-level `master_adjudicator` one new required output block —
   `records_read` — stating what public records say about occupancy
