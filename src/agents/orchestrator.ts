@@ -383,7 +383,8 @@ export class AgentOrchestrator {
           applied: same_person.groups.length,
           dropped: same_person.dropped,
           // Member names and the model's answer only under debug payloads, which production never
-          // enables: the event reaches the report's metrics, and counts are all a consumer needs.
+          // enables. This metadata stays in the run's metrics events (the CLI's .metrics.events.jsonl);
+          // the report payload and the progress stream never carry it.
           ...(recorder.debug_payloads
             ? {
                 groups: same_person.groups.map((group) => ({

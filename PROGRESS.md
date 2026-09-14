@@ -35,15 +35,19 @@ judge package, observability/summaries.
   Code review changed the plan in four places: an owner id may sit in several groups and a repeated
   group counts once; the requirement wording counts exact repeats, says one human per group and asks
   for the exact name without the id; the tool's `name` field is described; and the E2E suite pins the
-  callback contract, the hint rebuild, redaction off and a non-array answer.
+  callback contract, the hint rebuild, redaction off and a non-array answer. A final whole-branch
+  review added the model's raw answer to the debug counter (proposed, debug payloads only) and
+  renders names on one line.
 - **Verification:** `bun run typecheck && bunx biome check src cli test && OE_PROSE_REDACT=on OE_PROSE_REGISTER=off bun test`
-  → tsc silent; Biome 115 files, no fixes; 530 pass, 0 fail, 1846 expect() calls, 57 files.
+  → tsc silent; Biome 115 files, no fixes; 532 pass, 0 fail, 1860 expect() calls, 57 files.
   BASELINE (`origin/main` d238b95): 480 pass, 0 fail, 1704 expect() calls, 52 files.
 - **Evidence:** mutation checks in a `git archive` snapshot of d9df52a (E2E + reconcile unit suites,
   16 pass unmutated), each failing its required tests: M1 no lift before the strict parse (9 E2E
   tests); M2 never apply groups (4 E2E + 2 unit); M3 callback before the parse (the every-attempt-
   rejected test); M7 redaction-off branch ignores the merge; M8 non-array answer spends a retry;
-  M9 owner flag lost in the debug counter. The worktree was never mutated.
+  M9 owner flag lost in the debug counter. The worktree was never mutated. A final whole-branch
+  review re-ran them at 0c707ad with three more (proposed always null, the name whitespace
+  collapse removed, proposed outside the debug branch): all caught.
 - **Commits:**
   - 839a6cc feat(X-091): the Identity check list — numbered people and owners with sources and birth years
   - c16c077 feat(X-091): validate same_person by shape only — ids offered, a person member, its own name
@@ -56,7 +60,9 @@ judge package, observability/summaries.
   - 1f1f077 feat(X-091): apply same-person groups to the report copy only, and count them
   - 0333ca5 test(X-091): end to end — the adjudicator groups from its own Identity check, the report merges, nothing else moves
   - d9df52a test(X-091): pin the hint rebuild, redaction off, a non-array answer and the owner flag; comments narrowed
-  - (this commit) docs(X-091): feature entry and session record — gate green, every mutation caught
+  - 55b1b13 docs(X-091): feature entry and session record — gate green, every mutation caught
+  - 0c707ad fix(X-091): the debug counter carries the model's answer, and names render on one line
+  - (this commit) docs(X-091): final gate and commit list; the counter comment says where its metadata goes
 - **Risks:** the model decides who is the same person — a wrong merge hides a person from the list
   and no code check stops it; the live measurement is what bounds that risk. Per-check findings the
   workers wrote can still name both spellings (accepted in the spec). Addresses already at the
