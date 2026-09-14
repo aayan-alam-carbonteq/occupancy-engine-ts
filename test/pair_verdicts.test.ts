@@ -1,8 +1,10 @@
 // test/pair_verdicts.test.ts
 import { describe, expect, test } from "bun:test";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
+import { RunnableLambda } from "@langchain/core/runnables";
 import {
   ALL_VERDICTS,
+  PAIR_VERDICT_SYSTEM_PROMPT,
   candidate_pairs,
   groups_from_verdicts,
   render_pair_prompt,
@@ -10,6 +12,35 @@ import {
   submit_pair_verdicts,
 } from "../src/agents/pair_verdicts.ts";
 import { type IdentityCheckEntry, validate_same_person_groups } from "../src/agents/same_person.ts";
+
+// The measured p6 prompt (files/x091-measurement-2026-09-11, FINDINGS.md). Changing either string requires a re-measure.
+const SYSTEM_GOLDEN =
+  "You reconcile person records for one property for an occupancy report. Records from different data sources " +
+  "spell one person's name differently. Wrongly merging two real people hides an occupant, so you call a pair the " +
+  "same only on clear evidence. Answer only with the submit_pair_verdicts tool.";
+const USER_GOLDEN = [
+  "Pairs of people records at one property that share a last name (id, name, sources, birth years):",
+  "Q1: P2 BRENT & JAMIE MUSIC | trace",
+  "     P4 BRENT MUSIC | trace",
+  "Q2: P1 TOM RICHARDSON | trace",
+  "     P3 THOMAS RICHARDSON | trace | born 1947",
+  "",
+  "For EVERY pair above, decide whether its two lines are the SAME human written differently. Most pairs are different people.",
+  "Verdicts:",
+  "- same_spelling: the same name repeated, perhaps with a credential added.",
+  "- nickname: one first name is a nickname of the other (BILL / WILLIAM, PEGGY / MARGARET); the rest of the name agrees.",
+  "- initials: one line uses initials for the other's names (E R / EDWARD R). A one-letter first name is an initial",
+  "  (T / TERESA), never a different first name.",
+  "- middle_name_added_or_left_out: same first and last name; one line has a middle name or initial the other lacks.",
+  "- misspelling: the same first name misspelled (KATHERYN / KATHRYN); the rest of the name agrees.",
+  '- joint_row_names_this_person: one of the two lines itself contains "&" (a joint row such as "JOHN & ANN DOE"),',
+  "  and it names the other line's person. Never use it for two separate lines, even when they are a couple.",
+  "- different_people: anything else. Different first names are different people (spouses, parents, children and",
+  "  siblings share a last name: DENNIS / DENISE, FRANK / FRANCES). Two different middle initials, birth years with no",
+  "  year in common, or JR / SR / II / III on only one line also mean different people.",
+  "- not_sure: the evidence is too thin.",
+  "For each pair, first write the two first names as they appear, then a short reason, then the verdict. Answer every pair.",
+].join("\n");
 
 function person(index: number, name: string, extra: Partial<IdentityCheckEntry> = {}): IdentityCheckEntry {
   return { id: `P${index + 1}`, kind: "person", index, name, sources: ["trace"], birth_years: [], ...extra };
@@ -55,6 +86,20 @@ describe("candidate_pairs", () => {
       ["Q3", "P2", "P3"],
     ]);
   });
+
+  test("owners are never offered, even when one shares a last name with a person", () => {
+    const entries = [
+      person(0, "TOM RICHARDSON"),
+      person(1, "THOMAS RICHARDSON"),
+      owner(0, "TOM RICHARDSON"),
+      owner(1, "RICHARDSON, THOMAS"),
+    ];
+    expect(candidate_pairs(entries).map((p) => [p.pair, p.a.id, p.b.id])).toEqual([["Q1", "P1", "P2"]]);
+  });
+
+  test("names with no last word are never paired", () => {
+    expect(candidate_pairs([person(0, ""), person(1, "  "), person(2, "&"), person(3, " & ")])).toEqual([]);
+  });
 });
 
 describe("render_pair_prompt", () => {
@@ -67,16 +112,9 @@ describe("render_pair_prompt", () => {
     expect(text).not.toContain("tax owner");
   });
 
-  test("carries the measured rules", () => {
-    for (const phrase of [
-      "For EVERY pair above, decide whether its two lines are the SAME human written differently.",
-      "A one-letter first name is an initial",
-      "Never use it for two separate lines, even when they are a couple.",
-      "first write the two first names as they appear, then a short reason, then the verdict.",
-    ]) {
-      expect([phrase, text.includes(phrase)]).toEqual([phrase, true]);
-    }
-    expect(text).not.toContain("household");
+  test("the prompt is exactly the measured p6 prompt (changing it requires a re-measure)", () => {
+    expect(PAIR_VERDICT_SYSTEM_PROMPT).toBe(SYSTEM_GOLDEN);
+    expect(text).toBe(USER_GOLDEN);
   });
 });
 
@@ -140,7 +178,7 @@ describe("groups_from_verdicts", () => {
       verdicts: [
         { pair: "Q1", verdict: "joint_row_names_this_person" },
         { pair: "Q2", verdict: "joint_row_names_this_person" },
-        { pair: "Q3", verdict: "different_people" },
+        { pair: "Q3", verdict: "not_sure" },
       ],
     });
     expect(out.groups).toEqual([]);
@@ -153,9 +191,27 @@ describe("groups_from_verdicts", () => {
       "Q2 nickname",
       { verdicts: "Q2" },
       { verdicts: [7, null, { pair: "Q9", verdict: "nickname" }, { pair: "Q2", verdict: "made_up" }] },
+      { verdicts: [{ pair: "Q2", verdict: ["nickname"] }] },
     ]) {
       expect(groups_from_verdicts(pairs, raw).groups).toEqual([]);
     }
+  });
+
+  test("any same link between a joint row and another line counts as a joint link, so a row linked twice merges nobody", () => {
+    const music = candidate_pairs([person(0, "BRENT & JAMIE MUSIC"), person(1, "BRENT MUSIC"), person(2, "JAMIE MUSIC")]);
+    const twice = groups_from_verdicts(music, {
+      verdicts: [
+        { pair: "Q1", verdict: "joint_row_names_this_person" },
+        { pair: "Q2", verdict: "same_spelling" },
+        { pair: "Q3", verdict: "not_sure" },
+      ],
+    });
+    expect(twice.groups).toEqual([]);
+    expect(twice.ambiguous_joint_rows).toEqual(["P1"]);
+    const once = candidate_pairs([person(0, "BRENT & JAMIE MUSIC"), person(1, "BRENT MUSIC")]);
+    expect(groups_from_verdicts(once, { verdicts: [{ pair: "Q1", verdict: "same_spelling" }] }).groups).toEqual([
+      { ids: ["P1", "P2"], name: "BRENT MUSIC" },
+    ]);
   });
 
   test("a group is dropped unless every pair of its members was answered with a listed verdict", () => {
@@ -238,5 +294,70 @@ describe("resolve_same_person", () => {
   test("no model: no call", async () => {
     const r = await resolve_same_person(null, ENTRIES, undefined);
     expect([r.called, r.result.groups]).toEqual([false, []]);
+  });
+
+  test("the call gets the caller's config plus the timeout, and a call running past it is aborted", async () => {
+    let seen: any = null;
+    let aborted = false;
+    const model = {
+      bindTools: () =>
+        RunnableLambda.from(async (_messages: unknown, config?: any) => {
+          seen = config;
+          config?.signal?.addEventListener("abort", () => {
+            aborted = true;
+          });
+          return await new Promise(() => {});
+        }),
+    };
+    const r = await resolve_same_person(model, ENTRIES, { metadata: { phase: "same_person" } }, 30);
+    await Bun.sleep(30);
+    expect(seen?.metadata?.phase).toBe("same_person");
+    expect(aborted).toBe(true);
+    expect([r.called, r.result.groups]).toEqual([true, []]);
+  });
+
+  test("malformed entries never reject: no call, no groups, the error reported", async () => {
+    let invoked = 0;
+    const model = {
+      bindTools: () => ({
+        invoke: async () => {
+          invoked += 1;
+          return {};
+        },
+      }),
+    };
+    const r = await resolve_same_person(
+      model,
+      [person(0, "ANN DOE"), { ...person(1, "ANNE DOE"), name: undefined as any }],
+      undefined,
+    );
+    expect([r.called, r.result.groups, invoked, typeof r.error]).toEqual([false, [], 0, "string"]);
+  });
+
+  test("an answered call leaves no timer running", async () => {
+    const real_set = globalThis.setTimeout;
+    const real_clear = globalThis.clearTimeout;
+    const live = new Set<unknown>();
+    globalThis.setTimeout = ((fn: any, ms?: number, ...rest: any[]) => {
+      const id = real_set(fn, ms, ...rest);
+      live.add(id);
+      return id;
+    }) as any;
+    globalThis.clearTimeout = ((id: any) => {
+      live.delete(id);
+      real_clear(id);
+    }) as any;
+    const model = {
+      bindTools: () => ({
+        invoke: async () => ({ tool_calls: [{ name: "submit_pair_verdicts", args: { verdicts: [] } }] }),
+      }),
+    };
+    try {
+      await resolve_same_person(model, ENTRIES, undefined);
+    } finally {
+      globalThis.setTimeout = real_set;
+      globalThis.clearTimeout = real_clear;
+    }
+    expect(live.size).toBe(0);
   });
 });

@@ -23,22 +23,22 @@ export const ALL_VERDICTS = [...SAME_VERDICTS, "different_people", "not_sure"] a
 /** A generous ceiling: measured calls take 3-7 s; a slower call must never hold up the report. */
 export const SAME_PERSON_TIMEOUT_MS = 30_000;
 
-export interface CandidatePair {
-  pair: string;
-  a: IdentityCheckEntry;
-  b: IdentityCheckEntry;
-}
-
-function last_name(name: string): string {
-  return name.replace(/&/g, " ").trim().split(/\s+/).at(-1) ?? "";
-}
-
 /**
  * At about 75 output tokens a verdict, 20 pairs fit well inside ChatAnthropic's default 2,048 output tokens (the
  * engine sets none); the measured addresses have at most 13. Without a cap, 20 people sharing a last name would be
  * 190 pairs.
  */
 export const MAX_CANDIDATE_PAIRS = 20;
+
+export interface CandidatePair {
+  pair: string;
+  a: IdentityCheckEntry;
+  b: IdentityCheckEntry;
+}
+
+function _last_name(name: string): string {
+  return name.replace(/&/g, " ").trim().split(/\s+/).at(-1) ?? "";
+}
 
 /**
  * Every pair of PEOPLE (never owners) who share a last name, numbered Q1.. in last-name order. Candidates only. A
@@ -54,7 +54,7 @@ export function candidate_pairs(
     if (entry.kind !== "person") {
       continue;
     }
-    const key = last_name(entry.name);
+    const key = _last_name(entry.name);
     if (key === "") {
       continue;
     }
@@ -133,7 +133,7 @@ export interface PairVerdictGroups {
   groups: { ids: string[]; name: string }[];
   /** Every pair the model called the same (including rejected joint labels), for measurement. */
   same_pairs: { ids: [string, string]; verdict: string; reason: string }[];
-  /** Member names of groups dropped because the model called one of their pairs different_people. */
+  /** Member names, in list order, of groups dropped because the model called one of their pairs different_people. */
   contradictory: string[][];
   /** Member names, in list order, of groups dropped because a pair between two members got no listed verdict. */
   incomplete: string[][];
@@ -143,7 +143,7 @@ export interface PairVerdictGroups {
   rejected_labels: string[];
 }
 
-function is_record(value: unknown): value is Record<string, unknown> {
+function _is_record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -151,17 +151,17 @@ function is_record(value: unknown): value is Record<string, unknown> {
 export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unknown): PairVerdictGroups {
   const by_pair = new Map(pairs.map((p) => [p.pair, p]));
   const answered = new Set<string>();
-  const verdicts = is_record(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : [];
+  const verdicts = _is_record(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : [];
   const same: { a: IdentityCheckEntry; b: IdentityCheckEntry; joint: boolean }[] = [];
   const different: { a: IdentityCheckEntry; b: IdentityCheckEntry }[] = [];
   const same_pairs: PairVerdictGroups["same_pairs"] = [];
   const rejected_labels: string[] = [];
   for (const item of verdicts) {
-    if (!is_record(item)) {
+    if (!_is_record(item)) {
       continue;
     }
     const p = by_pair.get(String(item["pair"] ?? "").trim().toUpperCase());
-    const verdict = String(item["verdict"] ?? "");
+    const verdict = typeof item["verdict"] === "string" ? item["verdict"] : "";
     if (p === undefined) {
       continue;
     }
@@ -170,12 +170,16 @@ export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unkno
     }
     if ((SAME_VERDICTS as readonly string[]).includes(verdict)) {
       same_pairs.push({ ids: [p.a.id, p.b.id], verdict, reason: String(item["reason"] ?? "") });
-      const joint = verdict === "joint_row_names_this_person";
-      if (joint && !p.a.name.includes("&") && !p.b.name.includes("&")) {
+      const labelled_joint = verdict === "joint_row_names_this_person";
+      const a_joint_row = p.a.name.includes("&");
+      const b_joint_row = p.b.name.includes("&");
+      if (labelled_joint && !a_joint_row && !b_joint_row) {
         rejected_labels.push(p.pair);
         continue;
       }
-      same.push({ a: p.a, b: p.b, joint });
+      // A same link between a joint row and a line that is not one names one person of that row, whatever the model
+      // labelled it, so it counts toward the one-link-per-joint-row rule below.
+      same.push({ a: p.a, b: p.b, joint: labelled_joint || a_joint_row !== b_joint_row });
     } else if (verdict === "different_people") {
       different.push({ a: p.a, b: p.b });
     }
@@ -219,12 +223,12 @@ export function groups_from_verdicts(pairs: readonly CandidatePair[], raw: unkno
   const contradictory: string[][] = [];
   const incomplete: string[][] = [];
   for (const members of components.values()) {
-    const ids = new Set(members.map((m) => m.id));
+    const ordered = [...members].sort((x, y) => x.index - y.index);
+    const ids = new Set(ordered.map((m) => m.id));
     if (different.some((d) => ids.has(d.a.id) && ids.has(d.b.id))) {
-      contradictory.push(members.map((m) => m.name));
+      contradictory.push(ordered.map((m) => m.name));
       continue;
     }
-    const ordered = [...members].sort((x, y) => x.index - y.index);
     const unanswered = ordered.some((x, i) =>
       ordered.slice(i + 1).some((y) => !answered.has(pair_of.get(pair_key(x.id, y.id)) ?? "")),
     );
@@ -247,28 +251,36 @@ export interface SamePersonResolution {
   /** The tool args as the model sent them, unvalidated. */
   raw: unknown;
   result: PairVerdictGroups;
+  /** Why no groups came back, if a call failed. It can carry provider text, so it belongs only in debug payloads. */
   error: string | null;
 }
 
-/** One pair-verdict call. Never throws: any error, timeout or missing tool call yields no groups. */
+/**
+ * One pair-verdict call. Never throws or rejects: any error, timeout, malformed input or missing tool call yields no
+ * groups. The timeout also goes to the model call in its config, where LangChain turns it into an abort signal, so a
+ * call that runs past it is cancelled rather than left spending; the race is the backstop for a model that ignores
+ * the signal.
+ */
 export async function resolve_same_person(
   model: any,
   entries: readonly IdentityCheckEntry[],
   config: RunnableConfig | undefined,
   timeout_ms: number = SAME_PERSON_TIMEOUT_MS,
 ): Promise<SamePersonResolution> {
-  const pairs = candidate_pairs(entries);
-  const none = groups_from_verdicts(pairs, null);
-  if (pairs.length === 0 || model === null || typeof model?.bindTools !== "function") {
-    return { called: false, pairs: pairs.length, raw: null, result: none, error: null };
-  }
+  let pairs: CandidatePair[] = [];
+  let called = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    pairs = candidate_pairs(entries);
+    if (pairs.length === 0 || typeof model?.bindTools !== "function") {
+      return { called: false, pairs: pairs.length, raw: null, result: groups_from_verdicts(pairs, null), error: null };
+    }
+    called = true;
     const bound = model.bindTools([submit_pair_verdicts], { tool_choice: "any" });
     const call = Promise.resolve(
       bound.invoke(
         [new SystemMessage({ content: PAIR_VERDICT_SYSTEM_PROMPT }), new HumanMessage({ content: render_pair_prompt(pairs) })],
-        config,
+        { ...(config ?? {}), timeout: timeout_ms },
       ),
     );
     call.catch(() => {});
@@ -286,7 +298,13 @@ export async function resolve_same_person(
       error: raw === null ? "no submit_pair_verdicts tool call" : null,
     };
   } catch (err) {
-    return { called: true, pairs: pairs.length, raw: null, result: none, error: err instanceof Error ? err.message : String(err) };
+    return {
+      called,
+      pairs: pairs.length,
+      raw: null,
+      result: groups_from_verdicts([], null),
+      error: err instanceof Error ? err.message : String(err),
+    };
   } finally {
     clearTimeout(timer);
   }
