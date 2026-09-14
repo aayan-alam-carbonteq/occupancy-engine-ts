@@ -64,4 +64,22 @@ describe("X-091 split_same_person", () => {
     expect(args).toEqual(ADJUDICATION);
     expect(same_person).toBeUndefined();
   });
+
+  test("lifts same_person filed inside records_read, leaving records_read otherwise intact", () => {
+    const input = { ...ADJUDICATION, records_read: { ...ADJUDICATION.records_read, same_person: GROUPS } };
+    const { args, same_person } = split_same_person(input);
+    expect(same_person).toBe(GROUPS);
+    expect(args["records_read"]).toEqual(ADJUDICATION.records_read);
+    expect("same_person" in input.records_read).toBe(true);
+    expect(CaseAdjudicationSchema.safeParse(args).success).toBe(true);
+  });
+
+  test("a top-level same_person wins over one inside records_read, and both are removed", () => {
+    const nested = [{ ids: ["P1", "P2"], name: "SOMEONE" }];
+    const input = { ...ADJUDICATION, same_person: GROUPS, records_read: { ...ADJUDICATION.records_read, same_person: nested } };
+    const { args, same_person } = split_same_person(input);
+    expect(same_person).toBe(GROUPS);
+    expect("same_person" in args).toBe(false);
+    expect("same_person" in args["records_read"]).toBe(false);
+  });
 });

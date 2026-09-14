@@ -47,6 +47,8 @@ class IdentityReadingModel {
   constructor(
     private readonly pick: (lines: IdentityLine[], call: number) => unknown,
     private readonly override: (call: number) => Record<string, unknown> = () => ({}),
+    /** Where the answer goes: top level (the contract) or inside records_read (what Haiku 4.5 does). */
+    private readonly placement: "top" | "records_read" = "top",
   ) {}
 
   bindTools(_tools: unknown, _opts?: unknown): this {
@@ -64,7 +66,14 @@ class IdentityReadingModel {
       tool_calls: [
         {
           name: "submit_case_adjudication",
-          args: { ...VALID_ADJUDICATION, ...this.override(this.calls), same_person },
+          args:
+            this.placement === "records_read"
+              ? {
+                  ...VALID_ADJUDICATION,
+                  ...this.override(this.calls),
+                  records_read: { ...VALID_ADJUDICATION.records_read, same_person },
+                }
+              : { ...VALID_ADJUDICATION, ...this.override(this.calls), same_person },
           id: `call_submit_case_adjudication_${this.calls}`,
           type: "tool_call",
         },
@@ -207,6 +216,17 @@ describe("X-091 E2E: the adjudicator reconciles same-person names", () => {
     expect(model.calls).toBe(1);
     expect(a.resolved_address.evidence_map).toEqual(baseline.resolved_address.evidence_map);
     expect(counter(a)?.["metadata"]).toEqual({ applied: 0, dropped: 1 });
+  });
+
+  test("an answer filed inside records_read (as Haiku 4.5 does) still merges and spends no retry", async () => {
+    const baseline = await investigate(new IdentityReadingModel(() => []));
+    const model = new IdentityReadingModel(KENNETH_AND_TAMIE, () => ({}), "records_read");
+    const a = await investigate(model);
+    expect(model.calls).toBe(1);
+    expect(names(a)).toHaveLength(names(baseline).length - 1);
+    expect(names(a)).not.toContain("TAMIE WORTHINGTON");
+    expect("same_person" in a.adjudication.records_read).toBe(false);
+    expect(counter(a)?.["metadata"]).toEqual({ applied: 1, dropped: 0 });
   });
 
   test("a rejected attempt's groups never apply; the accepted retry's do, counted once", async () => {

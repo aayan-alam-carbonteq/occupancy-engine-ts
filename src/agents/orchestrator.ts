@@ -1126,10 +1126,17 @@ function _suppress_absence_workers(plan: CaseInvestigationPlan): CaseInvestigati
 /**
  * X-091. `same_person` rides on the adjudication tool but is not part of CaseAdjudication, whose
  * schema is .strict(): left in the args it would fail validation and spend a retry. Returns a copy of
- * the args without it, plus the raw value, unvalidated.
+ * the args without it, plus the raw value, unvalidated. Haiku 4.5 files it inside `records_read` (3 of
+ * 3 first attempts in a live replay, 2026-09-14), so it is lifted from there too; a top-level value
+ * wins when both are present.
  */
 export function split_same_person(args: Record<string, any>): { args: Record<string, any>; same_person: unknown } {
   const { same_person, ...rest } = args;
+  const records_read = rest["records_read"];
+  if (isRecord(records_read) && "same_person" in records_read) {
+    const { same_person: nested, ...records_rest } = records_read;
+    return { args: { ...rest, records_read: records_rest }, same_person: same_person ?? nested };
+  }
   return { args: rest, same_person };
 }
 
