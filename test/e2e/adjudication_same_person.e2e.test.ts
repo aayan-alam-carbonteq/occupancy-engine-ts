@@ -42,6 +42,8 @@ type IdentityLine = { id: string; line: string };
 class IdentityReadingModel {
   prompt = "";
   calls = 0;
+  /** The same_person value this model sent on each call, in order. */
+  sent: unknown[] = [];
   constructor(
     private readonly pick: (lines: IdentityLine[], call: number) => unknown,
     private readonly override: (call: number) => Record<string, unknown> = () => ({}),
@@ -55,12 +57,14 @@ class IdentityReadingModel {
     this.calls += 1;
     this.prompt = messages.map((message) => String((message as { content?: unknown }).content ?? "")).join("\n");
     const lines = [...this.prompt.matchAll(/^([PO]\d+) (.+)$/gm)].map((match) => ({ id: match[1]!, line: match[0] }));
+    const same_person = this.pick(lines, this.calls);
+    this.sent.push(same_person);
     return {
       content: "",
       tool_calls: [
         {
           name: "submit_case_adjudication",
-          args: { ...VALID_ADJUDICATION, ...this.override(this.calls), same_person: this.pick(lines, this.calls) },
+          args: { ...VALID_ADJUDICATION, ...this.override(this.calls), same_person },
           id: `call_submit_case_adjudication_${this.calls}`,
           type: "tool_call",
         },
@@ -237,26 +241,42 @@ describe("X-091 E2E: the adjudicator reconciles same-person names", () => {
     expect(counter(a)).toBeUndefined();
   });
 
-  test("the counter carries counts, and member names only under debug payloads", async () => {
+  test("the counter carries counts, and member names and the model's answer only under debug payloads", async () => {
     const plain = await investigate(new IdentityReadingModel(KENNETH_AND_TAMIE));
     expect(counter(plain)?.["metadata"]).toEqual({ applied: 1, dropped: 0 });
-    const debug = await investigate(new IdentityReadingModel(KENNETH_AND_TAMIE), { metrics_debug_payloads: true });
+    const model = new IdentityReadingModel(KENNETH_AND_TAMIE);
+    const debug = await investigate(model, { metrics_debug_payloads: true });
     expect(counter(debug)?.["metadata"]).toEqual({
       applied: 1,
       dropped: 0,
       groups: [{ names: ["KENNETH S WORTHINGTON", "TAMIE WORTHINGTON"], includes_owner: false }],
+      proposed: model.sent[0],
+    });
+  });
+
+  test("under debug payloads a dropped answer is still recorded as proposed", async () => {
+    const a = await investigate(
+      new IdentityReadingModel(() => [{ ids: ["P1", "P999"], name: "NOBODY" }]),
+      { metrics_debug_payloads: true },
+    );
+    expect(counter(a)?.["metadata"]).toEqual({
+      applied: 0,
+      dropped: 1,
+      groups: [],
+      proposed: [{ ids: ["P1", "P999"], name: "NOBODY" }],
     });
   });
 
   test("the debug counter marks a group that includes the owner", async () => {
-    const a = await investigate(
-      new IdentityReadingModel((lines) => [{ ids: [idOf(lines, "JESSICA WHISMAN"), "O1"], name: "JESSICA WHISMAN" }]),
-      { metrics_debug_payloads: true },
-    );
+    const model = new IdentityReadingModel((lines) => [
+      { ids: [idOf(lines, "JESSICA WHISMAN"), "O1"], name: "JESSICA WHISMAN" },
+    ]);
+    const a = await investigate(model, { metrics_debug_payloads: true });
     expect(counter(a)?.["metadata"]).toEqual({
       applied: 1,
       dropped: 0,
       groups: [{ names: ["JESSICA WHISMAN"], includes_owner: true }],
+      proposed: model.sent[0],
     });
   });
 

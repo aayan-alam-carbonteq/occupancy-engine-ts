@@ -382,8 +382,8 @@ export class AgentOrchestrator {
         metadata: {
           applied: same_person.groups.length,
           dropped: same_person.dropped,
-          // Member names only under debug payloads, which production never enables: this event
-          // streams to the backend, and counts are all a live consumer needs.
+          // Member names and the model's answer only under debug payloads, which production never
+          // enables: the event reaches the report's metrics, and counts are all a consumer needs.
           ...(recorder.debug_payloads
             ? {
                 groups: same_person.groups.map((group) => ({
@@ -392,6 +392,8 @@ export class AgentOrchestrator {
                   ),
                   includes_owner: group.includes_owner,
                 })),
+                // The answer as the model sent it, so a measurement can judge dropped groups too.
+                proposed: same_person_answer.raw ?? null,
               }
             : {}),
         },

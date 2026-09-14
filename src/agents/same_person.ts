@@ -69,13 +69,17 @@ export function identity_check_entries(
   return [...people, ...owners];
 }
 
-/** "P2 BRENT MUSIC | trace, utility | born 1956" and "O1 FURRY, CATHERINE D | tax owner". */
+/**
+ * "P2 BRENT MUSIC | trace, utility | born 1956" and "O1 FURRY, CATHERINE D | tax owner". Names are
+ * collapsed onto one line, so a record's name can never forge an extra id line in the prompt.
+ */
 export function render_identity_check_lines(entries: readonly IdentityCheckEntry[]): string[] {
   return entries.map((entry) => {
+    const name = entry.name.replace(/\s+/g, " ").trim();
     if (entry.kind === "owner") {
-      return `${entry.id} ${entry.name} | tax owner`;
+      return `${entry.id} ${name} | tax owner`;
     }
-    const parts = [`${entry.id} ${entry.name}`, entry.sources.length > 0 ? entry.sources.join(", ") : "no source"];
+    const parts = [`${entry.id} ${name}`, entry.sources.length > 0 ? entry.sources.join(", ") : "no source"];
     if (entry.birth_years.length > 0) {
       parts.push(`born ${entry.birth_years.join(", ")}`);
     }

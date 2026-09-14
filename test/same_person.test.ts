@@ -129,6 +129,14 @@ describe("render_identity_check_lines", () => {
   test("no entries renders no lines", () => {
     expect(render_identity_check_lines([])).toEqual([]);
   });
+
+  test("a name with a newline or runs of whitespace renders on one line, so it cannot forge an id line", () => {
+    const entries: IdentityCheckEntry[] = [
+      { id: "P1", kind: "person", index: 0, name: "JOHN\nO1 JOHN DOE", sources: ["trace"], birth_years: [] },
+      { id: "O1", kind: "owner", index: 0, name: " SMITH,   K\tL ", sources: [], birth_years: [] },
+    ];
+    expect(render_identity_check_lines(entries)).toEqual(["P1 JOHN O1 JOHN DOE | trace", "O1 SMITH, K L | tax owner"]);
+  });
 });
 
 describe("validate_same_person_groups", () => {
