@@ -49,14 +49,10 @@ describe("X-078 submit_case_adjudication tool args", () => {
     expect(Object.keys(schema.shape)).toContain("records_read");
   });
 
-  test("the tool args and the model schema agree field-for-field, apart from same_person", () => {
-    // orchestrator.ts parses the tool args through CaseAdjudicationSchema. A field the tool
-    // does not offer can never be supplied, and every run would fall back. X-091's same_person is
-    // the one deliberate exception: it is lifted off the args before that parse and never reaches
-    // CaseAdjudication.
-    expect(Object.keys(schema.shape).sort()).toEqual(
-      [...Object.keys(CaseAdjudicationSchema.shape), "same_person"].sort(),
-    );
+  test("the tool args and the model schema agree field-for-field", () => {
+    // orchestrator.ts:1033 parses the tool args through CaseAdjudicationSchema. A field the tool
+    // does not offer can never be supplied, and every run would fall back.
+    expect(Object.keys(schema.shape).sort()).toEqual(Object.keys(CaseAdjudicationSchema.shape).sort());
   });
 
   test("the tool accepts a full block and applies the same default", () => {

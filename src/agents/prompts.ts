@@ -501,33 +501,12 @@ export function master_planning_user_prompt(context: Dict, heuristics: Dict[], s
   ].join("\n");
 }
 
-// X-091. Rendered only when the orchestrator offers an Identity check list, so every adjudication
-// without one keeps its prompt byte-identical. Each phrase a test pins sits on ONE line.
-const SAME_PERSON_REQUIREMENT_LINES: readonly string[] = [
-  "- same_person (optional): groups of Identity check ids that are the SAME human, repeated or",
-  "  written differently: a nickname, an initial, a middle name left out, or a misspelling.",
-  "  Different first names are different people, even with the same last name (spouses, parents,",
-  "  children, siblings), unless one first name is a nickname or initial of the other, or the same name misspelled.",
-  "  When both have birth years they must match (at least one year in common).",
-  "  Leave people out of a group when their birth years differ, only one has JR or SR, or you are not sure.",
-  "  One human per group, with all of that human's ids; each P id in one group only (a row naming two people joins only one of them).",
-  "  Include an O id only when that person is the tax owner, in the same group as their other spellings;",
-  "  an O line naming two owners goes in each of their groups.",
-  "  name: the fullest spelling among the group's P lines (never an O line), copied exactly, without the id.",
-  "  Never write these ids anywhere else in your answer. Leave same_person empty when everyone is distinct.",
-];
-
-function _identity_check_section(lines: readonly string[]): string[] {
-  return lines.length > 0 ? ["", "Identity check:", ...lines] : [];
-}
-
 export function master_adjudication_user_prompt(
   context: Dict,
   raw_score: Dict,
   worker_results: Dict[],
   conflicts: Dict[],
   sectioned = false,
-  identity_check: readonly string[] = [],
 ): string {
   return [
     "The field analysts have completed their reviews. You now have the full case file.",
@@ -544,7 +523,6 @@ export function master_adjudication_user_prompt(
     "",
     "Analyst submissions:",
     sectioned ? render_worker_sections(worker_results) : JSON.stringify(worker_results, null, 2),
-    ..._identity_check_section(identity_check),
     "",
     "Adjudication requirements:",
     "- Keep raw_score equal to raw_score.final_score.",
@@ -605,7 +583,6 @@ export function master_adjudication_user_prompt(
     "- occupancy_signal and nonowner_occupancy_strength must agree: owner_occupancy sits low,",
     "  non_owner_occupancy sits high, conflicting sits in the middle, and no_signal means the records",
     "  could not speak at all — use the midpoint there and say so in reasoning.",
-    ...(identity_check.length > 0 ? SAME_PERSON_REQUIREMENT_LINES : []),
     "- Submit using submit_case_adjudication. Include keys: raw_score,",
     "  verdict_band, case_archetype, score_adjustments, reasoning_summary,",
     "  why_not_higher, why_not_lower, records_read.",

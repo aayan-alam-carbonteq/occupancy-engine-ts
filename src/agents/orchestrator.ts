@@ -79,13 +79,7 @@ import {
   sanitize_result_prose,
 } from "./prose_redaction.ts";
 import { humanize_evidence_map_for_display } from "./prose_display.ts";
-import {
-  identity_check_entries,
-  merge_same_person_people,
-  render_identity_check_lines,
-  type SamePersonGroup,
-  validate_same_person_groups,
-} from "./same_person.ts";
+import { merge_same_person_people, type SamePersonGroup } from "./same_person.ts";
 import type { MetricEvent } from "../observability/models.ts";
 
 // ── Master submit tools (native tool calls) ──
@@ -148,19 +142,6 @@ const SubmitCaseAdjudicationArgs = z
         "What public records say about occupancy at this address, judged on the records alone. " +
           "This is NOT a comparison against any external claim, listing or scan — you have not been " +
           "shown one, and you must not infer one.",
-      ),
-    // X-091. On the TOOL only, never on CaseAdjudication: split_same_person lifts it off the args
-    // before the strict parse, and validate_same_person_groups decides what survives.
-    same_person: z
-      .array(
-        z.object({
-          ids: z.array(z.string()).min(2),
-          name: z.string().describe("The fullest spelling, copied exactly from one member's P line, without the id."),
-        }),
-      )
-      .default([])
-      .describe(
-        "Groups of Identity check ids that are one human, repeated or written differently. Empty when everyone is distinct.",
       ),
   })
   .describe("Submit the final master CaseAdjudication.");
@@ -350,58 +331,12 @@ export class AgentOrchestrator {
       return { conflicts, evidence_pack, score_breakdown };
     });
     this._ensure_not_cancelled();
-    // X-091. The adjudicator's same-person answer, captured from the ACCEPTED adjudication only.
-    const same_person_answer: { called: boolean; raw: unknown } = { called: false, raw: undefined };
     const adjudication = await recorder.span(
       "master_adjudicator",
       { agent_id: "master_adjudicator", metadata: { raw_score: scoring.score_breakdown.final_score } },
       async () =>
-        await this._adjudicate_case(
-          context,
-          scoring.score_breakdown,
-          results,
-          scoring.conflicts,
-          request,
-          trace,
-          (raw) => {
-            same_person_answer.called = true;
-            same_person_answer.raw = raw;
-          },
-        ),
+        await this._adjudicate_case(context, scoring.score_breakdown, results, scoring.conflicts, request, trace),
     );
-    // The same pure function over the same object _adjudicate_case rendered the prompt from, so these
-    // are exactly the ids the model was shown.
-    const same_person = validate_same_person_groups(
-      same_person_answer.raw,
-      identity_check_entries(context.evidence_map),
-    );
-    if (same_person_answer.called) {
-      recorder.record_counter("same_person_groups", {
-        phase: "master_adjudicator",
-        agent_id: "master_adjudicator",
-        metadata: {
-          applied: same_person.groups.length,
-          dropped: same_person.dropped,
-          // Member names and the model's answer only under debug payloads, which production never
-          // enables. This metadata stays in the run's metrics events (the CLI's .metrics.events.jsonl);
-          // the report payload and the progress stream never carry it.
-          ...(recorder.debug_payloads
-            ? {
-                groups: same_person.groups.map((group) => ({
-                  names: group.person_indexes.map(
-                    (index) => context.evidence_map.people_at_address[index]?.name ?? "",
-                  ),
-                  includes_owner: group.includes_owner,
-                })),
-                // The answer as the model sent it, so a measurement can judge dropped groups too.
-                proposed: same_person_answer.raw ?? null,
-              }
-            : {}),
-        },
-      });
-    }
-    // Groups apply to the REPORT copy only; `context` stays the copy every prompt was built from.
-    const report_evidence_map = reconcile_evidence_map(context.evidence_map, same_person.groups);
     // Finalization: humanize the human-facing prose (gated by OE_PROSE_REDACT) AFTER adjudication
     // and BEFORE the report is assembled. Running it after adjudication keeps it a pure output
     // filter that never perturbs the adjudicator's inputs (so the redact-only experiment arm is
@@ -413,10 +348,8 @@ export class AgentOrchestrator {
     // people_at_address, nonowner_occupancy_hints). Humanize a DISPLAY COPY under the same gate;
     // `context` (the prompt-grounding copy) was consumed earlier, so this cannot change coverage.
     const displayContext = redactOn
-      ? { ...context, evidence_map: humanize_evidence_map_for_display(report_evidence_map) }
-      : report_evidence_map === context.evidence_map
-        ? context
-        : { ...context, evidence_map: report_evidence_map };
+      ? { ...context, evidence_map: humanize_evidence_map_for_display(context.evidence_map) }
+      : context;
 
     const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
     caveats.push(..._global_caveats(context, finalResults));
@@ -714,10 +647,6 @@ export class AgentOrchestrator {
     conflicts: ConflictSummary[],
     request: AgentInvestigationRequest,
     trace: InvestigationTrace,
-    // X-091. Called once, with the raw same_person of the adjudication that was ACCEPTED. Never called
-    // on a fallback, so a run without an accepted model answer applies no groups. It must not throw: it
-    // runs after the parse succeeds, and a throw would still turn that answer into a retry or a fallback.
-    on_same_person?: (raw: unknown) => void,
   ): Promise<CaseAdjudication> {
     if (this.master_llm === null) {
       return fallback_adjudication(raw_score, "No master LLM configured; using raw heuristic score as calibrated score.");
@@ -732,7 +661,6 @@ export class AgentOrchestrator {
           results.map((result) => _compact_worker_result(result, false)),
           conflicts.map((conflict) => ({ ...conflict })),
           true,
-          render_identity_check_lines(identity_check_entries(context.evidence_map)),
         ),
       }),
     ];
@@ -765,7 +693,7 @@ export class AgentOrchestrator {
             trace,
           ),
         );
-        const tool_result = _case_adjudication_from_tool_calls(response, raw_score.final_score, on_same_person);
+        const tool_result = _case_adjudication_from_tool_calls(response, raw_score.final_score);
         if (tool_result !== null && !("ok" in tool_result)) {
           return tool_result as CaseAdjudication;
         }
@@ -1123,27 +1051,9 @@ function _suppress_absence_workers(plan: CaseInvestigationPlan): CaseInvestigati
 
 // ── Master adjudication tool-call parsing ──
 
-/**
- * X-091. `same_person` rides on the adjudication tool but is not part of CaseAdjudication, whose
- * schema is .strict(): left in the args it would fail validation and spend a retry. Returns a copy of
- * the args without it, plus the raw value, unvalidated. Haiku 4.5 files it inside `records_read` (3 of
- * 3 first attempts in a live replay, 2026-09-14), so it is lifted from there too; a top-level value
- * wins when both are present.
- */
-export function split_same_person(args: Record<string, any>): { args: Record<string, any>; same_person: unknown } {
-  const { same_person, ...rest } = args;
-  const records_read = rest["records_read"];
-  if (isRecord(records_read) && "same_person" in records_read) {
-    const { same_person: nested, ...records_rest } = records_read;
-    return { args: { ...rest, records_read: records_rest }, same_person: same_person ?? nested };
-  }
-  return { args: rest, same_person };
-}
-
 function _case_adjudication_from_tool_calls(
   response: any,
   raw_score: number,
-  on_same_person?: (raw: unknown) => void,
 ): CaseAdjudication | Record<string, any> | null {
   const tool_calls = _response_tool_calls(response);
   if (tool_calls.length === 0) {
@@ -1160,14 +1070,12 @@ function _case_adjudication_from_tool_calls(
       };
     }
     const rawArgs = isRecord(call["args"]) ? call["args"] : {};
-    const { args, same_person } = split_same_person(rawArgs);
+    const args: Record<string, any> = { ...rawArgs };
     if (!("raw_score" in args)) {
       args["raw_score"] = raw_score;
     }
     try {
-      const adjudication = CaseAdjudicationSchema.parse(args);
-      on_same_person?.(same_person);
-      return adjudication;
+      return CaseAdjudicationSchema.parse(args);
     } catch (exc) {
       if (!(exc instanceof z.ZodError)) {
         throw exc;
@@ -1685,7 +1593,7 @@ function _people_at_address_summaries(
 }
 
 /**
- * X-091. The REPORT copy of the evidence map with the adjudicator's same-person groups applied. No
+ * X-091. The REPORT copy of the evidence map with the same-person groups applied. No
  * groups → the SAME object, so a run without groups reports exactly the evidence map it did before.
  * Both hint lists are rebuilt from the merged people with the builders `_evidence_map` used, which are
  * their only source; every other field is carried by reference. The grounding copy the prompts were
