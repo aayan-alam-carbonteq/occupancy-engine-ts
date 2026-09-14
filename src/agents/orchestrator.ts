@@ -79,7 +79,13 @@ import {
   sanitize_result_prose,
 } from "./prose_redaction.ts";
 import { humanize_evidence_map_for_display } from "./prose_display.ts";
-import { merge_same_person_people, type SamePersonGroup } from "./same_person.ts";
+import { resolve_same_person, type SamePersonResolution } from "./pair_verdicts.ts";
+import {
+  identity_check_entries,
+  merge_same_person_people,
+  type SamePersonGroup,
+  validate_same_person_groups,
+} from "./same_person.ts";
 import type { MetricEvent } from "../observability/models.ts";
 
 // ── Master submit tools (native tool calls) ──
@@ -281,6 +287,35 @@ export class AgentOrchestrator {
       { agent_id: "orchestrator" },
       async () => await this.preflight(request),
     );
+    // X-091. Same-person names: one small pair-verdict call, started here so it runs alongside planning and the
+    // heuristic workers and adds no wall-clock time. It cannot fail the report: resolve_same_person never throws,
+    // and the .catch covers the span wrapper. Its groups apply to the REPORT copy after adjudication; nothing it
+    // returns reaches a prompt. `context.evidence_map` is not reassigned after preflight, so these entries are the
+    // ones the groups are validated against.
+    const identity_entries = identity_check_entries(context.evidence_map);
+    const same_person_call: Promise<SamePersonResolution | null> = recorder
+      .span(
+        "same_person",
+        { agent_id: "same_person" },
+        async () =>
+          await resolve_same_person(
+            this.master_llm,
+            identity_entries,
+            runnableConfig(
+              "master:same_person",
+              {
+                phase: "same_person",
+                agent_id: "same_person",
+                provider: _report_provider(request.provider),
+                model: request.model || "",
+                batch_id: request.batch_id || "",
+              },
+              ["same-person"],
+              trace,
+            ),
+          ),
+      )
+      .catch(() => null);
     let candidate_heuristics = selected_heuristics(request.heuristic_allowlist, request.heuristic_blocklist) as Record<
       string,
       any
@@ -337,6 +372,40 @@ export class AgentOrchestrator {
       async () =>
         await this._adjudicate_case(context, scoring.score_breakdown, results, scoring.conflicts, request, trace),
     );
+    // X-091. Started after preflight, so this is normally settled long before the adjudication returns.
+    const same_person_resolution = await same_person_call;
+    const same_person = validate_same_person_groups(same_person_resolution?.result.groups ?? [], identity_entries);
+    if (same_person_resolution?.called) {
+      const result = same_person_resolution.result;
+      recorder.record_counter("same_person_groups", {
+        phase: "same_person",
+        agent_id: "same_person",
+        metadata: {
+          pairs: same_person_resolution.pairs,
+          applied: same_person.groups.length,
+          dropped: same_person.dropped,
+          contradictory: result.contradictory.length,
+          incomplete: result.incomplete.length,
+          ambiguous_joint_rows: result.ambiguous_joint_rows.length,
+          rejected_labels: result.rejected_labels.length,
+          failed: same_person_resolution.error !== null,
+          // Member names, the model's verdicts and the error text only under debug payloads, which production
+          // never enables. This metadata stays in the run's metrics events; the report payload and the progress
+          // stream never carry it.
+          ...(recorder.debug_payloads
+            ? {
+                groups: same_person.groups.map((group) =>
+                  group.person_indexes.map((index) => context.evidence_map.people_at_address[index]?.name ?? ""),
+                ),
+                verdicts: same_person_resolution.raw ?? null,
+                error: same_person_resolution.error,
+              }
+            : {}),
+        },
+      });
+    }
+    // Groups apply to the REPORT copy only; `context` stays the copy every prompt was built from.
+    const report_evidence_map = reconcile_evidence_map(context.evidence_map, same_person.groups);
     // Finalization: humanize the human-facing prose (gated by OE_PROSE_REDACT) AFTER adjudication
     // and BEFORE the report is assembled. Running it after adjudication keeps it a pure output
     // filter that never perturbs the adjudicator's inputs (so the redact-only experiment arm is
@@ -348,8 +417,10 @@ export class AgentOrchestrator {
     // people_at_address, nonowner_occupancy_hints). Humanize a DISPLAY COPY under the same gate;
     // `context` (the prompt-grounding copy) was consumed earlier, so this cannot change coverage.
     const displayContext = redactOn
-      ? { ...context, evidence_map: humanize_evidence_map_for_display(context.evidence_map) }
-      : context;
+      ? { ...context, evidence_map: humanize_evidence_map_for_display(report_evidence_map) }
+      : report_evidence_map === context.evidence_map
+        ? context
+        : { ...context, evidence_map: report_evidence_map };
 
     const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
     caveats.push(..._global_caveats(context, finalResults));
