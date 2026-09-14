@@ -51,6 +51,9 @@ describe("X-091 master adjudication prompt: the Identity check", () => {
       "When both have birth years they must match",
       "a row naming two people joins only one of them",
       "in the same group as their other spellings",
+      "the same name misspelled",
+      "at least one year in common",
+      "never an O line",
     ]) {
       expect([phrase, block.includes(phrase)]).toEqual([phrase, true]);
     }
