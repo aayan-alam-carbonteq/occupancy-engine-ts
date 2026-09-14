@@ -79,7 +79,13 @@ import {
   sanitize_result_prose,
 } from "./prose_redaction.ts";
 import { humanize_evidence_map_for_display } from "./prose_display.ts";
-import { identity_check_entries, render_identity_check_lines } from "./same_person.ts";
+import {
+  identity_check_entries,
+  merge_same_person_people,
+  render_identity_check_lines,
+  type SamePersonGroup,
+  validate_same_person_groups,
+} from "./same_person.ts";
 import type { MetricEvent } from "../observability/models.ts";
 
 // ── Master submit tools (native tool calls) ──
@@ -344,12 +350,55 @@ export class AgentOrchestrator {
       return { conflicts, evidence_pack, score_breakdown };
     });
     this._ensure_not_cancelled();
+    // X-091. The adjudicator's same-person answer, captured from the ACCEPTED adjudication only.
+    const same_person_answer: { called: boolean; raw: unknown } = { called: false, raw: undefined };
     const adjudication = await recorder.span(
       "master_adjudicator",
       { agent_id: "master_adjudicator", metadata: { raw_score: scoring.score_breakdown.final_score } },
       async () =>
-        await this._adjudicate_case(context, scoring.score_breakdown, results, scoring.conflicts, request, trace),
+        await this._adjudicate_case(
+          context,
+          scoring.score_breakdown,
+          results,
+          scoring.conflicts,
+          request,
+          trace,
+          (raw) => {
+            same_person_answer.called = true;
+            same_person_answer.raw = raw;
+          },
+        ),
     );
+    // The same pure function over the same object _adjudicate_case rendered the prompt from, so these
+    // are exactly the ids the model was shown.
+    const same_person = validate_same_person_groups(
+      same_person_answer.raw,
+      identity_check_entries(context.evidence_map),
+    );
+    if (same_person_answer.called) {
+      recorder.record_counter("same_person_groups", {
+        phase: "master_adjudicator",
+        agent_id: "master_adjudicator",
+        metadata: {
+          applied: same_person.groups.length,
+          dropped: same_person.dropped,
+          // Member names only under debug payloads, which production never enables: this event
+          // streams to the backend, and counts are all a live consumer needs.
+          ...(recorder.debug_payloads
+            ? {
+                groups: same_person.groups.map((group) => ({
+                  names: group.person_indexes.map(
+                    (index) => context.evidence_map.people_at_address[index]?.name ?? "",
+                  ),
+                  includes_owner: group.includes_owner,
+                })),
+              }
+            : {}),
+        },
+      });
+    }
+    // Groups apply to the REPORT copy only; `context` stays the copy every prompt was built from.
+    const report_evidence_map = reconcile_evidence_map(context.evidence_map, same_person.groups);
     // Finalization: humanize the human-facing prose (gated by OE_PROSE_REDACT) AFTER adjudication
     // and BEFORE the report is assembled. Running it after adjudication keeps it a pure output
     // filter that never perturbs the adjudicator's inputs (so the redact-only experiment arm is
@@ -361,8 +410,10 @@ export class AgentOrchestrator {
     // people_at_address, nonowner_occupancy_hints). Humanize a DISPLAY COPY under the same gate;
     // `context` (the prompt-grounding copy) was consumed earlier, so this cannot change coverage.
     const displayContext = redactOn
-      ? { ...context, evidence_map: humanize_evidence_map_for_display(context.evidence_map) }
-      : context;
+      ? { ...context, evidence_map: humanize_evidence_map_for_display(report_evidence_map) }
+      : report_evidence_map === context.evidence_map
+        ? context
+        : { ...context, evidence_map: report_evidence_map };
 
     const caveats = [...new Set(finalResults.flatMap((result) => result.caveats))].sort();
     caveats.push(..._global_caveats(context, finalResults));
@@ -1619,6 +1670,32 @@ function _people_at_address_summaries(
     }
   }
   return [...grouped.values()].slice(0, 20);
+}
+
+/**
+ * X-091. The REPORT copy of the evidence map with the adjudicator's same-person groups applied. No
+ * groups → the SAME object, so a run without groups serializes exactly as before. Both hint lists are
+ * rebuilt from the merged people with the builders preflight used; every other field is carried by
+ * reference. The grounding copy the prompts were built from is never touched.
+ */
+export function reconcile_evidence_map(
+  evidence_map: CaseEvidenceMap,
+  groups: readonly SamePersonGroup[],
+): CaseEvidenceMap {
+  if (groups.length === 0) {
+    return evidence_map;
+  }
+  const people_at_address = merge_same_person_people(evidence_map.people_at_address, groups);
+  return {
+    ...evidence_map,
+    people_at_address,
+    owner_presence_hints: _owner_presence_hints(
+      people_at_address,
+      evidence_map.owner_summaries,
+      evidence_map.normalized_address,
+    ),
+    nonowner_occupancy_hints: _nonowner_occupancy_hints(people_at_address),
+  };
 }
 
 // Both hint builders take the ALREADY-BUILT person summaries: they used to re-derive them from the
