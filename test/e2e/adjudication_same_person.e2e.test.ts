@@ -140,6 +140,28 @@ describe("X-091 E2E: the adjudicator reconciles same-person names", () => {
     const { people_at_address: _p2, nonowner_occupancy_hints: _n2, owner_presence_hints: _o2, ...baselineRest } =
       baseline.resolved_address.evidence_map;
     expect(mergedRest).toEqual(baselineRest);
+    // The rebuild keeps every other hint line: neither member is an owner, so the owner hints are
+    // unchanged and the non-owner hints lose exactly TAMIE's line.
+    const mergedMap = merged.resolved_address.evidence_map;
+    const baselineMap = baseline.resolved_address.evidence_map;
+    expect(mergedMap.owner_presence_hints).toEqual(baselineMap.owner_presence_hints);
+    expect(mergedMap.nonowner_occupancy_hints).toEqual(
+      baselineMap.nonowner_occupancy_hints.filter((hint) => !hint.toUpperCase().includes("TAMIE WORTHINGTON")),
+    );
+  });
+
+  test("with prose redaction off, the report still carries the merge", async () => {
+    const previous = process.env.OE_PROSE_REDACT;
+    process.env.OE_PROSE_REDACT = "off";
+    try {
+      const a = await investigate(new IdentityReadingModel(KENNETH_AND_TAMIE));
+      expect(names(a)).not.toContain("TAMIE WORTHINGTON");
+      expect(names(a)).toContain("KENNETH S WORTHINGTON");
+      expect(hintsText(a)).not.toContain("TAMIE WORTHINGTON");
+    } finally {
+      if (previous === undefined) delete process.env.OE_PROSE_REDACT;
+      else process.env.OE_PROSE_REDACT = previous;
+    }
   });
 
   test("neither the adjudication nor the wire payload carries same_person", async () => {
@@ -150,6 +172,12 @@ describe("X-091 E2E: the adjudicator reconciles same-person names", () => {
   });
 
   test("a person grouped with the owner id is labelled the owner, in the list and the hints", async () => {
+    const baseline = await investigate(new IdentityReadingModel(() => []));
+    const before = baseline.resolved_address.evidence_map;
+    expect(before.people_at_address.find((p) => p.name === "JESSICA WHISMAN")?.relationship_to_owner).toBe("unrelated");
+    expect(before.owner_presence_hints.join("\n")).not.toContain("JESSICA WHISMAN");
+    expect(hintsText(baseline)).toContain("JESSICA WHISMAN");
+
     const a = await investigate(
       new IdentityReadingModel((lines) => [{ ids: [idOf(lines, "JESSICA WHISMAN"), "O1"], name: "JESSICA WHISMAN" }]),
     );
@@ -166,6 +194,15 @@ describe("X-091 E2E: the adjudicator reconciles same-person names", () => {
     expect(model.calls).toBe(1);
     expect(a.resolved_address.evidence_map).toEqual(baseline.resolved_address.evidence_map);
     expect(counter(a)?.["metadata"]).toEqual({ applied: 0, dropped: 2 });
+  });
+
+  test("a non-array answer (a JSON string) is dropped and spends no retry", async () => {
+    const baseline = await investigate(new IdentityReadingModel(() => []));
+    const model = new IdentityReadingModel((lines) => JSON.stringify(KENNETH_AND_TAMIE(lines)));
+    const a = await investigate(model);
+    expect(model.calls).toBe(1);
+    expect(a.resolved_address.evidence_map).toEqual(baseline.resolved_address.evidence_map);
+    expect(counter(a)?.["metadata"]).toEqual({ applied: 0, dropped: 1 });
   });
 
   test("a rejected attempt's groups never apply; the accepted retry's do, counted once", async () => {
@@ -208,6 +245,18 @@ describe("X-091 E2E: the adjudicator reconciles same-person names", () => {
       applied: 1,
       dropped: 0,
       groups: [{ names: ["KENNETH S WORTHINGTON", "TAMIE WORTHINGTON"], includes_owner: false }],
+    });
+  });
+
+  test("the debug counter marks a group that includes the owner", async () => {
+    const a = await investigate(
+      new IdentityReadingModel((lines) => [{ ids: [idOf(lines, "JESSICA WHISMAN"), "O1"], name: "JESSICA WHISMAN" }]),
+      { metrics_debug_payloads: true },
+    );
+    expect(counter(a)?.["metadata"]).toEqual({
+      applied: 1,
+      dropped: 0,
+      groups: [{ names: ["JESSICA WHISMAN"], includes_owner: true }],
     });
   });
 

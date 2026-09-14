@@ -712,8 +712,8 @@ export class AgentOrchestrator {
     request: AgentInvestigationRequest,
     trace: InvestigationTrace,
     // X-091. Called once, with the raw same_person of the adjudication that was ACCEPTED. Never called
-    // on a fallback, so a run without an accepted model answer applies no groups. It runs inside the
-    // parse's try, so it must not throw: a throw would turn an accepted answer into a retry or fallback.
+    // on a fallback, so a run without an accepted model answer applies no groups. It must not throw: it
+    // runs after the parse succeeds, and a throw would still turn that answer into a retry or a fallback.
     on_same_person?: (raw: unknown) => void,
   ): Promise<CaseAdjudication> {
     if (this.master_llm === null) {
@@ -1509,6 +1509,8 @@ function _evidence_map(
   // caps AFTER scope filtering, and the ordering is what keeps a citation a heuristic needs from
   // being crowded out. (compact_evidence_map re-asserts the ordering; this is where they enter.)
   const refs = [...external_evidence_refs(external_evidence), ..._source_refs(tax_rows, "tax", 5)];
+  // X-091: reconcile_evidence_map rebuilds both hint lists with these same builders, so they must stay
+  // the only source of owner_presence_hints and nonowner_occupancy_hints.
   const owner_presence_hints = _owner_presence_hints(people_summaries, owners, normalized_address);
   const nonowner_hints = _nonowner_occupancy_hints(people_summaries);
   const data_gaps = [
@@ -1674,9 +1676,10 @@ function _people_at_address_summaries(
 
 /**
  * X-091. The REPORT copy of the evidence map with the adjudicator's same-person groups applied. No
- * groups → the SAME object, so a run without groups serializes exactly as before. Both hint lists are
- * rebuilt from the merged people with the builders preflight used; every other field is carried by
- * reference. The grounding copy the prompts were built from is never touched.
+ * groups → the SAME object, so a run without groups reports exactly the evidence map it did before.
+ * Both hint lists are rebuilt from the merged people with the builders `_evidence_map` used, which are
+ * their only source; every other field is carried by reference. The grounding copy the prompts were
+ * built from is never touched.
  */
 export function reconcile_evidence_map(
   evidence_map: CaseEvidenceMap,
