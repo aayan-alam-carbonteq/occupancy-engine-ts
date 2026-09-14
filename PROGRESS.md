@@ -22,6 +22,32 @@ judge package, observability/summaries.
 
 <!-- newest first; one entry per working session -->
 
+### 2026-09-14 — X-091 measured under the owner's $5 cap: stopped (the adjudicator merges relatives)
+- **Goal:** Measure the same-person feature within a $5 cap and decide whether it ships.
+- **Method:** Replay only the master adjudicator call on the 24 benchmark addresses:
+  - saved X-083 worker results;
+  - context rebuilt by preflight against a local data service;
+  - control `d238b95` vs treatment on identical inputs;
+  - Haiku 4.5 at temperature 0, with a budget-guarded spend ledger.
+- **Found and fixed:** Haiku filed `same_person` inside `records_read` on every first attempt, costing a
+  retry per run. `27326b8` lifts it from there too.
+- **Result v1 (`27326b8`):** 2 of 4 criteria.
+  - 7 applied merges of relatives sharing a surname: MULLINS, YADEN, GERMANN, REYNOLDS, PAYNE,
+    GARY / MARY HILES, and BRIAN T HILES / HILES THOMAS.
+  - 11 of 20 expected merges.
+  - Signal and band changes within noise; latency +458 ms.
+- **Owner's single prompt fix (`9999039`, `35c2baf`):** different first names are different people; birth
+  years must share a year; no household wording.
+- **Result v2 (`35c2baf`):** 1 of 4 criteria.
+  - The same relatives merged again, plus COYLE and VANDERPOOL.
+  - 13 of 20 expected merges.
+  - Latency +1,467 ms; treatment retries 10 vs control 5.
+- **Decision:** stopped per the owner's rule ("if it still merges different people, stop"). Not merged.
+- **Spend:** $1.6648 of $5, over 132 calls.
+- **Commits:** `27326b8` fix, `9999039` + `35c2baf` wording, and this docs commit.
+- **Next best action:** none on this design. Revisit only with a different design (flag possible
+  duplicates instead of merging them) or a model that follows the first-name rule.
+
 ### 2026-09-14 — same-person names: the adjudicator groups one human's spellings (X-091)
 - **Goal:** Stop the report listing one human as several people when records spell the name
   differently, by having the master adjudicator — in its existing call — return groups of
